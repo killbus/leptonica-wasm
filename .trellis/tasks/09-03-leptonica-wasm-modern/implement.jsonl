@@ -9,3 +9,4 @@
 {"file": "scripts/smoke.mjs", "reason": "M1 冒烟：PNG IHDR/JPEG SOI/toRGBA 往返断言 + 负向用例 + default 模式 pixRead* 缺席验证（symbol map + wasm 导出表）"}
 {"file": ".github/workflows/size-spike.yml", "reason": "M1 CI：workflow_dispatch；checkout/setup-node/upload-artifact 全 pin（证据注释）；emsdk 按 pin 安装；双次从零构建 sha256 一致性；双模式构建 + 冒烟；step summary + artifact"}
 {"file": ".trellis/tasks/09-03-leptonica-wasm-modern/research-size-spike.md", "reason": "M1 spike 报告：方法/关键决策完整；结果/结论占位待 CI 运行回填；含 flat 命名偏差说明"}
+{"file": ".trellis/tasks/09-03-leptonica-wasm-modern/handover-team-c.md", "reason": "M1 尾段交接：push 完成（main@12ce162）后剩余步骤清单（触发 CI→回填→评审门→M2）、预审发现、纪律提醒；TEAM C 从此接手"}

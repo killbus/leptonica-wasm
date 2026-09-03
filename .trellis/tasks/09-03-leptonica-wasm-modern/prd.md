@@ -33,7 +33,7 @@
 ### 编解码与构建
 
 6. 编解码：PNG + JPEG 写入进承诺层（证据：jsquash / wasm-vips / tesseract.js，operator 与 encoder 都在 wasm 是严肃图像工具的默认架构）；TIFF 延后至真实用户出现；TIFF/G4 需求走 raw 层。
-7. 构建：单构建起步；codecs 为构建期开关（CMake flag）而非发布矩阵；core/full 拆分延后至拿到体积数据再裁决（escape hatch：按读/写方向切，写侧 core）。
+7. 构建：单构建起步；codecs 为构建期开关（CMake flag）而非发布矩阵。**已裁决（2026-09-03，M1 size spike 数据回填）**：精选模式为默认产物（wasm 406KB / gzip 105KB），全量 C ABI 为逃生舱层（2.59MB / gzip 856KB，2745 函数导出）——gzip 增量 ~750KB（8 倍）远超 ~100KB 阈值，全量导出对默认消费者不可接受；「按读/写方向切」的 escape hatch 不需要（精选模式已天然只含写侧 + 无解码入口）。对照混入 -O2/-O3 变量（full-abi 保导出名降优化级别），量级结论稳健，精确数字 M2 同优化级别复核。证据：`research-size-spike.md`，CI run 33767637278。
 8. 无 pthread / SAB / COOP-COEP（Leptonica 有全局状态非线程安全，一 Worker 一实例本来就是安全模型）；图片级并发 = 多实例 Worker，transfer ArrayBuffer。
 9. SIMD：不做构建变体（主流浏览器均已支持），运行时 WebAssembly.validate 探测。
 10. 类型管线：精选层手写 embind + Emscripten `--emit-tsd` 生成 d.ts；CI 用 `WebAssembly.Module.exports()` / `wasm-objdump -x` diff 实际导出防漂移；不上 doxygen XML、不自造 libclang 生成器。
@@ -99,7 +99,7 @@
 - [ ] oracle 比对：CI 同 commit 双构建（原生 + wasm，versions.json 同 pin），同一批输入与算子链，wasm 输出与原生金样一致（PNG 逐字节、浮点标量容差）；金样套件通过变异冒烟（故意破坏一个参数映射，测试必须变红）。
 - [ ] session.close() 后再调用任何会话方法抛错（毒化验证）；Worker terminate 后无残留（进程级验证）。
 - [ ] d.ts 导出的每个符号在 wasm 实际导出表中存在（CI diff 通过）；raw 层全量导出可被 import。
-- [ ] 体积 spike 报告落盘（产物体积、解码路径裁剪验证、core/full 裁决建议）。
+- [x] 体积 spike 报告落盘（产物体积、解码路径裁剪验证、core/full 裁决建议）。——`research-size-spike.md` 全部收口：双模式体积 + 确定性 + `pixRead*` 缺席 + 裁决建议已回填（M1，2026-09-03）
 - [ ] npm 包 dry-run 可安装，Node 与浏览器双端 smoke 通过。
 
 ## Out of Scope（v0.2+ 候选）

@@ -58,14 +58,28 @@
 | default | TBD | TBD | TBD | TBD |
 | full-abi | TBD | TBD | TBD | TBD |
 
-（待 `size-spike` workflow 运行后回填。）
+CI run `33767637278`（commit `343a6cd`，2026-09-03，全部 step 绿；数据源 dist artifact `build-report.json`）：
+
+| mode | wasm bytes | wasm gzip bytes | js bytes | wall (s) |
+| --- | ---: | ---: | ---: | ---: |
+| default (-O3) | 406,460 | 107,970 (~105.4KB) | 45,839 | 93.8 |
+| full-abi (-O2, 2745 导出) | 2,588,792 | 875,942 (~855.4KB) | 376,473 | 5.8 |
+
+- **确定性**：双次从零构建 sha256 一致（`f5b64575…`，wasm 完全可复现）。
+- **冷/热构建**：cold 93.8s（含四依赖全量编译）；full-abi 复用依赖产物仅重链 5.8s（依赖缓存有效性证据，供 M2 缓存分层设计）。
+- **对照混入变量**：full-abi 为 -O2（导出名保留裁决，见 §链接），default 为 -O3；gzip 增量含优化级别差。同优化级别对照待 M2 revisit。
+- 双模式冒烟全绿：PNG IHDR 逐项、灰度 PNG、JPEG SOI、toRGBA 字节级往返、负向用例；full-abi 真实 `WebP*` 解码符号 0 个。
 
 ## 结论
 
-TBD。裁决规则：若 full-abi 相对 default 的 wasm gzip 增量 < ~100KB，则默认产物直接全量导出；否则精选 5 函数为默认、full-abi 作为逃生舱发布。（阈值 ~100KB 为初始提案，待用户确认。）
+**裁决：精选（default）为默认产物，full-abi 作为逃生舱发布**（对应 PRD 决策 ⑦）。
+
+依据：full-abi 相对 default 的 wasm gzip 增量 **~750KB（855KB vs 105KB，约 8 倍）**，远超 ~100KB 初始阈值——精选模式函数级 GC 裁剪（链接期归档语义 + 未引用代码消除）效果显著，全量 C ABI 导出的体积代价对绝大多数消费者不可接受。105KB gzip 的精选产物落在"可接受的首屏负载"区间。
+
+注意（评审门议题）：上述 8 倍增量是 -O2 vs -O3 的混合对照；但即便 full-abi 也回到 -O3，全量导出（2745 函数 + 全量解码器）相对精选裁剪的量级差距不会逆转——裁决方向稳健，精确数字待 M2 同优化级别复核。
 
 ## 后续动作
 
-- 手动触发 `size-spike` workflow（workflow_dispatch），回填结果表与结论。
+- [x] 手动触发 `size-spike` workflow（7 次 CI 迭代后全绿，演进记录见 journal），回填结果表与结论。
 - M1 评审门：trellis-check + chatroom 评审 + 用户确认后进入 M2。
-- M2：`check-exports.mjs`（防止绑定回归）+ CI 体积门禁（gzip 上限）。
+- M2：`check-exports.mjs`（防止绑定回归）+ CI 体积门禁（gzip 上限，锚定本次 default 105KB 基线）。

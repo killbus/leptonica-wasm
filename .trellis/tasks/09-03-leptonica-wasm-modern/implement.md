@@ -44,9 +44,9 @@
 - [x] `scripts/build.mjs` 最小可跑：`vendor/versions.json` pin 四依赖（zlib/libpng/libjpeg-turbo/leptonica 精确 commit）→ fetch（`tmp/deps/`）→ emcmake → ninja → emcc 出 wasm（脚本在 CI 内执行，本机只验语法）——233 行，`node --check` 通过；default/full-abi 双模式 + build-report.json（wasm raw/gzip 体积、sha256、耗时）
 - [x] `cpp/bindings.cpp` 最小 embind：`fromRGBA` / `toGray` / `toPNG` / `toJPEG` / `toRGBA` 五函数跑通——75 行已写；冒烟脚本 `scripts/smoke.mjs`（121 行）在 CI 内验证运行时行为（PNG IHDR 断言 / JPEG SOI / toRGBA 字节往返 / 负向用例）
 - [x] `.github/workflows/size-spike.yml`（M1 构建执行地）：逐 action 研究后引用（最新 release + 文档，证据留注释）→ emsdk 按 pin 安装 → 双次从零构建产物哈希一致性 → Node 冒烟 + `pixRead*` 缺席验证 → 全量对照构建 → 体积（raw+gzip）/耗时采集 → step summary + artifact 上传——97 行 workflow_dispatch 触发；checkout/setup-node/upload-artifact 三 action 全 pin（证据注释内含 release tag/日期/链接）
-- [ ] 测量：产物体积（raw + gzip）、冷构建耗时基线（供 CI 缓存与超时配置）；导出表/符号表确认无解码入口（`pixRead*` 缺席验证）
-- [ ] 对照构建：`gen-exports.mjs` 首版扫 `allheaders.h` → 全量 C ABI 导出再测体积
-- [ ] 产出 `research/size-spike.md`（design §8 四项裁决建议；CI 数据回填后收口）
+- [x] 测量：产物体积（raw + gzip）、冷构建耗时基线（供 CI 缓存与超时配置）；导出表/符号表确认无解码入口（`pixRead*` 缺席验证）——CI run 33767637278 全绿：default 406KB/105KB gzip、full-abi 2.59MB/856KB gzip；双次构建 sha256 稳定；冷构建 93.8s；符号表 `pixRead*` 0 项、full-abi 无真实 `WebP*` 解码符号
+- [x] 对照构建：`gen-exports.mjs` 首版扫 `allheaders.h` → 全量 C ABI 导出再测体积——2745 函数（声明 ∩ 归档定义），full-abi 模式体积见上
+- [x] 产出 `research/size-spike.md`（design §8 四项裁决建议；CI 数据回填后收口）——`research-size-spike.md` 结果/结论已回填：裁决"精选为默认、full-abi 逃生舱"（gzip 增量 ~750KB 远超 100KB 阈值）；含 7 次 CI 迭代的裁决记录（embind 完整类型、em++ 链接、-O3 内联与导出名压缩、WebP 错误桩）
 - 验证：CI workflow 内从零连续两次构建产物一致；Node 脚本 load wasm 跑通 fromRGBA→toGray→toPNG（本机仅静态验证，运行时验证由 CI 承担）；`npm test` + `npx tsc --noEmit` 保持绿
 - 评审门：体积数据回填 PRD 决策 ⑦（core/full 与 raw 层默认产物裁决），用户确认后进 M2
 - 回滚点：spike 结论不满足预期 → 回 design §3 重新裁决，不动后续里程碑
