@@ -1,0 +1,20 @@
+{
+  "name": "leptonica-wasm",
+  "version": "0.1.0",
+  "description": "Modern ESM/WASM build of Leptonica — curated image operators with a raw C-ABI escape hatch",
+  "type": "module",
+  "license": "BSD-2-Clause",
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "npm@11.13.0",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  }
+}

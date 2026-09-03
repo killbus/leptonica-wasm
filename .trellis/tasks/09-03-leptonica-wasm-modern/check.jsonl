@@ -1,0 +1,3 @@
+{"file": ".trellis/tasks/09-03-leptonica-wasm-modern/prd.md", "reason": "验收标准（Acceptance Criteria 7 条）与 Out of Scope 边界——检查对照的最终依据"}
+{"file": ".trellis/tasks/09-03-leptonica-wasm-modern/design.md", "reason": "关键不变量（1bpp 保持、中间 Pix 调用栈内消亡、close 唯一契约）与 ADR——检查实现是否守住"}
+{"file": ".trellis/tasks/09-03-leptonica-wasm-modern/implement.md", "reason": "各里程碑验证命令与 PRD 验收对照表——检查进度的对照清单"}

@@ -1,0 +1,4 @@
+{"file": ".trellis/tasks/09-03-leptonica-wasm-modern/prd.md", "reason": "需求与 14 条技术决策的唯一上游；R1-R5 需求、8 类算子清单、验收标准"}
+{"file": ".trellis/tasks/09-03-leptonica-wasm-modern/design.md", "reason": "架构定稿：双层 API、Op tagged union 缝合线裁决、构建管线、ADR 简录"}
+{"file": ".trellis/tasks/09-03-leptonica-wasm-modern/research-tesseract-wasm.md", "reason": "Emscripten 构建路线证据：零 patch CMake flag 组合、依赖 pin 方式、Node worker_threads 先例"}
+{"file": ".trellis/tasks/09-03-leptonica-wasm-modern/research-liteparse.md", "reason": "Rust 路线对照（已否决）；npm provenance 与发布管线可借鉴"}
