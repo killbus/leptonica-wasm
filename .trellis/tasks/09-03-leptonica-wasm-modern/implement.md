@@ -39,12 +39,15 @@
 
 ## M1 体积 spike ★评审门 1
 
-- [ ] `scripts/build.mjs` 最小可跑：`vendor/versions.json` pin 四依赖（zlib/libpng/libjpeg-turbo/leptonica 精确 commit）→ fetch → emcmake → ninja → emcc 出 wasm
-- [ ] `cpp/bindings.cpp` 最小 embind：`fromRGBA` / `toGray` / `toPNG` / `toJPEG` / `toRGBA` 五函数跑通
+执行纪律（2026-09-03 用户指示，详见 `.trellis/spec/build-ci/execution-discipline.md`）：本机零重任务——一切编译在 GitHub Actions 执行，依赖源码 fetch 落 `tmp/deps/`，本机仅编辑、头文件解析与 npm test/typecheck 级验证。
+
+- [x] `scripts/build.mjs` 最小可跑：`vendor/versions.json` pin 四依赖（zlib/libpng/libjpeg-turbo/leptonica 精确 commit）→ fetch（`tmp/deps/`）→ emcmake → ninja → emcc 出 wasm（脚本在 CI 内执行，本机只验语法）——233 行，`node --check` 通过；default/full-abi 双模式 + build-report.json（wasm raw/gzip 体积、sha256、耗时）
+- [x] `cpp/bindings.cpp` 最小 embind：`fromRGBA` / `toGray` / `toPNG` / `toJPEG` / `toRGBA` 五函数跑通——75 行已写；冒烟脚本 `scripts/smoke.mjs`（121 行）在 CI 内验证运行时行为（PNG IHDR 断言 / JPEG SOI / toRGBA 字节往返 / 负向用例）
+- [x] `.github/workflows/size-spike.yml`（M1 构建执行地）：逐 action 研究后引用（最新 release + 文档，证据留注释）→ emsdk 按 pin 安装 → 双次从零构建产物哈希一致性 → Node 冒烟 + `pixRead*` 缺席验证 → 全量对照构建 → 体积（raw+gzip）/耗时采集 → step summary + artifact 上传——97 行 workflow_dispatch 触发；checkout/setup-node/upload-artifact 三 action 全 pin（证据注释内含 release tag/日期/链接）
 - [ ] 测量：产物体积（raw + gzip）、冷构建耗时基线（供 CI 缓存与超时配置）；导出表/符号表确认无解码入口（`pixRead*` 缺席验证）
 - [ ] 对照构建：`gen-exports.mjs` 首版扫 `allheaders.h` → 全量 C ABI 导出再测体积
-- [ ] 产出 `research/size-spike.md`（design §8 四项裁决建议）
-- 验证：脚本从零目录连续两次构建成功且产物一致；Node 脚本 load wasm 跑通 fromRGBA→toGray→toPNG
+- [ ] 产出 `research/size-spike.md`（design §8 四项裁决建议；CI 数据回填后收口）
+- 验证：CI workflow 内从零连续两次构建产物一致；Node 脚本 load wasm 跑通 fromRGBA→toGray→toPNG（本机仅静态验证，运行时验证由 CI 承担）；`npm test` + `npx tsc --noEmit` 保持绿
 - 评审门：体积数据回填 PRD 决策 ⑦（core/full 与 raw 层默认产物裁决），用户确认后进 M2
 - 回滚点：spike 结论不满足预期 → 回 design §3 重新裁决，不动后续里程碑
 

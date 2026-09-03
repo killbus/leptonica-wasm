@@ -1,10 +1,11 @@
 node_modules/
-build/
+tmp/
 dist/
 coverage/
 *.tsbuildinfo
 *.log
 .DS_Store
 .cache/
+.zvec-grep/
 third_party/*
 !third_party/manifest.json

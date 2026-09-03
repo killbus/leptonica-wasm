@@ -70,7 +70,7 @@ leptonica-wasm/
 
 **编排**（`scripts/build.mjs`，参考 tesseract-wasm 证据）：
 
-1. fetch：按 pin 拉源码到 `build/deps/`（浅 clone 或 tarball，本地缓存）。
+1. fetch：按 pin 拉源码到 `tmp/deps/`（浅 clone 或 tarball，本地缓存；临时内容路径纪律见 `.trellis/spec/build-ci/execution-discipline.md`）。
 2. 逐依赖 `emcmake cmake + ninja` 构建静态库（zlib → libpng → libjpeg-turbo → leptonica）。
 3. `emcc` 编译 `cpp/bindings.cpp` 并链接全部静态库 → 单 `leptonica.wasm` + ESM glue。
 
@@ -89,11 +89,11 @@ leptonica-wasm/
 - 精选层只引用所需 leptonica 函数 → `EXPORTED_FUNCTIONS` 白名单 + 链接器 gc-sections 裁剪；不暴露 `pixRead*` 则解码路径被裁剪（M1 spike 验证）。
 - raw 层全量 C ABI 导出有体积代价（导出表 + 函数名字符串 + 阻止裁剪），代价数值由 M1 spike 测量；若代价过高，默认产物 = 精选构建，`--raw-abi` 构建（或 `/full` 子导出）承载全量逃生舱——回填 PRD 决策 ⑦ 的 core/full 裁决。
 
-**构建分发策略：CI 是发布产物唯一来源**——冷全量构建是重任务（分钟到十分钟量级，emsdk 下载数百 MB；实测基线 M1 记录），因此职责分两层：
+**构建分发策略：CI 是一切构建的唯一执行地**（2026-09-03 用户指示：本机零重任务，纪律详见 `.trellis/spec/build-ci/execution-discipline.md`）——开发机不安装/运行 emsdk 等工具链、不执行任何编译；冷全量构建是重任务（分钟到十分钟量级，emsdk 下载数百 MB；实测基线 M1 记录），全部在 GitHub Actions 内完成：
 
-- **本地构建 = 开发迭代**：deps 静态库一次构建后缓存（键 = versions.json），日常改动只 ninja 增量 + emcc 重编 `bindings.cpp` 单文件（秒级）；本地产物**不用于发布**。
+- **本机 = 代码与 workflow**：文件编辑、头文件解析（gen-exports 扫 `allheaders.h`）、npm test/typecheck 级验证；确需本机重构建（如调试 CI 不可复现问题）须用户明确批准。
 - **CI 构建 = 产物唯一来源**：干净环境全量构建；PRD「可复现构建」验收由 CI 证明而非任何本地机器；release workflow（tag 触发）build → test → `npm publish --provenance`（决策 ⑪ 的 provenance 本就要求 CI 内发布）。
-- **CI 缓存分层**（冷构建压回分钟级）：emsdk 按精确版本键；deps 源码 + 静态库产物按 versions.json + 工具链哈希键；原生构建产物同键独立缓存。
+- **CI 缓存分层**（迭代反馈压回分钟级）：emsdk 按精确版本键；deps 源码 + 静态库产物按 versions.json + 工具链哈希键；原生构建产物同键独立缓存。
 - **dist 不入 git**（M0 `.gitignore` 已列）：仓库提交产物有漂移与历史膨胀风险，产物以 workflow artifact / npm 包承载。
 
 ## 4. 双层 API

@@ -31,6 +31,16 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
 
 ## 工具偏好（长期有效）
 
-- 内容检索优先用 `rg`（ripgrep，经 Bash 调用）代替 Grep 工具/Select-String；本机已装 ripgrep 15.2.0（含 PCRE2）。
-- 结构化代码检索（按语法模式而非文本匹配找代码）用 `ast-grep`（CLI 名 `ast-grep`，`sg` 已弃用）；本机已装 ast-grep 0.45.0，规则写法参考 ast-grep skill。
+- **代码/内容检索：`zvec-grep`（zg）为默认首选，优先级高于 `rg`、`ast-grep`（2026-09-03 用户指示）**
+  - **默认 `zvec_grep_search`**：概念、语义、关系、跨文件、架构、"X 如何工作"、数据/控制流、因果/时序、同义改写、"找实现某行为的代码"（以语义而非精确串描述）——一律先 zg。这是默认路径，非可选项。
+  - **`rg` 仅作精确串快速路径**：目标为纯字面量 / 正则 / 配置键 / 报错串 / 穷举出现位置、且已握确切 token 时，才用原生 `rg`（本 host 若列出 `zvec_grep_rg` 则优先用它）。
+  - **`ast-grep` 仅作最后回退**：先 zg；握有具体 AST 模式且 zg 未命中才用（CLI `ast-grep`，`sg` 已弃用；本机 0.45.0，规则参考 ast-grep skill）。
+  - **禁止**：因"rg 更快 / 更熟"而跳过 zg 的语义与关系检索——那恰是 zg 的适用场景，属误用。
+- 回退工具已装：`rg`（ripgrep 15.2.0，含 PCRE2，经 Bash）、`ast-grep` 0.45.0；二者为兜底，非默认。
 - agent 主持的 chatroom/评审人格由主持方直接选定，无需用户逐次确认（2026-09-03 用户指示）。
+
+## 构建与 CI 执行纪律（长期有效，2026-09-03 用户指示）
+
+- **本机零重任务**：不在开发机安装/运行重型工具链（emsdk、编译器套件）或执行任何编译；一切重活走 GitHub CI。本机仅做编辑、头文件/文本解析、npm test/typecheck 级验证；确需本机重构建须用户明确批准。
+- **GitHub Actions 先研究后使用**：workflow 中任何 `uses:` 前，构建其仓库 URL → 查最新 release 与官方文档 → 按文档用法引用；禁止凭记忆写 `@vN`、禁止浮动 `@main`；研究证据（URL、release tag、日期）留 workflow 注释或研究文档。
+- **临时内容路径**：运行期 fetch 的依赖源码/工具链/构建树落 `tmp/`（gitignored，按职能分子目录如 `tmp/deps/`）；参考仓库只读放 `third_party/`（manifest 管理）；产物落 `dist/`；禁止 `build/deps`，不引入 `./temp`。详见 `.trellis/spec/build-ci/execution-discipline.md`。

@@ -1,0 +1,30 @@
+{
+  "emsdk": {
+    "repo": "https://github.com/emscripten-core/emsdk.git",
+    "commit": "5eb0bde7585670252e8ba05e9d361627bffd08b5",
+    "sdkVersion": "6.0.9",
+    "sdkReleaseHash": "f04ea239d533260dd1db760dd2d668d5f9a88d6b",
+    "cmakeTool": "cmake-4.2.0-rc3-64bit",
+    "ninjaTool": "ninja-1.13.2-64bit"
+  },
+  "zlib": {
+    "repo": "https://github.com/madler/zlib.git",
+    "tag": "v1.3.2",
+    "commit": "da607da739fa6047df13e66a2af6b8bec7c2a498"
+  },
+  "libpng": {
+    "repo": "https://github.com/pnggroup/libpng.git",
+    "tag": "v1.6.58",
+    "commit": "3061454d980de7d53608f594194cfac722721d2a"
+  },
+  "libjpeg-turbo": {
+    "repo": "https://github.com/libjpeg-turbo/libjpeg-turbo.git",
+    "tag": "3.2.0",
+    "commit": "c85e6b905bf237038faa936dab160ebfc5da0344"
+  },
+  "leptonica": {
+    "repo": "https://github.com/DanBloomberg/leptonica.git",
+    "tag": "1.87.0",
+    "commit": "13275a278eb55b5746e33f95fbf5a2c8f604b3ab"
+  }
+}
