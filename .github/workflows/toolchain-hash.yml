@@ -1,0 +1,74 @@
+name: toolchain-hash
+
+# Toolchain archive sha256 whitelist recording (M1 review supply W1 +
+# 议题 1 regeneration discipline).
+#
+# `emsdk install` pulls ~430MB of toolchain archives with no content
+# verification (verified against the pinned emsdk.py's download_file —
+# research-vendor-pins.md §4). This workflow installs the pinned toolchain
+# with EMSDK_KEEP_DOWNLOADS=1 and prints the recorded hashes so they can be
+# pasted into vendor/versions.json emsdk.toolchainArchives.
+#
+# Dispatch this on every emsdk pin bump (sdkVersion / cmakeTool / ninjaTool /
+# commit): archive filenames change with the pins, and verify-toolchain.mjs
+# enforces set equality between downloads and the whitelist, so a bump
+# without re-recording fails ci loudly instead of silently verifying against
+# a stale list.
+#
+# Trust model is TOFU: the recorded hashes are as trustworthy as this run's
+# download. Their authority ultimately rests on the git history being
+# review-gated (branch protection, supply W3 — same batch as the whitelist).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  record:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      # v7.0.1 (2026-07-20): https://github.com/actions/checkout/releases/tag/v7.0.1
+      # Same pin+research trail as ci.yml.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      # v7.0.0 (2026-07-14): https://github.com/actions/setup-node/releases/tag/v7.0.0
+      # Same pin+research trail as ci.yml.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 20
+
+      - name: Install pinned toolchain, keep downloads
+        shell: bash
+        run: |
+          # pipefail: the default bash -e would let a failed install hide
+          # behind tee's exit 0 and record hashes of partial archives
+          set -o pipefail
+          PIN_INFO=$(node --input-type=module -e '
+          import { readFileSync } from "node:fs";
+          const v = JSON.parse(readFileSync("vendor/versions.json", "utf8")).emsdk;
+          process.stdout.write(`${v.commit}|${v.sdkVersion}|${v.cmakeTool}|${v.ninjaTool}`);
+          ')
+          IFS="|" read -r EMSDK_COMMIT SDK_VERSION CMAKE_TOOL NINJA_TOOL <<< "$PIN_INFO"
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git tmp/emsdk
+          git -C tmp/emsdk fetch --depth 1 origin "$EMSDK_COMMIT"
+          git -C tmp/emsdk checkout "$EMSDK_COMMIT"
+          EMSDK_KEEP_DOWNLOADS=1 ./tmp/emsdk/emsdk install "$SDK_VERSION" "$CMAKE_TOOL" "$NINJA_TOOL" 2>&1 | tee tmp/emsdk-install.log
+          ./tmp/emsdk/emsdk activate "$SDK_VERSION" "$CMAKE_TOOL" "$NINJA_TOOL"
+
+      - name: Record toolchain archive hashes
+        run: node scripts/verify-toolchain.mjs --record --log tmp/emsdk-install.log
+
+      # v7.0.1 (2026-04-10): https://github.com/actions/upload-artifact/releases/tag/v7.0.1
+      # Same pin+research trail as ci.yml. The run log already carries the
+      # record output; this artifact is a convenience copy for the paste step.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: toolchain-hashes
+          path: tmp/emsdk-install.log
+          if-no-files-found: error
