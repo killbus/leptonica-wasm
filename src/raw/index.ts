@@ -58,6 +58,12 @@ async function importFactory(): Promise<EmscriptenFactory> {
  * survive heap growth (ALLOW_MEMORY_GROWTH).
  */
 export async function loadRaw(options: RawLoadOptions): Promise<RawInstance> {
+  if (options.wasmBinary == null || options.wasmBinary.byteLength === 0) {
+    throw new Error(
+      "loadRaw: wasmBinary is required — read or fetch the full-abi wasm" +
+        " (subpath export \"leptonica-wasm/full-abi/leptonica.wasm\") and pass its bytes",
+    );
+  }
   factoryPromise ??= importFactory();
   const factory = await factoryPromise;
   let memory: WebAssembly.Memory | undefined;
