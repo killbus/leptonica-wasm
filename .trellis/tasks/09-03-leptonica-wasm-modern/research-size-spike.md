@@ -20,7 +20,7 @@
 
 ### 各依赖 CMake 配置
 
-- 公共：`emcmake cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=<install> -DCMAKE_PREFIX_PATH=<install> -DCMAKE_POLICY_VERSION_MINIMUM=3.5`。`CMAKE_POLICY_VERSION_MINIMUM=3.5` 为预置防御 flag（CMake 4.x 移除 <3.5 兼容的官方逃生阀）；M1 评审复核（2026-09-04）：四个依赖树内全部声明 ≥3.10（zlib `3.12...3.31` / libpng `3.14...4.2` / libjpeg-turbo `3.15...3.28` / leptonica `3.10`），无任何 <3.5 声明，该 flag 必要性未复现——M2 验证移除（评审 build-eng N1）。
+- 公共：`emcmake cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=<install> -DCMAKE_PREFIX_PATH=<install>`。`CMAKE_POLICY_VERSION_MINIMUM=3.5` 原为预置防御 flag（CMake 4.x 移除 <3.5 兼容的官方逃生阀）；M1 评审复核（2026-09-04）：四个依赖树内全部声明 ≥3.10（zlib `3.12...3.31` / libpng `3.14...4.2` / libjpeg-turbo `3.15...3.28` / leptonica `3.10`），无任何 <3.5 声明，该 flag 必要性未复现——**已于 M2 移除**（build.mjs，评审 build-eng N1），移除后四依赖冷配置由携带该变更的 ci run 验证。
 - zlib：`-DZLIB_BUILD_SHARED=OFF -DZLIB_BUILD_TESTING=OFF`。
 - libpng：`-DPNG_SHARED=OFF -DPNG_STATIC=ON -DPNG_TESTS=OFF -DPNG_TOOLS=OFF` + 显式 `ZLIB_LIBRARY` / `ZLIB_INCLUDE_DIR` 指向安装前缀。
 - libjpeg-turbo：`-DWITH_SIMD=OFF`（SIMD 汇编只覆盖 x86/ARM 原生目标，wasm 不可用）+ `-DENABLE_SHARED=OFF`。

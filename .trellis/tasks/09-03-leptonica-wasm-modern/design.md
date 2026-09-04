@@ -74,7 +74,7 @@ leptonica-wasm/
 2. 逐依赖 `emcmake cmake + ninja` 构建静态库（zlib → libpng → libjpeg-turbo → leptonica）。
 3. `em++` 编译 `cpp/bindings.cpp` 并链接全部静态库 → 单 `leptonica.wasm` + ESM glue（M1 实测：embind RTTI 需 C++ 驱动链接，`emcc` 留下未定义的 `__cxxabiv1` 符号）。
 
-**Leptonica CMake 开关**（起点组合，构建期调通为准）：`HAVE_LIBJPEG/LIBPNG` 留，`LIBWEBP/OPENJPEG/GIFLIB` 全 OFF；`-DCMAKE_POLICY_VERSION_MINIMUM=3.5`（tesseract-wasm 已验证）。
+**Leptonica CMake 开关**（起点组合，构建期调通为准）：`HAVE_LIBJPEG/LIBPNG` 留，`LIBWEBP/OPENJPEG/GIFLIB` 全 OFF；`-DCMAKE_POLICY_VERSION_MINIMUM=3.5` 已于 M2 移除（四依赖树全声明 ≥3.10，必要性未复现——M1 评审 build-eng N1 裁决）。
 
 **编译参数**（起点）：
 

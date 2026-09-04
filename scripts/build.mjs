@@ -106,6 +106,13 @@ function buildDep(dep, jobs, pin) {
   if (existsSync(doneMarker) && readFileSync(doneMarker, "utf8") === doneKey) return;
   const srcDir = join(depsRoot, dep.name);
   mkdirSync(buildDir, { recursive: true });
+  // No CMAKE_POLICY_VERSION_MINIMUM: all four dep trees declare
+  // cmake_minimum_required >= 3.10 (zlib 3.12...3.31 / libpng 3.14...4.2 /
+  // libjpeg-turbo 3.15...3.28 / leptonica 3.10 — M1 review build-eng N1),
+  // so the CMake-4.x de-Compatibility escape hatch was a preset defensive
+  // flag with no reproduced necessity. Removal validated by the ci run that
+  // first carried this change (cache keys rotate via hashFiles(build.mjs)
+  // and force a cold configure of all four deps).
   run(
     "emcmake",
     [
@@ -115,7 +122,6 @@ function buildDep(dep, jobs, pin) {
       "-DCMAKE_BUILD_TYPE=Release",
       `-DCMAKE_INSTALL_PREFIX=${installRoot}`,
       `-DCMAKE_PREFIX_PATH=${installRoot}`,
-      "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
       ...dep.extra,
       srcDir,
     ],
