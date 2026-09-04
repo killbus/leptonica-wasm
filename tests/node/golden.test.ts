@@ -153,10 +153,20 @@ describe.skipIf(!goldensPresent || !distPresent)('golden chains (oracle comparis
       expect(Math.abs(got.skewConf - goldenJson.skewConf)).toBeLessThanOrEqual(CONF_TOL)
       expect(got.pixelCount).toBe(goldenJson.pixelCount)
       expect(got.connCompCount).toBe(goldenJson.connCompCount)
+      // Query-scoped assertions: the oracle JSON always carries all scalar
+      // fields (zero-initialized), but the wasm side only populates the
+      // fields a chain's queries select. Compare only what the chain asked
+      // for — a chain without the histogram query has [] here, not the
+      // oracle's 256 zeros.
+      const queryKinds = new Set(chain.queries.map((q) => q.query))
       // Full-bin equality: every one of the 256 bins must match exactly —
       // a summed-only check would pass with compensating bin errors.
-      expect(got.histogram).toEqual(goldenJson.histogram)
-      expect(Math.abs(got.averageValue - goldenJson.average)).toBeLessThanOrEqual(CONF_TOL)
+      if (queryKinds.has('histogram')) {
+        expect(got.histogram).toEqual(goldenJson.histogram)
+      }
+      if (queryKinds.has('average')) {
+        expect(Math.abs(got.averageValue - goldenJson.average)).toBeLessThanOrEqual(CONF_TOL)
+      }
     }
   })
 })
