@@ -31,6 +31,9 @@ interface ChainResult {
   skewAngle: number
   skewConf: number
   pixelCount: number
+  connCompCount: number
+  histogram: number[]
+  averageValue: number
 }
 
 const SKEW_TOL = 1e-3 // radians — wasm/native float paths can differ in ulps
@@ -87,6 +90,9 @@ async function playChain(w: number, h: number, ops: readonly Op[], queries: read
   let skewAngle = 0
   let skewConf = 0
   let pixelCount = 0
+  let connCompCount = 0
+  let histogram: number[] = []
+  let averageValue = 0
   for (const q of queries) {
     if (q.query === 'findSkew') {
       const r = L.findSkew(pix)
@@ -97,9 +103,22 @@ async function playChain(w: number, h: number, ops: readonly Op[], queries: read
       const n = L.countPixels(pix)
       if (n < 0) throw new Error('countPixels failed')
       pixelCount = n
+    } else if (q.query === 'connComp') {
+      const boxes = L.connComp(pix)
+      if (boxes === null) throw new Error('connComp returned null')
+      connCompCount = boxes.length as number
+    } else if (q.query === 'histogram') {
+      const bins = L.histogram(pix)
+      if (bins === null) throw new Error('histogram returned null')
+      histogram = bins as number[]
+      if (histogram.length !== 256) throw new Error(`histogram length ${histogram.length} != 256`)
+    } else if (q.query === 'average') {
+      const avg = L.average(pix)
+      if (avg === null) throw new Error('average returned null')
+      averageValue = avg as number
     }
   }
-  return { png, skewAngle, skewConf, pixelCount }
+  return { png, skewAngle, skewConf, pixelCount, connCompCount, histogram, averageValue }
 }
 
 describe.skipIf(!goldensPresent || !distPresent)('golden chains (oracle comparison)', () => {
@@ -115,6 +134,9 @@ describe.skipIf(!goldensPresent || !distPresent)('golden chains (oracle comparis
         skewAngle: number
         skewConf: number
         pixelCount: number
+        connCompCount: number
+        histogram: number[]
+        average: number
       }
       const got = await playChain(chain.width, chain.height, chain.ops, chain.queries)
       // PNG: byte-identical. Both sides use the same zlib/libpng pins and
@@ -130,6 +152,21 @@ describe.skipIf(!goldensPresent || !distPresent)('golden chains (oracle comparis
       expect(Math.abs(got.skewAngle - goldenJson.skewAngle)).toBeLessThanOrEqual(SKEW_TOL)
       expect(Math.abs(got.skewConf - goldenJson.skewConf)).toBeLessThanOrEqual(CONF_TOL)
       expect(got.pixelCount).toBe(goldenJson.pixelCount)
+      expect(got.connCompCount).toBe(goldenJson.connCompCount)
+      // Query-scoped assertions: the oracle JSON always carries all scalar
+      // fields (zero-initialized), but the wasm side only populates the
+      // fields a chain's queries select. Compare only what the chain asked
+      // for — a chain without the histogram query has [] here, not the
+      // oracle's 256 zeros.
+      const queryKinds = new Set(chain.queries.map((q) => q.query))
+      // Full-bin equality: every one of the 256 bins must match exactly —
+      // a summed-only check would pass with compensating bin errors.
+      if (queryKinds.has('histogram')) {
+        expect(got.histogram).toEqual(goldenJson.histogram)
+      }
+      if (queryKinds.has('average')) {
+        expect(Math.abs(got.averageValue - goldenJson.average)).toBeLessThanOrEqual(CONF_TOL)
+      }
     }
   })
 })

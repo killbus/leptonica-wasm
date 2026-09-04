@@ -353,5 +353,42 @@
         "query": "countPixels"
       }
     ]
+  },
+  {
+    "name": "queries-connComp",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "toGray"
+      },
+      {
+        "op": "threshold",
+        "level": 128
+      }
+    ],
+    "queries": [
+      {
+        "query": "connComp"
+      }
+    ]
+  },
+  {
+    "name": "queries-histogram-average",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "toGray"
+      }
+    ],
+    "queries": [
+      {
+        "query": "histogram"
+      },
+      {
+        "query": "average"
+      }
+    ]
   }
 ]
