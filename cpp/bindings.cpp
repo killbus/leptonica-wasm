@@ -183,24 +183,22 @@ PIX *morphClose(PIX *pix, int w, int h) {
 }
 
 PIX *bitwiseOr(PIX *pix, PIX *other) {
-  PIX *out = pixCopy(nullptr, pix);
-  if (!out) return nullptr;
-  if (pixOr(out, pix, other) != 0) { pixDestroy(&out); return nullptr; }
-  return out;
+  if (!pix || !other) return nullptr;
+  /* pixOr returns pixd (PIX*), NOT a status code — the previous form
+   * compared the returned pointer against 0 and destroyed a valid
+   * result on every success. Case (a): pixd=NULL lets pixOr allocate
+   * and copy internally. */
+  return pixOr(nullptr, pix, other);
 }
 
 PIX *bitwiseAnd(PIX *pix, PIX *other) {
-  PIX *out = pixCopy(nullptr, pix);
-  if (!out) return nullptr;
-  if (pixAnd(out, pix, other) != 0) { pixDestroy(&out); return nullptr; }
-  return out;
+  if (!pix || !other) return nullptr;
+  return pixAnd(nullptr, pix, other);
 }
 
 PIX *bitwiseXor(PIX *pix, PIX *other) {
-  PIX *out = pixCopy(nullptr, pix);
-  if (!out) return nullptr;
-  if (pixXor(out, pix, other) != 0) { pixDestroy(&out); return nullptr; }
-  return out;
+  if (!pix || !other) return nullptr;
+  return pixXor(nullptr, pix, other);
 }
 
 PIX *blend(PIX *pix, PIX *other, float frac) {

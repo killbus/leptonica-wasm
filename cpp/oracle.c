@@ -236,12 +236,13 @@ static PIX *opMorph(PIX *src, const char *kind, int w, int h) {
 }
 
 static PIX *opBitwise(PIX *src, PIX *other, const char *kind) {
-    PIX *out = pixCopy(NULL, src);
-    if (!out) return NULL;
-    if (!strcmp(kind, "or")) { pixOr(out, src, other); return out; }
-    if (!strcmp(kind, "and")) { pixAnd(out, src, other); return out; }
-    if (!strcmp(kind, "xor")) { pixXor(out, src, other); return out; }
-    pixDestroy(&out);
+    /* Form (a) — pixd=NULL allocates internally; returns pixd or NULL.
+     * Mirrors bindings.cpp bitwiseOr/And/Xor 1:1 (the previous copy
+     * form worked by accident: the guard checks pixd == pixs2, and the
+     * copied dest never equals either operand). */
+    if (!strcmp(kind, "or")) return pixOr(NULL, src, other);
+    if (!strcmp(kind, "and")) return pixAnd(NULL, src, other);
+    if (!strcmp(kind, "xor")) return pixXor(NULL, src, other);
     return NULL;
 }
 
