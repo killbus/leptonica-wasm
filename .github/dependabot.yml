@@ -1,0 +1,42 @@
+# Dependabot config (M2 supply chain, checklist item 4).
+#
+# - github-actions ecosystem is explicit (M1 review supply W2a): action pins
+#   are commit-SHA pinned per Rule 2 (research-before-pin), and without this
+#   ecosystem in dependabot they would never be flagged for updates — pin
+#   staleness would rot silently. Dependabot updates the SHA and the @vN
+#   suffix together, keeping the research trail (release tag in the comment)
+#   verifiable.
+# - npm is grouped: this tree is small (typescript / vitest / @types/node),
+#   but TS 7.x is on a patch cadence worth watching in one PR rather than
+#   three (M0 review backfill: 依赖升级自动化分组小步，盯 TS 7.x 补丁链).
+# - schedule: weekly, off the top of the hour to spread load.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:17"
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(deps)"
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:17"
+    groups:
+      dev-deps:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(deps)"
+    # devDependencies only in this tree (typescript, vitest, @types/node);
+    # --ignore-scripts is the CI posture, so install-script changes in any
+    # newly added dep surface in review, not at install time.
+    allow:
+      - dependency-type: direct
+      - dependency-type: indirect
