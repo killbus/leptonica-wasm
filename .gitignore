@@ -9,3 +9,6 @@ coverage/
 .zvec-grep/
 third_party/*
 !third_party/manifest.json
+
+# M4 golden oracle outputs (regenerated in CI every run; never a repo fixture)
+tests/golden/goldens/

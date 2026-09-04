@@ -1,0 +1,357 @@
+[
+  {
+    "name": "toGray-default",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "toGray"
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "toGray-custom-weights",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "toGray",
+        "weights": [
+          0.2126,
+          0.7152,
+          0.0722
+        ]
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "toGray-threshold",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "toGray"
+      },
+      {
+        "op": "threshold",
+        "level": 128
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "toGray-otsu-defaults",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "toGray"
+      },
+      {
+        "op": "otsu"
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "toGray-otsu-explicit",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "toGray"
+      },
+      {
+        "op": "otsu",
+        "tile": 32,
+        "factor": 0.2
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "toGray-sauvola",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "toGray"
+      },
+      {
+        "op": "sauvola",
+        "whsize": 10,
+        "factor": 0.34
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "toGray-sobel-all",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "toGray"
+      },
+      {
+        "op": "sobel"
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "toGray-sobel-vertical",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "toGray"
+      },
+      {
+        "op": "sobel",
+        "orientation": "v"
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "toGray-deskew",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "toGray"
+      },
+      {
+        "op": "threshold",
+        "level": 128
+      },
+      {
+        "op": "deskew"
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "toGray-threshold-dilate",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "toGray"
+      },
+      {
+        "op": "threshold",
+        "level": 128
+      },
+      {
+        "op": "dilate",
+        "w": 3,
+        "h": 3
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "toGray-threshold-erode",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "toGray"
+      },
+      {
+        "op": "threshold",
+        "level": 128
+      },
+      {
+        "op": "erode",
+        "w": 3,
+        "h": 3
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "toGray-threshold-open",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "toGray"
+      },
+      {
+        "op": "threshold",
+        "level": 128
+      },
+      {
+        "op": "open",
+        "w": 5,
+        "h": 5
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "toGray-threshold-close",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "toGray"
+      },
+      {
+        "op": "threshold",
+        "level": 128
+      },
+      {
+        "op": "close",
+        "w": 5,
+        "h": 5
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "rotate-area",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "rotate",
+        "angle": 0.15,
+        "quality": "area"
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "rotate-shear",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "rotate",
+        "angle": 0.15,
+        "quality": "shear"
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "shear-h",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "shear",
+        "direction": "h",
+        "angle": 0.1
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "shear-v",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "shear",
+        "direction": "v",
+        "angle": 0.1
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "scale-uniform",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "scale",
+        "fx": 1.5
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "scale-anisotropic",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "scale",
+        "fx": 1.5,
+        "fy": 0.5
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "clip",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "clip",
+        "x": 8,
+        "y": 8,
+        "w": 24,
+        "h": 24
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "translate",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "translate",
+        "dx": 5,
+        "dy": -3
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "addBorder",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "addBorder",
+        "t": 4,
+        "val": 0
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "queries-findSkew-countPixels",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "toGray"
+      },
+      {
+        "op": "threshold",
+        "level": 128
+      }
+    ],
+    "queries": [
+      {
+        "query": "findSkew"
+      },
+      {
+        "query": "countPixels"
+      }
+    ]
+  }
+]

@@ -12,9 +12,10 @@ jobs:
   # Native oracle harness (M4, design §7.2): the correctness anchor is a
   # native leptonica build from the same versions.json pins — a different
   # toolchain than the wasm build, so wasm-vs-oracle agreement cannot be
-  # self-confirming. M4 is mid-flight: this job only builds and uploads the
-  # oracle binary; golden generation + wasm-side comparison wire up in the
-  # Test step later in the milestone.
+  # self-confirming. This job also regenerates the golden chains every run
+  # (tests/golden/chains.json → goldens/) and uploads them for the ci job's
+  # Test step — goldens are never a repo fixture, they are re-derived from
+  # the pinned oracle on every CI run.
   native-oracle:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -56,11 +57,27 @@ jobs:
       - name: Build native oracle
         run: node scripts/build-native.mjs --jobs 4
 
+      # Golden generation: same deterministic RGBA input (generate-rgba.mjs
+      # has no RNG) replayed through the native oracle. The goldens/ dir is
+      # gitignored — CI is its only producer.
+      - name: Generate goldens
+        run: node scripts/run-oracle.mjs tmp/build-native/oracle/oracle
+
+      # Sanity: every chain must have produced both artifacts (a missing
+      # png/json would otherwise surface as a confusing skip downstream).
+      - name: Verify golden artifact count
+        run: |
+          n=$(ls tests/golden/goldens/*.png | wc -l)
+          m=$(ls tests/golden/goldens/*.json | wc -l)
+          c=$(node -e "process.stdout.write(String(JSON.parse(require('fs').readFileSync('tests/golden/chains.json','utf8')).length))")
+          echo "goldens: $n png / $m json / $c chains"
+          test "$n" -eq "$c" && test "$m" -eq "$c"
+
       # v7.0.1 (2026-04-10): https://github.com/actions/upload-artifact/releases/tag/v7.0.1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: native-oracle
-          path: tmp/build-native/oracle/oracle
+          name: goldens
+          path: tests/golden/goldens
           if-no-files-found: error
 
   ci:
@@ -204,6 +221,22 @@ jobs:
 
       - name: Smoke test (full ABI)
         run: node scripts/smoke.mjs --full-abi dist/full-abi
+
+      # v8.0.1 (2026-03-11): https://github.com/actions/download-artifact/releases/tag/v8.0.1
+      # Goldens from the native-oracle job land in tests/golden/goldens/
+      # (gitignored — CI regenerated, never a repo fixture). The golden
+      # suite below replays the same chains through the wasm bindings and
+      # compares against these files.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: goldens
+          path: tests/golden/goldens
+
+      # Guard: the golden suite must actually run — a missing goldens dir
+      # would turn it into a vacuous skip (same posture as the full-abi
+      # guard above, M3 review lesson).
+      - name: Goldens present
+        run: test -f tests/golden/goldens/queries-findSkew-countPixels.json
 
       # npm test runs AFTER the full-abi build: the raw-layer unit tests
       # instantiate dist/full-abi artifacts (M3). Dev machines have no build
