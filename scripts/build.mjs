@@ -159,6 +159,9 @@ function writeFullAbiExports(outDir) {
   // Loose raw-layer d.ts (design §6): name-level presence with a single
   // loose signature per symbol, generated alongside the exports list so the
   // two can never drift apart.
+  // outDir is created here, not in linkOutputs(): on a cold build (no
+  // dist/full-abi yet) this runs first and would otherwise ENOENT.
+  mkdirSync(outDir, { recursive: true });
   writeFileSync(join(outDir, "leptonica-raw.d.ts"), renderLooseDts(filtered));
   return exportsPath;
 }
