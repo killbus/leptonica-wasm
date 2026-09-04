@@ -72,3 +72,48 @@
 ### Next Steps
 
 - None - task complete
+
+## 2026-09-04 M4 native oracle harness (mid-flight check closed)
+
+- src/protocol.ts Op tagged union + OP_DEPTH_RULES landed (shear.direction /
+  rotate.quality / sobel.orientation strings + toGray.weights array — the
+  field-name parsing in oracle.c mirrors this schema).
+- cpp/oracle.c: parses the same op JSON, runs chains on native leptonica
+  (same pins), emits golden PNG + scalar JSON. m4-check findings F1-F14 all
+  cleared: 8/8/4-param fixes (otsu/sauvola/DWA), applyOp by-field parsing
+  with per-op defaults, pixRotate (1bpp-capable) for rotate, center shears,
+  L_BRING_IN_WHITE, ci comment accuracy, native deps cache layer, stale
+  source rmSync parity.
+- scripts/build-native.mjs + ci.yml native-oracle job (builds + uploads
+  oracle binary artifact). First run caught a real compile error (pixBlend
+  dest-arg misuse — pin signature is 5 params, no dest); fixed and amended.
+- CI run 33917740452 all four jobs green (ci / reproducibility /
+  native-oracle / compare) @ 9f3be74. oracle.c compile now CI-verified.
+- Binary-op golden strategy (F5): same-image idempotence — harness runs
+  both operands on the chain image; other handle id is read but unused.
+  Recorded in code comments.
+
+## 2026-09-04 M4 core layer CI red rounds closed (dc49240)
+
+- Red round 1 (fe214b5): runChain wrapped raw PixHandle intermediates as
+  Pix via lp.adopt(); core parity binary-op operands fixed (or/and/xor
+  replayPrefix to 1bpp, blend passes 32bpp src) + idempotence invariant
+  tests added; mutation-smoke anchor re-anchored to no-semicolon form.
+  CI: only Consumer fixture step red.
+- Root cause of red round 2: package.json exports pointed types at .ts
+  sources — consumer tsc with skipLibCheck:false compiled package sources
+  in the consumer program (TS5097 .ts imports, TS2614 ambient module
+  outside program, TS2584 missing DOM). This was exactly the M3 review B1
+  waiver condition: F16 consumer fixture turning hard gate.
+- Fix (dc49240): scripts/gen-types.mjs three-step d.ts emission to
+  dist/types (tsc emitDeclarationOnly via paths shim → specifier rewrite
+  to relative form → plain-module twin of the ambient glue +
+  emscripten-glue-shape.d.ts copy). exports types → dist/types/*.d.ts,
+  import stays ./src/*.ts (source-direct runtime model). Caught pre-commit:
+  import conditions had wrongly pointed at dist artifacts (leptonica.mjs
+  is the Emscripten factory without named exports — runtime import would
+  break); corrected to src before commit.
+- CI run 33928265707 all five checks green (ci / compare / gitleaks /
+  native-oracle / reproducibility). Consumer fixture step now runs
+  gen-types then tsc + attw (esm-only profile; node10/CJS waived per
+  ADR 1). M4 implement.md checklist fully checked.

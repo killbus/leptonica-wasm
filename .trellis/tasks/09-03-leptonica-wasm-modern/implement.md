@@ -73,13 +73,13 @@
 
 ## M4 精选层同步核心 ★评审门 2
 
-- [ ] native oracle harness（C 程序）：解析与 `protocol.ts` 同构的 Op JSON + 输入图 → 跑同一批算子链 → 产出金样（PNG/标量）；CI 原生构建复用 versions.json 全部 pin
-- [ ] **测试先行**：每算子先写含 oracle 金样断言的测试并确认失败（红）→ 再写 `cpp/bindings.cpp` embind 实现（按 design §4.2 映射表逐函数对 `allheaders.h` 核实选型，含 `pixGetRGBAPixels` 存在性、translate 组合方案）→ 变绿；红→绿提交历史可查
-- [ ] `src/protocol.ts`：`Op` tagged union 完整版（harness 与 TS 端共用 schema）
-- [ ] `src/core/`：TS 包装（Pix `Symbol.dispose` + 毒化 + FinalizationRegistry 报警、chain builder、查询、提取、depth 校验规则）
-- [ ] 补充不变量单测：deskew 角度恢复、otsu 双峰、dilate 单调、**1bpp depth 保持**、类型规则 throw、毒化行为
-- [ ] M2 评审回填：oracle harness 吸收 toGray 金样时期望值改硬编码字面量 + 判别矩阵注释（F4——grayAnchor 运行时计算是第二实现非独立观测）；变异冒烟升级为 warning 级验收项 + 持久化脚本（F5——M2 四路变异是纸面证据，不可复跑）
-- [ ] d.ts 消费者视角验证（M0 评审 F16）：consumer fixture 以 skipLibCheck:false 编译 + arethetypeswrong
+- [x] native oracle harness（C 程序）：解析与 `protocol.ts` 同构的 Op JSON + 输入图 → 跑同一批算子链 → 产出金样（PNG/标量）；CI 原生构建复用 versions.json 全部 pin
+- [x] **测试先行**：每算子先写含 oracle 金样断言的测试并确认失败（红）→ 再写 `cpp/bindings.cpp` embind 实现（按 design §4.2 映射表逐函数对 `allheaders.h` 核实选型，含 `pixGetRGBAPixels` 存在性、translate 组合方案）→ 变绿；红→绿提交历史可查
+- [x] `src/protocol.ts`：`Op` tagged union 完整版（harness 与 TS 端共用 schema）
+- [x] `src/core/`：TS 包装（Pix `Symbol.dispose` + 毒化 + FinalizationRegistry 报警、chain builder、查询、提取、depth 校验规则）
+- [x] 补充不变量单测：deskew 角度恢复、otsu 双峰、dilate 单调、**1bpp depth 保持**、类型规则 throw、毒化行为
+- [x] M2 评审回填：oracle harness 吸收 toGray 金样时期望值改硬编码字面量 + 判别矩阵注释（F4——grayAnchor 运行时计算是第二实现非独立观测）；变异冒烟升级为 warning 级验收项 + 持久化脚本（F5——M2 四路变异是纸面证据，不可复跑）
+- [x] d.ts 消费者视角验证（M0 评审 F16）：consumer fixture 以 skipLibCheck:false 编译 + arethetypeswrong
 - 验证：vitest 全绿 + oracle 比对全绿（PNG 逐字节、标量容差）；**变异冒烟**——故意破坏一个参数映射 → 测试必须红，恢复 → 绿；`--emit-tsd` 生成 d.ts 且 check-exports 通过
 - 评审门：API 面走查（对照 PRD 8 类算子清单逐项确认）+ 抽查红→绿提交历史，用户确认后进 M5
 - 回滚点：逐算子独立提交，revert 单算子不动全局
