@@ -25,7 +25,7 @@ jobs:
         with:
           node-version: 20
 
-      - name: Test
+      - name: Install dependencies and typecheck
         run: |
           # --ignore-scripts: defense-in-depth against install-script supply
           # chain vectors (M0 review F14; M1 review supply N1 pulled this
@@ -137,12 +137,6 @@ jobs:
       - name: Check exports (default)
         run: node scripts/check-exports.mjs dist
 
-      # npm test runs AFTER the builds: the raw-layer unit tests instantiate
-      # dist/full-abi artifacts (M3) — dev machines have no build (zero-build
-      # discipline), CI runs the full suite.
-      - name: Test
-        run: npm test
-
       - name: Smoke test (default)
         run: node scripts/smoke.mjs dist
 
@@ -156,6 +150,16 @@ jobs:
 
       - name: Smoke test (full ABI)
         run: node scripts/smoke.mjs --full-abi dist/full-abi
+
+      # npm test runs AFTER the full-abi build: the raw-layer unit tests
+      # instantiate dist/full-abi artifacts (M3). Dev machines have no build
+      # (zero-build discipline) and skip without them — but CI must run the
+      # full suite, so fail loudly if the artifact is missing here rather
+      # than letting describe.skipIf turn this step vacuously green.
+      - name: Test
+        run: |
+          test -f dist/full-abi/leptonica.wasm
+          npm test
 
       - name: Determinism check (same runner)
         # Relink from the same .a files and compare all four artifacts —

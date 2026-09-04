@@ -12,13 +12,21 @@ const artifactsPresent = existsSync(wasmPath)
 
 describe.skipIf(!artifactsPresent)('raw layer', () => {
   it('instantiates and calls _pixCreate', async () => {
-    const { raw } = await loadRaw({ wasmBinary: readFileSync(wasmPath) })
+    const { raw, memory } = await loadRaw({ wasmBinary: readFileSync(wasmPath) })
     expect(typeof raw._pixCreate).toBe('function')
     const create = raw._pixCreate as RawFunction
     const pix = create(1, 1, 32)
     expect(pix).toBeGreaterThan(0)
+    // pixDestroy takes PIX** (it nulls the caller's slot), not PIX*:
+    // stage the pointer in a heap slot and pass the slot address, matching
+    // the C signature in allheaders.h. Passing the pix pointer directly is
+    // silent UB — the struct gets treated as a pointer slot (bogus free,
+    // clobbered width field).
     const destroy = raw._pixDestroy as RawVoidFunction
-    destroy(pix)
+    const slot = raw._malloc(4)
+    new Int32Array(memory.buffer, slot, 1)[0] = pix
+    destroy(slot)
+    raw._free(slot)
   })
 
   it('malloc/free round-trips through heap views', async () => {
@@ -29,6 +37,15 @@ describe.skipIf(!artifactsPresent)('raw layer', () => {
     view[0] = 42
     expect(view[0]).toBe(42)
     raw._free(ptr)
+  })
+
+  it('rejects instead of hanging when the wasm bytes are invalid', async () => {
+    // loadRaw races the factory promise against a failure side-channel:
+    // Emscripten's instantiateWasm callback has no error channel, so without
+    // the race a failed instantiation would leave the promise pending
+    // forever. This test fails by timeout if that regression returns.
+    const garbage = new Uint8Array(8)
+    await expect(loadRaw({ wasmBinary: garbage })).rejects.toThrow()
   })
 
   it('exposes a broad raw symbol surface', async () => {
