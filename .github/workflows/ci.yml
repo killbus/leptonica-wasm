@@ -9,6 +9,60 @@ permissions:
   contents: read
 
 jobs:
+  # Native oracle harness (M4, design §7.2): the correctness anchor is a
+  # native leptonica build from the same versions.json pins — a different
+  # toolchain than the wasm build, so wasm-vs-oracle agreement cannot be
+  # self-confirming. M4 is mid-flight: this job only builds and uploads the
+  # oracle binary; golden generation + wasm-side comparison wire up in the
+  # Test step later in the milestone.
+  native-oracle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      # v7.0.1 (2026-07-20): https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      # v7.0.0 (2026-07-14): https://github.com/actions/setup-node/releases/tag/v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 20
+
+      # v6.1.0 (2026-06-26): https://github.com/actions/cache/releases/tag/v6.1.0
+      # Native deps layer (design 3: native build products get their own
+      # cache). Same actions/cache pin as the ci job's cache steps (already
+      # researched there). Keyed by dep pins + the native build script
+      # itself (configure flags live in build-native.mjs, the same
+      # over-approximation the ci job documents for build.mjs). No emsdk
+      # dimension: the host toolchain is the ubuntu-24.04 image. The .done
+      # marker in the restored tree re-validates [pin, flags] on build, so
+      # a stale or poisoned entry re-compiles rather than shipping wrong
+      # bytes. tmp/deps is shared with the ci job's deps cache by design:
+      # each job restores its own snapshot; the native .done markers live
+      # under tmp/build-native/ and the wasm markers under tmp/build/, so
+      # the two marker namespaces cannot collide.
+      - name: Cache native deps
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            tmp/deps
+            tmp/downloads
+            tmp/build-native
+          key: native-deps-${{ hashFiles('vendor/versions.json', 'scripts/build-native.mjs') }}
+
+      # Host cmake/ninja (ubuntu-24.04 preinstalled) build the four pinned
+      # deps natively — no emsdk involved, no toolchain cache to verify.
+      - name: Build native oracle
+        run: node scripts/build-native.mjs --jobs 4
+
+      # v7.0.1 (2026-04-10): https://github.com/actions/upload-artifact/releases/tag/v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: native-oracle
+          path: tmp/build-native/oracle/oracle
+          if-no-files-found: error
+
   ci:
     # Pinned image: ubuntu-latest is a moving target (monthly image rolls,
     # preinstalled toolchain changes unannounced) — M1 review supply N4.
