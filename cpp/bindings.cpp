@@ -36,6 +36,33 @@ PIX *fromRGBA(val data, int w, int h) {
   return pix;
 }
 
+/* Curated-layer lifetime helpers (M4 core). The chain builder owns Pix
+ * handles; these expose the three facts it needs from C:
+ *   - destroyPix: pixDestroy(&p) semantics (NULLs the caller's slot).
+ *     Embind's class_<PIX> has no destructor registration, so without
+ *     this the TS layer would have no way to free a Pix at all.
+ *   - pixWidth/pixHeight/pixDepth: read-only geometry for getters and
+ *     the chain-build depth cursor. All three are O(1) field reads in
+ *     pix1.c; validating before every op would be redundant with the
+ *     curated layer's own checks, so they stay plain accessors.
+ *     (dimensions live in the PIX struct; there is no "invalid" Pix to
+ *     detect here — null is the only failure mode.) */
+void destroyPix(PIX *pix) {
+  pixDestroy(&pix);
+}
+
+int pixWidth(PIX *pix) {
+  return pix ? pixGetWidth(pix) : -1;
+}
+
+int pixHeight(PIX *pix) {
+  return pix ? pixGetHeight(pix) : -1;
+}
+
+int pixDepth(PIX *pix) {
+  return pix ? pixGetDepth(pix) : -1;
+}
+
 PIX *toGray(PIX *pix) {
   if (!pix) return nullptr;
   return pixConvertTo8(pix, 0);
@@ -296,6 +323,10 @@ val toRGBA(PIX *pix) {
 
 EMSCRIPTEN_BINDINGS(leptonica_wasm) {
   emscripten::class_<PIX>("Pix");
+  emscripten::function("destroyPix", &destroyPix, emscripten::allow_raw_pointers());
+  emscripten::function("pixWidth", &pixWidth, emscripten::allow_raw_pointers());
+  emscripten::function("pixHeight", &pixHeight, emscripten::allow_raw_pointers());
+  emscripten::function("pixDepth", &pixDepth, emscripten::allow_raw_pointers());
   emscripten::function("fromRGBA", &fromRGBA, emscripten::allow_raw_pointers());
   emscripten::function("toGray", &toGray, emscripten::allow_raw_pointers());
   emscripten::function("toGrayWeighted", &toGrayWeighted, emscripten::allow_raw_pointers());

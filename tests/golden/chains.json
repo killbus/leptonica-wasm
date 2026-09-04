@@ -135,6 +135,20 @@
     "queries": []
   },
   {
+    "name": "toGray-deskew-gray",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "toGray"
+      },
+      {
+        "op": "deskew"
+      }
+    ],
+    "queries": []
+  },
+  {
     "name": "toGray-threshold-dilate",
     "width": 48,
     "height": 48,
@@ -210,6 +224,76 @@
         "op": "close",
         "w": 5,
         "h": 5
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "toGray-threshold-or",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "toGray"
+      },
+      {
+        "op": "threshold",
+        "level": 128
+      },
+      {
+        "op": "or",
+        "other": 1
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "toGray-threshold-and",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "toGray"
+      },
+      {
+        "op": "threshold",
+        "level": 128
+      },
+      {
+        "op": "and",
+        "other": 1
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "toGray-threshold-xor",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "toGray"
+      },
+      {
+        "op": "threshold",
+        "level": 128
+      },
+      {
+        "op": "xor",
+        "other": 1
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "blend",
+    "width": 48,
+    "height": 48,
+    "ops": [
+      {
+        "op": "blend",
+        "other": 1,
+        "frac": 0.5
       }
     ],
     "queries": []
