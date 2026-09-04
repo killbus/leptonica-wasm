@@ -5,7 +5,33 @@
     "sdkVersion": "6.0.9",
     "sdkReleaseHash": "f04ea239d533260dd1db760dd2d668d5f9a88d6b",
     "cmakeTool": "cmake-4.2.0-rc3-64bit",
-    "ninjaTool": "ninja-1.13.2-64bit"
+    "ninjaTool": "ninja-1.13.2-64bit",
+    "toolchainArchives": [
+      {
+        "file": "cmake-4.2.0-rc3-linux-x86_64.tar.gz",
+        "url": "https://github.com/Kitware/CMake/releases/download/v4.2.0-rc3/cmake-4.2.0-rc3-linux-x86_64.tar.gz",
+        "bytes": 58188723,
+        "sha256": "ebdfb90357295de659d1fe9c0a1274215cb210acff0cccf1b6f637d10cc2b22d"
+      },
+      {
+        "file": "f04ea239d533260dd1db760dd2d668d5f9a88d6b-wasm-binaries.tar.xz",
+        "url": "https://storage.googleapis.com/webassembly/emscripten-releases-builds/linux/f04ea239d533260dd1db760dd2d668d5f9a88d6b/wasm-binaries.tar.xz",
+        "bytes": 298541944,
+        "sha256": "d5c6c2917fbc1cae1a7d1e581f1c0b2817369dd57f94c7a0d05921476f1a7287"
+      },
+      {
+        "file": "ninja-1.13.2-linux-x64.zip",
+        "url": "https://storage.googleapis.com/webassembly/emscripten-releases-builds/deps/ninja-1.13.2-linux-x64.zip",
+        "bytes": 134040,
+        "sha256": "5749cbc4e668273514150a80e387a957f933c6ed3f5f11e03fb30955e2bbead6"
+      },
+      {
+        "file": "node-v24.19.0-linux-x64.tar.xz",
+        "url": "https://storage.googleapis.com/webassembly/emscripten-releases-builds/deps/node-v24.19.0-linux-x64.tar.xz",
+        "bytes": 31633904,
+        "sha256": "14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647"
+      }
+    ]
   },
   "zlib": {
     "repo": "https://github.com/madler/zlib.git",

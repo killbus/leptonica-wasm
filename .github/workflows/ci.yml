@@ -79,8 +79,19 @@ jobs:
           git clone --depth 1 https://github.com/emscripten-core/emsdk.git tmp/emsdk
           git -C tmp/emsdk fetch --depth 1 origin ${{ steps.pins.outputs.emsdk_commit }}
           git -C tmp/emsdk checkout ${{ steps.pins.outputs.emsdk_commit }}
-          ./tmp/emsdk/emsdk install ${{ steps.pins.outputs.sdk_version }} ${{ steps.pins.outputs.cmake_tool }} ${{ steps.pins.outputs.ninja_tool }}
+          # EMSDK_KEEP_DOWNLOADS=1: the pinned emsdk.py deletes archives after
+          # install by default — keep them so verify-toolchain.mjs can hash
+          # them (M1 review supply W1: ~430MB of toolchain archives have no
+          # content verification anywhere else; a failed verify fails this
+          # job, and actions/cache only saves on job success, so a poisoned
+          # archive never enters the cache layer).
+          EMSDK_KEEP_DOWNLOADS=1 ./tmp/emsdk/emsdk install ${{ steps.pins.outputs.sdk_version }} ${{ steps.pins.outputs.cmake_tool }} ${{ steps.pins.outputs.ninja_tool }}
           ./tmp/emsdk/emsdk activate ${{ steps.pins.outputs.sdk_version }} ${{ steps.pins.outputs.cmake_tool }} ${{ steps.pins.outputs.ninja_tool }}
+          node scripts/verify-toolchain.mjs
+          # Drop the archives before the emsdk cache layer saves this tree —
+          # they re-verify only on cold installs (this step), never on
+          # cache hits; keeping them would bloat the cache by ~430MB.
+          rm -rf tmp/emsdk/downloads
 
       # v6.1.0 (2026-06-26): https://github.com/actions/cache/releases/tag/v6.1.0
       # Cache layers (design §3): deps sources + static libs keyed by dep
@@ -217,8 +228,13 @@ jobs:
           git clone --depth 1 https://github.com/emscripten-core/emsdk.git tmp/emsdk
           git -C tmp/emsdk fetch --depth 1 origin ${{ steps.pins.outputs.emsdk_commit }}
           git -C tmp/emsdk checkout ${{ steps.pins.outputs.emsdk_commit }}
-          ./tmp/emsdk/emsdk install ${{ steps.pins.outputs.sdk_version }} ${{ steps.pins.outputs.cmake_tool }} ${{ steps.pins.outputs.ninja_tool }}
+          # Same supply W1 posture as the ci job's cold-install step: this
+          # job is also the cache-content re-verification (supply N3) — it
+          # must not itself run on unverified toolchain bytes. No cache is
+          # saved here, so no downloads cleanup is needed after verify.
+          EMSDK_KEEP_DOWNLOADS=1 ./tmp/emsdk/emsdk install ${{ steps.pins.outputs.sdk_version }} ${{ steps.pins.outputs.cmake_tool }} ${{ steps.pins.outputs.ninja_tool }}
           ./tmp/emsdk/emsdk activate ${{ steps.pins.outputs.sdk_version }} ${{ steps.pins.outputs.cmake_tool }} ${{ steps.pins.outputs.ninja_tool }}
+          node scripts/verify-toolchain.mjs
 
       - name: Build (default, cold)
         run: |
