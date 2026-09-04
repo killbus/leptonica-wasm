@@ -64,10 +64,11 @@
 
 ## M3 raw 层
 
-- [ ] `gen-exports.mjs` 完整化：`EXPORTED_FUNCTIONS` + `_malloc/_free` + 松 d.ts
-- [ ] `src/raw/`：C ABI 松类型包装 + 危险区文档（无所有权语义声明）
-- [ ] tsconfig 拆 base/node/web 三域（web 域 lib 含 DOM/WebAssembly、node 域注入 @types/node——首个 TS 文件触及 WebAssembly 前完成，M0 评审 F3：WebAssembly TS2304 已实测复现）；`exports`/`files`/`sideEffects` 骨架随首个 src 文件原子落地（M0 评审 F1）
-- 验证：Node 冒烟单测（`_pixCreate` 可调，malloc/free 往返）；check-exports 全量符号通过
+- [x] `gen-exports.mjs` 完整化：`EXPORTED_FUNCTIONS` + `_malloc/_free` + 松 d.ts——renderLooseDts（名字级 + 统一松签名，arity 刻意不编码）+ `--dts-out`；build.mjs 接线输出 dist/full-abi/leptonica-raw.d.ts（冷构建 outDir ENOENT 已修，run 33910814615 → 33911096542）
+- [x] `src/raw/`：C ABI 松类型包装 + 危险区文档（无所有权语义声明）——loadRaw（wasmBinary 必填 + instantiateWasm 捕获 memory + Promise.race 失败侧信道）、RawModule 索引签名、rawMemory getter 动态视图；DANGER ZONE 六条（UB/所有权/semver/跨实例指针/C 字符串封送/T** 出参）
+- [x] tsconfig 拆 base/node/web 三域（web 域 lib 含 DOM/WebAssembly、node 域注入 @types/node——首个 TS 文件触及 WebAssembly 前完成，M0 评审 F3：WebAssembly TS2503 已实测复现）；`exports`/`files`/`sideEffects` 骨架随首个 src 文件原子落地（M0 评审 F1，commit 670f2aa 单提交）；chatroom 修复轮补 `./full-abi/leptonica.wasm` 子路径（81db959）
+- 验证：Node 冒烟单测（`_pixCreate` 可调——含 PIX** 正确调用形态，malloc/free 往返，垃圾 bytes rejects）；check-exports 全量符号通过——**CI 证据链**：33913374420（Test 硬守卫后 raw 测试真实执行）→ 33914534570（chatroom 修复轮）三 job 绿；本地 typecheck 双域 + test 5/5 + node --check 全绿
+- 评审：双层评审 + 修复轮完成（reviews/M3.md）——第一层 2 blocker（CI Test 步序致 raw 测试静默 skip + pixDestroy UB 调用形态，0d55921 修复）；第二层三视角（API/DX McKenzie、危险边界 Kremenek、类型松紧 Hejlsberg）独立收敛三包边界问题：wasm 子路径缺失（修复 81db959）、types 指向 .ts 源（豁免转移 M4 F16 consumer fixture，带条件：M4 解决否则升级 blocker）、两套类型无编译时约束（同根转移 M4）；M2-F2 再裁决落地（default 产物无解码面 ≠ 包不含 full-abi，M6 措辞回填）
 - 回滚点：独立目录，可整体不发布（`exports` 移除子路径即可）
 
 ## M4 精选层同步核心 ★评审门 2
