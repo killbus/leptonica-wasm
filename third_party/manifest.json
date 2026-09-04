@@ -2,6 +2,13 @@
   "comment": "Reference clones pinned here; directory contents are git-ignored. Research notes: .trellis/tasks/09-03-leptonica-wasm-modern/research-*.md",
   "entries": [
     {
+      "name": "leptonica",
+      "url": "https://github.com/DanBloomberg/leptonica",
+      "commit": "13275a278eb55b5746e33f95fbf5a2c8f604b3ab",
+      "clonedAt": "2026-09-04",
+      "note": "Same pin as vendor/versions.json — source-level research (pixconv.c conversion arithmetic, allheaders.h signatures) reads the exact tree CI compiles."
+    },
+    {
       "name": "liteparse",
       "url": "https://github.com/run-llama/liteparse",
       "commit": "b2e76ec5b0c1cb4eb11d67296e916792f4fb5858",

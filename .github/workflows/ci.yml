@@ -44,6 +44,7 @@ jobs:
         id: pins
         run: |
           node --input-type=module -e '
+          import { createHash } from "node:crypto";
           import { appendFileSync, readFileSync } from "node:fs";
           const v = JSON.parse(readFileSync("vendor/versions.json", "utf8"));
           const out = (name, value) => appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
@@ -51,7 +52,12 @@ jobs:
           out("sdk_version", v.emsdk.sdkVersion);
           out("cmake_tool", v.emsdk.cmakeTool);
           out("ninja_tool", v.emsdk.ninjaTool);
-          out("deps_hash", [v.zlib.commit, v.libpng.commit, v["libjpeg-turbo"].commit, v.leptonica.commit].join(","));
+          // actions/cache keys may not contain commas — hash the pin array
+          // rather than joining it (run 33844970673: Key Validation Error on
+          // the joined form).
+          out("deps_hash", createHash("sha256").update([
+            v.zlib.commit, v.libpng.commit, v["libjpeg-turbo"].commit, v.leptonica.commit,
+          ].join("\n")).digest("hex").slice(0, 16));
           '
 
       # v6.1.0 (2026-06-26): https://github.com/actions/cache/releases/tag/v6.1.0
