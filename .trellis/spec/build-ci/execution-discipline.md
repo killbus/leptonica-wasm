@@ -101,6 +101,7 @@ Invoke-WebRequest … -OutFile tmp/deps/leptonica.tar.gz
 ### 契约
 
 - **派即监**：dispatch 不是终点。任何后台执行体启动后，主会话必须持有其完成信号的监督手段（harness 原生通知、`wait --kind done,error`、或显式轮询），且监督必须覆盖**失败信号**（error/killed/非零退出），不只是成功信号。fire-and-forget 禁止。
+- **监即读**：监督手段在线 ≠ 监督生效。通知/事件**到达后必须消费**——读到失败信号立即停下主线并处置，不得继续按"仍在等待"汇报。事件已到未读与没有监督是同一种失职（M2 先例：CI run 33844970673 的终态事件 `ci:failure` 已到达，主会话仍在报告"监控在线、仍在跑"——终态已到未被消费）。派发新消息前，先核对是否有未消费的执行体事件。
 - **早失败检测**：spawn 后的最初 2 分钟是死亡高峰（spawn 失败、context 超限、provider 报错）。监督的第一职责是尽早发现"根本没跑起来"，而不是等超时。判据：worker 日志/事件流出现 `error` 类事件，或产出体积/事件数长时间为零且无 progress。
 - **timeout ≠ 完成判据**：`wait` 超时（exit 124）意味着"没等到"，必须回到事件流核实实际状态（done/error/仍活着），不得假定成功也不得静默重试。
 - **失败处置**：确认执行体死亡后——收集死因（worker 日志 `*.log`、channel 事件流 `--raw`）→ 修复或绕行 → 重派。绕行时要保留失败证据供事后归档（M1 先例：channel worker 因 pnpm shim 不被 trellis resolveProviderPath 支持 spawn ENOENT → 改用 Agent 工具直派，channel 事件流留档）。
@@ -111,6 +112,7 @@ Invoke-WebRequest … -OutFile tmp/deps/leptonica.tar.gz
 | 条件 | 处置 |
 | --- | --- |
 | 后台 worker spawn 后无监督手段 | 阻断：先建立监督再继续主线工作 |
+| 通知/事件已到达但未读取 | 立即消费并处置；向用户汇报前先核对事件队列 |
 | `wait` 超时退出 | 核实事件流实际状态，禁止假定成功 |
 | worker 日志出现 error 事件 | 停止等待，诊断死因，决定修复/绕行 |
 | 子代理/worker 连续失败 | 按指数退避重试；仍失败换通道（如 channel → Agent 工具） |
@@ -140,6 +142,13 @@ trellis channel messages <ch> --raw --last 10     # 核实真实状态再行动
 - **Fix**：wait 一律 `--kind done,error`；spawn 后数分钟内主动抽查一次事件流确认 worker 真的活起来了。
 - **Prevention**：本规则 4；channel runtime 的 provider 解析在 pnpm 安装环境下有上游 bug（trellis 0.6.16 resolveProviderPath 只认 npm 格式 .cmd shim），Windows + pnpm 环境暂用 Agent 工具直派替代。
 
+### 监而未读：终态事件已到，主会话仍称"监控在线"
+
+- **Symptom**：CI run 33844970673 失败，Monitor 的终态事件（`ci:failure`）已推送，主会话在下一条汇报里仍写"监控在线/仍在跑"，未消费事件、未诊断失败，由用户发现并指出。
+- **Cause**：把"监督手段存在"当成了"监督已履行"——事件到达与事件消费是两个动作，后者被遗漏。Monitor 工作正常，失职在消费侧。
+- **Fix**：任何 Monitor/通知事件（尤其终态与失败态）到达后立即读取并处置，处置前不产出"仍在等待"性质的汇报。
+- **Prevention**：规则 4 的"监即读"条目；每轮输出前核对未消费事件。
+
 
 - **Symptom**：agent 计划本地装 emsdk「先验证可行性」。
 - **Cause**：把「快速验证」置于执行纪律之上。
@@ -148,4 +157,4 @@ trellis channel messages <ch> --raw --last 10     # 核实真实状态再行动
 
 ## 一句话版
 
-> 开发机产出代码与 workflow；GitHub Actions 产出一切二进制；派出的一切执行体都在主会话的监督之下。
+> 开发机产出代码与 workflow；GitHub Actions 产出一切二进制；派出的一切执行体都在主会话的监督之下——监督意味着事件到达即消费，失败信号优先处置。
