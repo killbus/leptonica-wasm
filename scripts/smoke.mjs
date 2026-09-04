@@ -114,17 +114,21 @@ if (fullAbi) {
     }
   }
 } else {
-  const symbolsPath = join(distDir, "leptonica.mjs.symbols");
-  check(existsSync(symbolsPath), `missing ${symbolsPath}`);
-  const symbols = readFileSync(symbolsPath, "utf8");
-  // -O3 inlines single-call-site wrappers like pixWriteMemPng into the embind
-  // wrapper, so its name legitimately disappears from the symbol map. Encoder
-  // presence is already proven byte-level (PNG IHDR / JPEG SOI checks above);
-  // the load-bearing assertion is that no decode path survived linking.
-  check(!/\bpixRead\w/.test(symbols), "symbol map should not contain pixRead*");
-  for (const name of exportsSet) {
-    if (/^pix(Read|Write)/.test(name)) {
-      fail(`default wasm exports pixRead/pixWrite function: ${name}`);
+  // Runtime-surface check for the default (embind-wrapped) mode: the five
+  // promised functions must exist as methods on the instantiated module.
+  // The symbol-map decode-absence and d.ts drift checks live in
+  // check-exports.mjs (which this smoke test complements, not duplicates):
+  // here we verify the EmbindModule surface actually callable, which a
+  // static symbol-map scan cannot see.
+  const dtsPath = join(distDir, "leptonica.d.ts");
+  check(existsSync(dtsPath), `missing ${dtsPath}`);
+  const dts = readFileSync(dtsPath, "utf8");
+  const embindBody = /interface EmbindModule \{([\s\S]*?)\n\}/.exec(dts);
+  check(embindBody !== null, "leptonica.d.ts has no EmbindModule interface");
+  for (const line of embindBody[1].split(/\r?\n/)) {
+    const match = /^\s*([A-Za-z_][A-Za-z0-9_]*)\(/.exec(line);
+    if (match && !["Pix"].includes(match[1])) {
+      check(typeof L[match[1]] === "function", `embind module should expose ${match[1]}()`);
     }
   }
 }

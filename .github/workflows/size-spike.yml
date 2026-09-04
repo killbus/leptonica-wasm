@@ -56,6 +56,9 @@ jobs:
           }
           console.log(`wasm sha256 stable: ${warm.wasmSha256}`);'
 
+      - name: Check exports (default)
+        run: node scripts/check-exports.mjs dist
+
       - name: Smoke test (default)
         run: node scripts/smoke.mjs dist
 
@@ -63,6 +66,9 @@ jobs:
         run: |
           . ./tmp/emsdk/emsdk_env.sh
           node scripts/build.mjs --full-abi --outdir dist/full-abi
+
+      - name: Check exports (full ABI)
+        run: node scripts/check-exports.mjs --full-abi dist/full-abi
 
       - name: Smoke test (full ABI)
         run: node scripts/smoke.mjs --full-abi dist/full-abi
