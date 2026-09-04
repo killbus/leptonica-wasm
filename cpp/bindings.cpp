@@ -253,9 +253,9 @@ val histogram(PIX *pix) {
 
 val average(PIX *pix) {
   if (!pix) return val::null();
-  l_float32 val = 0;
-  if (pixGetAverageMasked(pix, nullptr, 0, 0, 1, L_MEAN_ABSVAL, &val) != 0) return val::null();
-  return val(val);
+  l_float32 avg = 0;
+  if (pixGetAverageMasked(pix, nullptr, 0, 0, 1, L_MEAN_ABSVAL, &avg) != 0) return val::null();
+  return val(avg);
 }
 
 val toPNG(PIX *pix) {
