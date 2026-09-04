@@ -14,7 +14,7 @@ const installRoot = join(buildRoot, "install");
 const versions = JSON.parse(readFileSync(join(repoRoot, "vendor", "versions.json"), "utf8"));
 
 function usage() {
-  console.error("usage: node build.mjs [--full-abi] [--outdir <dir>] [--jobs <n>]");
+  console.error("usage: node build.mjs [--full-abi] [--outdir <dir>] [--jobs <n>] [--opt <O0|O1|O2|O3|Os|Oz>]");
 }
 
 function run(cmd, args, opts = {}) {
@@ -98,7 +98,11 @@ function buildDep(dep, jobs, pin) {
   // ensureSource() re-fetches sources but a stale .done would silently skip
   // recompilation and link the OLD library into the new build. Pin commit and
   // configure flags must both invalidate.
-  const doneKey = JSON.stringify([pin.commit, dep.extra]);
+  // Toolchain is an input too: an emsdk bump with unchanged dep pins must not
+  // reuse .a files compiled by the old emcc (design §3: deps cache is keyed
+  // by versions.json + toolchain; this marker is the same guard for restored
+  // trees).
+  const doneKey = JSON.stringify([pin.commit, dep.extra, versions.emsdk?.commit]);
   if (existsSync(doneMarker) && readFileSync(doneMarker, "utf8") === doneKey) return;
   const srcDir = join(depsRoot, dep.name);
   mkdirSync(buildDir, { recursive: true });
@@ -149,7 +153,7 @@ function writeFullAbiExports() {
   return exportsPath;
 }
 
-function linkOutputs({ exportsPath, outDir, fullAbi }) {
+function linkOutputs({ exportsPath, outDir, fullAbi, optLevel }) {
   mkdirSync(outDir, { recursive: true });
   const emccArgs = [
     "cpp/bindings.cpp",
@@ -160,7 +164,7 @@ function linkOutputs({ exportsPath, outDir, fullAbi }) {
     // refuses from the command line. The full-abi mode needs real C ABI names,
     // so it drops to -O2 (metadce off -> export names kept). Default mode is
     // embind-wrapped, so -O3 minification is safe there.
-    fullAbi ? "-O2" : "-O3",
+    fullAbi ? "-O2" : `-${optLevel}`,
     "--no-entry",
     "-lembind",
     "--emit-symbol-map",
@@ -200,8 +204,9 @@ function linkOutputs({ exportsPath, outDir, fullAbi }) {
 }
 
 function parseArgs(argv) {
-  const opts = { fullAbi: false, outDir: "dist", jobs: 0 };
+  const opts = { fullAbi: false, outDir: "dist", jobs: 0, optLevel: "O3" };
   let outDirGiven = false;
+  let optGiven = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--full-abi") {
@@ -222,10 +227,26 @@ function parseArgs(argv) {
       }
       opts.jobs = value;
       i++;
+    } else if (arg === "--opt") {
+      const value = argv[i + 1] ?? "";
+      if (!/^O[0-3sz]$/.test(value)) {
+        usage();
+        process.exit(2);
+      }
+      opts.optLevel = value;
+      optGiven = true;
+      i++;
     } else {
       usage();
       process.exit(2);
     }
+  }
+  // full-abi needs -O2 (metadce off -> real export names, see linkOutputs);
+  // a conflicting explicit --opt is a contradiction, rejected rather than
+  // silently overridden.
+  if (opts.fullAbi && optGiven && opts.optLevel !== "O2") {
+    console.error("--opt conflicts with --full-abi: full-abi requires -O2 (see linkOutputs comment)");
+    process.exit(2);
   }
   // Without an explicit --outdir, full-abi must not silently overwrite the
   // default-mode artifacts in dist/ (M1 review, build-eng N2).
@@ -253,16 +274,16 @@ if (opts.fullAbi) {
   exportedFunctions = readFileSync(exportsPath, "utf8").split("\n").filter((line) => line.length > 0).length;
 }
 const linkStartedAt = Date.now();
-const sizes = linkOutputs({ exportsPath, outDir: opts.outDir, fullAbi: opts.fullAbi });
+const sizes = linkOutputs({ exportsPath, outDir: opts.outDir, fullAbi: opts.fullAbi, optLevel: opts.optLevel });
 const report = {
   mode: opts.fullAbi ? "full-abi" : "default",
   // Provenance fields (M1 review, build-eng N4): the report must identify
   // which inputs produced it — trend comparisons and the M6 manifest need
   // pin + sdk + optimization level attached to every measurement.
   provenance: {
-    sdkVersion: versions.emsdk?.version ?? null,
+    sdkVersion: versions.emsdk?.sdkVersion ?? null,
     dependencyPins: Object.fromEntries(depConfigs.map((dep) => [dep.name, versions[dep.name].commit])),
-    optimizationLevel: opts.fullAbi ? "-O2" : "-O3",
+    optimizationLevel: opts.fullAbi ? "-O2" : `-${opts.optLevel}`,
   },
   wasmBytes: sizes.wasmBytes,
   wasmGzipBytes: sizes.wasmGzipBytes,

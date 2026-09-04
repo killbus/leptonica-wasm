@@ -23,18 +23,37 @@ jobs:
 
       - name: Test
         run: |
-          npm ci
+          # --ignore-scripts: see ci.yml Test step (verified safe for this
+          # tree — only lockfile package with an install script is
+          # darwin-only fsevents).
+          npm ci --ignore-scripts
           npm test
           npm run typecheck
 
-      # Toolchain pins (sdk + cmake + ninja) come from vendor/versions.json.
+      # Toolchain pins (sdk + cmake + ninja) come from vendor/versions.json —
+      # actually injected now, not hardcoded (M1 review build-eng W2: the
+      # comment previously claimed versions.json sourcing while the values
+      # were a yml-side dual-write).
+      - name: Resolve toolchain pins
+        id: pins
+        run: |
+          node --input-type=module -e '
+          import { appendFileSync, readFileSync } from "node:fs";
+          const v = JSON.parse(readFileSync("vendor/versions.json", "utf8"));
+          const out = (name, value) => appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
+          out("emsdk_commit", v.emsdk.commit);
+          out("sdk_version", v.emsdk.sdkVersion);
+          out("cmake_tool", v.emsdk.cmakeTool);
+          out("ninja_tool", v.emsdk.ninjaTool);
+          '
+
       - name: Install emsdk
         run: |
           git clone --depth 1 https://github.com/emscripten-core/emsdk.git tmp/emsdk
-          git -C tmp/emsdk fetch --depth 1 origin 5eb0bde7585670252e8ba05e9d361627bffd08b5
-          git -C tmp/emsdk checkout 5eb0bde7585670252e8ba05e9d361627bffd08b5
-          ./tmp/emsdk/emsdk install 6.0.9 cmake-4.2.0-rc3-64bit ninja-1.13.2-64bit
-          ./tmp/emsdk/emsdk activate 6.0.9 cmake-4.2.0-rc3-64bit ninja-1.13.2-64bit
+          git -C tmp/emsdk fetch --depth 1 origin ${{ steps.pins.outputs.emsdk_commit }}
+          git -C tmp/emsdk checkout ${{ steps.pins.outputs.emsdk_commit }}
+          ./tmp/emsdk/emsdk install ${{ steps.pins.outputs.sdk_version }} ${{ steps.pins.outputs.cmake_tool }} ${{ steps.pins.outputs.ninja_tool }}
+          ./tmp/emsdk/emsdk activate ${{ steps.pins.outputs.sdk_version }} ${{ steps.pins.outputs.cmake_tool }} ${{ steps.pins.outputs.ninja_tool }}
 
       - name: Build (default, cold)
         run: |

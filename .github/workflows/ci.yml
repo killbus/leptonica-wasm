@@ -1,0 +1,262 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    # Pinned image: ubuntu-latest is a moving target (monthly image rolls,
+    # preinstalled toolchain changes unannounced) — M1 review supply N4.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      # v7.0.1 (2026-07-20): https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      # v7.0.0 (2026-07-14): https://github.com/actions/setup-node/releases/tag/v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 20
+
+      - name: Test
+        run: |
+          # --ignore-scripts: defense-in-depth against install-script supply
+          # chain vectors (M0 review F14; M1 review supply N1 pulled this
+          # forward). Verified safe for this tree: the only lockfile package
+          # with a hasInstallScript is fsevents (darwin-only, skipped on
+          # Linux); vitest's toolchain uses prebuilt rolldown napi bindings,
+          # no postinstall required.
+          npm ci --ignore-scripts
+          npm test
+          npm run typecheck
+
+      # Toolchain pins are read from vendor/versions.json (single source of
+      # truth — M1 review build-eng W2: size-spike.yml hardcoded the emsdk
+      # commit while claiming it came from versions.json).
+      - name: Resolve toolchain pins
+        id: pins
+        run: |
+          node --input-type=module -e '
+          import { appendFileSync, readFileSync } from "node:fs";
+          const v = JSON.parse(readFileSync("vendor/versions.json", "utf8"));
+          const out = (name, value) => appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
+          out("emsdk_commit", v.emsdk.commit);
+          out("sdk_version", v.emsdk.sdkVersion);
+          out("cmake_tool", v.emsdk.cmakeTool);
+          out("ninja_tool", v.emsdk.ninjaTool);
+          out("deps_hash", [v.zlib.commit, v.libpng.commit, v["libjpeg-turbo"].commit, v.leptonica.commit].join(","));
+          '
+
+      # v6.1.0 (2026-06-26): https://github.com/actions/cache/releases/tag/v6.1.0
+      # emsdk layer (design §3: "emsdk 按精确版本键"), keyed by the full
+      # toolchain identity from versions.json. Content re-verification: the
+      # reproducibility job below cold-installs the toolchain every run, so
+      # an emsdk cache that alters artifacts diverges the compare job's
+      # hashes and fails loudly.
+      - name: Cache emsdk
+        id: emsdk-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: tmp/emsdk
+          key: emsdk-${{ steps.pins.outputs.emsdk_commit }}-${{ steps.pins.outputs.sdk_version }}-${{ steps.pins.outputs.cmake_tool }}-${{ steps.pins.outputs.ninja_tool }}
+
+      - name: Install emsdk
+        if: steps.emsdk-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git tmp/emsdk
+          git -C tmp/emsdk fetch --depth 1 origin ${{ steps.pins.outputs.emsdk_commit }}
+          git -C tmp/emsdk checkout ${{ steps.pins.outputs.emsdk_commit }}
+          ./tmp/emsdk/emsdk install ${{ steps.pins.outputs.sdk_version }} ${{ steps.pins.outputs.cmake_tool }} ${{ steps.pins.outputs.ninja_tool }}
+          ./tmp/emsdk/emsdk activate ${{ steps.pins.outputs.sdk_version }} ${{ steps.pins.outputs.cmake_tool }} ${{ steps.pins.outputs.ninja_tool }}
+
+      # v6.1.0 (2026-06-26): https://github.com/actions/cache/releases/tag/v6.1.0
+      # Cache layers (design §3): deps sources + static libs keyed by dep
+      # pins AND toolchain AND the build script. build.mjs's hashFiles key is
+      # an over-approximation of the configure-flags hash (depConfigs lives
+      # in build.mjs, so any flag edit changes the file) — conservative but
+      # correct; hashing the flags in isolation would need depConfigs
+      # importable without executing the script's main body.
+      # Toolchain in the key is design §3 ("versions.json + 工具链哈希"):
+      # an emsdk bump with unchanged dep pins must not reuse .a files
+      # compiled by the old emcc. The .done marker inside the restored tree
+      # re-validates [pin, flags, toolchain] on build, and the compare job's
+      # hash equality against an independent cold build re-verifies cache
+      # content (supply N3: the cache layer is otherwise a bypass around
+      # fetch verification) — a poisoned cache fails loudly, not silently.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            tmp/deps
+            tmp/build
+            tmp/downloads
+          key: deps-${{ steps.pins.outputs.deps_hash }}-${{ steps.pins.outputs.emsdk_commit }}-${{ hashFiles('scripts/build.mjs') }}
+
+      - name: Build (default)
+        run: |
+          . ./tmp/emsdk/emsdk_env.sh
+          node scripts/build.mjs
+          cp dist/build-report.json tmp/report-default.json
+
+      - name: Build (default at -O2, same-opt-level control)
+        # M1 review perf topic 1: the M1 size comparison mixed -O2 (full-abi)
+        # vs -O3 (default). This control build reuses the compiled deps
+        # (~6s link) and isolates the optimization-level variable so the
+        # full-abi vs default delta can be stated at a single opt level.
+        run: |
+          . ./tmp/emsdk/emsdk_env.sh
+          node scripts/build.mjs --opt O2 --outdir dist-o2
+          node --input-type=commonjs -e 'const fs = require("fs");
+          const d = JSON.parse(fs.readFileSync("tmp/report-default.json", "utf8"));
+          const o2 = JSON.parse(fs.readFileSync("dist-o2/build-report.json", "utf8"));
+          console.log(`default@-O3: wasm ${d.wasmBytes} / gzip ${d.wasmGzipBytes}`);
+          console.log(`default@-O2: wasm ${o2.wasmBytes} / gzip ${o2.wasmGzipBytes}`);'
+
+      - name: Check exports (default)
+        run: node scripts/check-exports.mjs dist
+
+      - name: Smoke test (default)
+        run: node scripts/smoke.mjs dist
+
+      - name: Build (full ABI)
+        run: |
+          . ./tmp/emsdk/emsdk_env.sh
+          node scripts/build.mjs --full-abi
+
+      - name: Check exports (full ABI)
+        run: node scripts/check-exports.mjs --full-abi dist/full-abi
+
+      - name: Smoke test (full ABI)
+        run: node scripts/smoke.mjs --full-abi dist/full-abi
+
+      - name: Determinism check (same runner)
+        # Relink from the same .a files and compare all four artifacts —
+        # the .mjs/.d.ts/.symbols companions are hashed too (M1 review
+        # build-eng W3: wasm-only comparison left the JS glue unverified).
+        # Compile determinism is proven by the reproducibility job below
+        # (independent cold build, cross-runner), so this step rebuilds
+        # links only: dist/full-abi is left intact (only the four default
+        # files are removed and relinked).
+        run: |
+          . ./tmp/emsdk/emsdk_env.sh
+          mkdir -p tmp/first
+          cp dist/leptonica.wasm dist/leptonica.mjs dist/leptonica.d.ts dist/leptonica.mjs.symbols tmp/first/
+          rm -f dist/leptonica.wasm dist/leptonica.mjs dist/leptonica.d.ts dist/leptonica.mjs.symbols dist/build-report.json
+          node scripts/build.mjs
+          node --input-type=commonjs <<'NODE'
+          const fs = require("fs");
+          const crypto = require("crypto");
+          const sha = (p) => crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex");
+          for (const f of ["leptonica.wasm", "leptonica.mjs", "leptonica.d.ts", "leptonica.mjs.symbols"]) {
+            const a = sha(`tmp/first/${f}`);
+            const b = sha(`dist/${f}`);
+            if (a !== b) {
+              console.error(`hash mismatch for ${f}: ${a} != ${b}`);
+              process.exit(1);
+            }
+          }
+          console.log("all four artifacts reproducible (wasm, mjs, d.ts, symbols)");
+          NODE
+
+      # v7.0.1 (2026-04-10): https://github.com/actions/upload-artifact/releases/tag/v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: ci-dist
+          path: dist
+          if-no-files-found: warn
+
+  # Cross-runner compile determinism (M1 review supply W3 + build-eng W3):
+  # an independent cold build on a different runner instance — no cache
+  # restore, so the .a files come from this job's own compile. The compare
+  # job below hashes it against the ci job's output. This is also the
+  # cache-content re-verification (supply N3): on warm-cache runs, ci's
+  # artifacts derive from cached .a files while this job compiles from
+  # source; hash equality proves the cache content was genuine.
+  reproducibility:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      # v7.0.1 (2026-07-20): https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      # v7.0.0 (2026-07-14): https://github.com/actions/setup-node/releases/tag/v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 20
+
+      - name: Resolve toolchain pins
+        id: pins
+        run: |
+          node --input-type=module -e '
+          import { appendFileSync, readFileSync } from "node:fs";
+          const v = JSON.parse(readFileSync("vendor/versions.json", "utf8"));
+          const out = (name, value) => appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
+          out("emsdk_commit", v.emsdk.commit);
+          out("sdk_version", v.emsdk.sdkVersion);
+          out("cmake_tool", v.emsdk.cmakeTool);
+          out("ninja_tool", v.emsdk.ninjaTool);
+          '
+
+      - name: Install emsdk
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git tmp/emsdk
+          git -C tmp/emsdk fetch --depth 1 origin ${{ steps.pins.outputs.emsdk_commit }}
+          git -C tmp/emsdk checkout ${{ steps.pins.outputs.emsdk_commit }}
+          ./tmp/emsdk/emsdk install ${{ steps.pins.outputs.sdk_version }} ${{ steps.pins.outputs.cmake_tool }} ${{ steps.pins.outputs.ninja_tool }}
+          ./tmp/emsdk/emsdk activate ${{ steps.pins.outputs.sdk_version }} ${{ steps.pins.outputs.cmake_tool }} ${{ steps.pins.outputs.ninja_tool }}
+
+      - name: Build (default, cold)
+        run: |
+          . ./tmp/emsdk/emsdk_env.sh
+          node scripts/build.mjs
+
+      # v7.0.1 (2026-04-10): https://github.com/actions/upload-artifact/releases/tag/v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: repro-dist
+          path: |
+            dist/leptonica.wasm
+            dist/leptonica.mjs
+            dist/leptonica.d.ts
+            dist/leptonica.mjs.symbols
+          if-no-files-found: error
+
+  # Hash comparison of the two builds above: ci (warm or cold) vs
+  # reproducibility (always cold). Any byte difference in any of the four
+  # artifacts fails the pipeline.
+  compare:
+    needs: [ci, reproducibility]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # v8.0.1 (2026-03-11): https://github.com/actions/download-artifact/releases/tag/v8.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          path: artifacts
+
+      - name: Compare artifact hashes
+        run: |
+          node --input-type=commonjs <<'NODE'
+          const fs = require("fs");
+          const crypto = require("crypto");
+          const sha = (p) => crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex");
+          const files = ["leptonica.wasm", "leptonica.mjs", "leptonica.d.ts", "leptonica.mjs.symbols"];
+          for (const f of files) {
+            const a = sha(`artifacts/ci-dist/${f}`);
+            const b = sha(`artifacts/repro-dist/${f}`);
+            if (a !== b) {
+              console.error(`cross-runner hash mismatch for ${f}: ${a} != ${b}`);
+              process.exit(1);
+            }
+          }
+          console.log(`cross-runner determinism OK (${files.length} artifacts byte-identical)`);
+          NODE
