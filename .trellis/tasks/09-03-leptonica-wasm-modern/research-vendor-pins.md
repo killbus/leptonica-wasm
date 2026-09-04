@@ -67,6 +67,3 @@ manifest 取样：`https://raw.githubusercontent.com/emscripten-core/emsdk/5eb0b
 - 不做：验证整个 emsdk 树（只验 4 个归档）；从源码重建工具链；给 deps tarball 钉字节哈希（codeload 无契约，走 §4 API 复核纪律路线）。
 - 凡改 tag/commit：必须走本文件的 API 复核流程，不接受手填。
 - CI 中 emsdk 相关 `uses:` action 的版本 pin 证据（release tag、URL、日期）写入 workflow 注释（execution-discipline 要求）。
-
-- 凡改 tag/commit：必须走本文件的 API 复核流程，不接受手填。
-- CI 中 emsdk 相关 `uses:` action 的版本 pin 证据（release tag、URL、日期）写入 workflow 注释（execution-discipline 要求）。

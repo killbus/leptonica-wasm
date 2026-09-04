@@ -135,6 +135,11 @@ trellis channel messages <ch> --raw --last 10     # 核实真实状态再行动
 
 ### 本机装工具链「图省事」
 
+- **Symptom**：agent 计划本地装 emsdk「先验证可行性」。
+- **Cause**：把「快速验证」置于执行纪律之上。
+- **Fix**：可行性验证就是 CI workflow 本身（加 `workflow_dispatch` 手动触发，分钟级反馈）。
+- **Prevention**：dispatch prompt 写明「本机零重任务」；本 spec 常读。
+
 ### 派后不监，靠用户发现卡死
 
 - **Symptom**：三个 reviewer worker spawn 后全部 ENOENT 死亡，主会话只挂 `wait --kind done`，25 分钟无输出，用户主动问"是不是卡住了"。
@@ -148,12 +153,6 @@ trellis channel messages <ch> --raw --last 10     # 核实真实状态再行动
 - **Cause**：把"监督手段存在"当成了"监督已履行"——事件到达与事件消费是两个动作，后者被遗漏。Monitor 工作正常，失职在消费侧。
 - **Fix**：任何 Monitor/通知事件（尤其终态与失败态）到达后立即读取并处置，处置前不产出"仍在等待"性质的汇报。
 - **Prevention**：规则 4 的"监即读"条目；每轮输出前核对未消费事件。
-
-
-- **Symptom**：agent 计划本地装 emsdk「先验证可行性」。
-- **Cause**：把「快速验证」置于执行纪律之上。
-- **Fix**：可行性验证就是 CI workflow 本身（加 `workflow_dispatch` 手动触发，分钟级反馈）。
-- **Prevention**：dispatch prompt 写明「本机零重任务」；本 spec 常读。
 
 ## 一句话版
 

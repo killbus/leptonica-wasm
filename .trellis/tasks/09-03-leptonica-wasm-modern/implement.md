@@ -59,6 +59,7 @@
 - [x] 供应链防线（M0 评审回填 + M1 评审扩展）：CI 默认 `npm ci --ignore-scripts`（supply N1，M1 已落地）；secret 模式扫描（**已落地** supply N5：`.github/workflows/secret-scan.yml` gitleaks-action v3.0.0 commit-pin + GITLEAKS_VERSION=8.30.1 可复现扫描 + fetch-depth 0 覆盖历史 + 每日 04:07 UTC cron；首跑 run 33872339633 绿，12s）；依赖升级自动化（**已落地**：`.github/dependabot.yml`——github-actions ecosystem 显式（supply W2a）+ npm dev-deps 分组；落地当天即出首个 github_actions 更新（run 33872348143）与 npm 分组 PR；npm 走 `--ignore-scripts` CI 姿态验证过）；**sha256 白名单扩展覆盖工具链**（**已落地** supply W1：emsdk.py `download_file` 无哈希校验 + manifest sha 字段全空已源码级实证（research-vendor-pins.md §3.1）——`vendor/versions.json` `emsdk.toolchainArchives` 四归档 file/url/bytes/sha256（记录自 run 33870871356，字节数与 33855910354 独立下载交叉吻合）+ `scripts/verify-toolchain.mjs`（默认哈希比对 / `--record` 再生成模式）+ `.github/workflows/toolchain-hash.yml`（workflow_dispatch 记录载体）+ ci.yml 两条冷装路径接线（`EMSDK_KEEP_DOWNLOADS=1` → install → verify → ci 分支 `rm -rf downloads` 后入缓存层；验证失败 job 红 → actions/cache post `success()` 门挡住毒化归档进缓存）——run 33884503228 全绿（reproducibility 冷装 4/4 哈希通过），run 33899237236 再验 4/4；commits 11eed10 + 6d474f7 + 05e1e40）；**白名单再生成纪律**（**已落地** supply 议题 1：emsdk bump → dispatch toolchain-hash → record 输出粘进 versions.json → PR review；归档文件名随 pin 变化，`verify-toolchain.mjs` 强制 downloads 与白名单集合相等，漏记响亮失败——research-vendor-pins.md §4.1）；**分支保护**（**待用户操作** supply W3：禁 force push、versions.json/workflow 变更走 PR review——与白名单信任根同批，`gh api` 需用户授权或用户在 GitHub 设置页操作）
 - [x] toGray 手算金样（P2 末位，M4 oracle 前的像素值级补丁）：现有冒烟对 toGray 只验灰度 PNG 头（位深/颜色类型），像素值从未断言——M2 恰好要动构建（`.done` 修复、default@-O2 对照、CMAKE_POLICY flag 移除），是引入回归的时机而现有断言抓不住。**前置条件已履行**：读 pin 版（13275a27）源码确认 `pixConvertTo8(32bpp)` → `pixConvertRGBToLuminance` → `pixConvertRGBToGray(0,0,0)` → 默认权重是 pix.h **感知权重 0.3f/0.5f/0.2f 而非 BT.601**（本清单原假设 0.299/0.587/0.114 是错的——前置条件防住的正是这个）；逐像素 `(l_int32)(f32 积和 + 0.5)`，C 晋升链：积与加为 float32、末项 +0.5 是 double、截断。断言围绕实现确切行为：smoke.mjs 增 2×2 锚点（纯 R/G/B 三基色钉死三权重——BT.601 会给 green 150/blue 29 vs 实际 128/51；漏 +0.5 会给 green 127/red 76）+ 独立 `grayAnchor()` JS 重实现（Math.fround 严格镜像 C 晋升边界，判别矩阵已实测）+ `decodeGrayPNG()` 完整五滤波灰度 PNG 解码器（libpng 逐行选滤波不能假设 filter 0；Sub+Paeth 路径已合成 PNG 往返验证）。M4 oracle harness 进来后被吸收
 - 验证：干净 checkout 一条命令出 `dist/`；CI 全绿；连续两次运行第二次命中缓存——**全部达成**（07a0064 空 commit 复跑 run 33864372196：emsdk 509MB / deps 43MB 双命中 + 三 job 绿；后续实现变更 run 33884503228 / 33899237236 亦全绿，白名单与 flag 移除各有冷装验证证据）
+- 评审：双层评审 + 修复轮完成（reviews/M2.md）——0 blocker / 1 warning（分支保护 F1 升格 M6 发布前置）/ 7 nit；三视角（CI 可复现 Brush / 导出面 Percall / 缓存 Herrala）独立收敛 W1，主持方核实零误报；代码零改动（M2 已验证文本证据链保持），处置全部走文档回填 + 用户侧操作
 - 回滚点：`git revert` 构建脚本提交
 
 ## M3 raw 层
@@ -76,6 +77,7 @@
 - [ ] `src/protocol.ts`：`Op` tagged union 完整版（harness 与 TS 端共用 schema）
 - [ ] `src/core/`：TS 包装（Pix `Symbol.dispose` + 毒化 + FinalizationRegistry 报警、chain builder、查询、提取、depth 校验规则）
 - [ ] 补充不变量单测：deskew 角度恢复、otsu 双峰、dilate 单调、**1bpp depth 保持**、类型规则 throw、毒化行为
+- [ ] M2 评审回填：oracle harness 吸收 toGray 金样时期望值改硬编码字面量 + 判别矩阵注释（F4——grayAnchor 运行时计算是第二实现非独立观测）；变异冒烟升级为 warning 级验收项 + 持久化脚本（F5——M2 四路变异是纸面证据，不可复跑）
 - [ ] d.ts 消费者视角验证（M0 评审 F16）：consumer fixture 以 skipLibCheck:false 编译 + arethetypeswrong
 - 验证：vitest 全绿 + oracle 比对全绿（PNG 逐字节、标量容差）；**变异冒烟**——故意破坏一个参数映射 → 测试必须红，恢复 → 绿；`--emit-tsd` 生成 d.ts 且 check-exports 通过
 - 评审门：API 面走查（对照 PRD 8 类算子清单逐项确认）+ 抽查红→绿提交历史，用户确认后进 M5
@@ -92,12 +94,14 @@
 
 ## M6 E2E 与发布 ★评审门 3
 
+- [ ] **发布前置（M2 评审 F1）**：分支保护必须已落地（Settings → Branches：main 加 Require PR + Block force pushes）——白名单 TOFU 信任根的承重墙，未落地前不得执行 release workflow；当前 token 实测 403 无权设置，需用户在 GitHub 设置页操作或授权
 - [ ] Playwright E2E：浏览器 vite 页 → `createSession` → 链执行 → PNG 字节 vs Node 输出**逐字节比对**（环境一致性；语义正确性已在 M4 oracle 锚定）
 - [ ] README：三段式快速开始（Worker 主入口 / 同步核心 / raw 逃生舱）+ API 表
 - [ ] release workflow（tag 触发）：build → test → `npm publish --provenance`——CI 是发布产物唯一来源，本地构建不发布（design §3）
-- [ ] npm publish `--dry-run` + `npm pack` 内容审查（发布前预检）
+- [ ] npm publish `--dry-run` + `npm pack` 内容审查（发布前预检）——**显式排除 full-abi 产物**（M2 评审 F2：ci-dist artifact 含 dist/full-abi 全部解码面产物，发布打包若照搬 dist/** 会破坏「无解码路径」承诺；npm pack 审查必须确认包内容不含 full-abi）
 - [ ] LICENSE 文件（BSD-2-Clause + Leptonica 版权归并，M0 评审 F13）
 - [ ] wasm 产物 sha256 清单随包发布；CI 复现构建 digest 比对（npm integrity 不证明 wasm↔C 源码对应——M0 评审 F7）
+- [ ] 已知债务清偿（M2 评审 F3，择机）：cmakeTool 进 deps 缓存键与 doneKey（单独 bump cmakeTool 现只轮换 emsdk 层，deps 层命中旧 .a——fail-loud 非 silent，compare 必红；修复需改 build.mjs 必然轮换缓存键触发冷编译，推迟到下次必然的 build.mjs 变更一并携带）；full-abi 复现性断言扩展（F9：确定性现只证 default 模式，manifest 若收录 full-abi 则 compare 需扩面）
 - 验证：`playwright test` 绿；`npm publish --dry-run` 无 error；dist 内容与 exports 映射一致
 - 评审门：发布前最终确认（用户执行实际 publish 或授权执行）
 - 回滚点：发布前一切可撤（dry-run 为门）；发布后 deprecate / next tag
