@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
@@ -40,7 +40,14 @@ function ensureSource(name, pin) {
   const archive = join(downloadsRoot, `${name}-${pin.commit}.tar.gz`);
   if (!existsSync(archive)) {
     mkdirSync(downloadsRoot, { recursive: true });
-    run("curl", ["-fsSL", "--retry", "3", "-o", archive, `https://codeload.github.com/${ghSlug(pin.repo)}/tar.gz/${pin.commit}`]);
+    // Download to a .part temp first, then rename into place. A truncated
+    // archive must not persist under the final name: existsSync() above
+    // would skip re-download on later runs and every build would fail at
+    // untar until the file is deleted by hand (M1 review, build-eng N2).
+    const partial = `${archive}.part`;
+    run("curl", ["-fsSL", "--retry", "3", "-o", partial, `https://codeload.github.com/${ghSlug(pin.repo)}/tar.gz/${pin.commit}`]);
+    if (!existsSync(partial)) throw new Error(`curl did not produce ${partial}`);
+    renameSync(partial, archive);
   }
   run("tar", ["-xzf", archive, "--strip-components=1", "-C", srcDir]);
   writeFileSync(marker, pin.commit + "\n");
@@ -83,10 +90,16 @@ const depConfigs = [
   },
 ];
 
-function buildDep(dep, jobs) {
+function buildDep(dep, jobs, pin) {
   const buildDir = join(buildRoot, dep.name);
   const doneMarker = join(buildDir, ".done");
-  if (existsSync(doneMarker)) return;
+  // The marker records the inputs that produced this compiled tree. Checking
+  // existence alone is not enough (M1 review, build-eng W1): after a pin bump
+  // ensureSource() re-fetches sources but a stale .done would silently skip
+  // recompilation and link the OLD library into the new build. Pin commit and
+  // configure flags must both invalidate.
+  const doneKey = JSON.stringify([pin.commit, dep.extra]);
+  if (existsSync(doneMarker) && readFileSync(doneMarker, "utf8") === doneKey) return;
   const srcDir = join(depsRoot, dep.name);
   mkdirSync(buildDir, { recursive: true });
   run(
@@ -107,7 +120,7 @@ function buildDep(dep, jobs) {
   const ninjaArgs = ["ninja", "install"];
   if (jobs > 0) ninjaArgs.push(`-j${jobs}`);
   run("emmake", ninjaArgs, { cwd: buildDir });
-  writeFileSync(doneMarker, "");
+  writeFileSync(doneMarker, doneKey);
 }
 
 function nmDefinedSymbols(archivePath) {
@@ -176,16 +189,19 @@ function linkOutputs({ exportsPath, outDir, fullAbi }) {
   const wasm = readFileSync(join(outDir, "leptonica.wasm"));
   const js = readFileSync(join(outDir, "leptonica.mjs"));
   const wasmGzip = gzipSync(wasm, { level: 9 });
+  const jsGzip = gzipSync(js, { level: 9 });
   return {
     wasmBytes: wasm.length,
     wasmGzipBytes: wasmGzip.length,
     jsBytes: js.length,
+    jsGzipBytes: jsGzip.length,
     wasmSha256: createHash("sha256").update(wasm).digest("hex"),
   };
 }
 
 function parseArgs(argv) {
   const opts = { fullAbi: false, outDir: "dist", jobs: 0 };
+  let outDirGiven = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--full-abi") {
@@ -196,6 +212,7 @@ function parseArgs(argv) {
         usage();
         process.exit(2);
       }
+      outDirGiven = true;
       i++;
     } else if (arg === "--jobs") {
       const value = Number(argv[i + 1]);
@@ -210,17 +227,24 @@ function parseArgs(argv) {
       process.exit(2);
     }
   }
+  // Without an explicit --outdir, full-abi must not silently overwrite the
+  // default-mode artifacts in dist/ (M1 review, build-eng N2).
+  if (opts.fullAbi && !outDirGiven) {
+    opts.outDir = "dist/full-abi";
+  }
   opts.outDir = resolve(opts.outDir);
   return opts;
 }
 
 const startedAt = Date.now();
 const opts = parseArgs(process.argv.slice(2));
+const fetchStartedAt = Date.now();
 for (const dep of depConfigs) {
   ensureSource(dep.name, versions[dep.name]);
 }
+const fetchMs = Date.now() - fetchStartedAt;
 for (const dep of depConfigs) {
-  buildDep(dep, opts.jobs);
+  buildDep(dep, opts.jobs, versions[dep.name]);
 }
 let exportsPath = null;
 let exportedFunctions = null;
@@ -228,14 +252,25 @@ if (opts.fullAbi) {
   exportsPath = writeFullAbiExports();
   exportedFunctions = readFileSync(exportsPath, "utf8").split("\n").filter((line) => line.length > 0).length;
 }
+const linkStartedAt = Date.now();
 const sizes = linkOutputs({ exportsPath, outDir: opts.outDir, fullAbi: opts.fullAbi });
 const report = {
   mode: opts.fullAbi ? "full-abi" : "default",
+  // Provenance fields (M1 review, build-eng N4): the report must identify
+  // which inputs produced it — trend comparisons and the M6 manifest need
+  // pin + sdk + optimization level attached to every measurement.
+  provenance: {
+    sdkVersion: versions.emsdk?.version ?? null,
+    dependencyPins: Object.fromEntries(depConfigs.map((dep) => [dep.name, versions[dep.name].commit])),
+    optimizationLevel: opts.fullAbi ? "-O2" : "-O3",
+  },
   wasmBytes: sizes.wasmBytes,
   wasmGzipBytes: sizes.wasmGzipBytes,
   jsBytes: sizes.jsBytes,
+  jsGzipBytes: sizes.jsGzipBytes,
   wasmSha256: sizes.wasmSha256,
   exportedFunctions,
+  timingMs: { fetch: fetchMs, link: Date.now() - linkStartedAt },
   wallMs: Date.now() - startedAt,
 };
 writeFileSync(join(opts.outDir, "build-report.json"), JSON.stringify(report, null, 2) + "\n");

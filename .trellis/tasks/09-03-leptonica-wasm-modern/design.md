@@ -53,7 +53,7 @@ leptonica-wasm/
   dist/                   # 构建产物
 ```
 
-- 包形态：ESM-only（v0.1），`exports` 映射主入口与 `./worker` 子路径；后续 CJS 需求出现再议。
+- 包形态：ESM-only（v0.1），`exports` 映射主入口、`./worker` 与 `./raw` 子路径（`./raw` 为 §4.3 松类型逃生舱，命名裁决 2026-09-04）；后续 CJS 需求出现再议。
 - npm 包名 M0 查重后定（`leptonica-wasm` 若被占则选替代）。
 
 ## 3. 构建管线
@@ -87,7 +87,7 @@ leptonica-wasm/
 **体积控制**：
 
 - 精选层只引用所需 leptonica 函数 → `EXPORTED_FUNCTIONS` 白名单 + 链接器 gc-sections 裁剪；不暴露 `pixRead*` 则解码路径被裁剪（M1 spike 验证）。
-- raw 层全量 C ABI 导出有体积代价（导出表 + 函数名字符串 + 阻止裁剪），代价数值由 M1 spike 测量；若代价过高，默认产物 = 精选构建，`--raw-abi` 构建（或 `/full` 子导出）承载全量逃生舱——回填 PRD 决策 ⑦ 的 core/full 裁决。
+- raw 层全量 C ABI 导出有体积代价（导出表 + 函数名字符串 + 阻止裁剪），代价数值由 M1 spike 测量；**M1 已裁决（2026-09-03）**：精选为默认产物，full-abi 构建承载全量逃生舱（PRD 决策 ⑦）。**命名裁决（2026-09-04，M2 评审 build-eng 议题 2）**：构建期概念与消费期概念分离——CLI 开关 `--full-abi`（描述 wasm 导出面，M1 已落地）、产物目录 `dist/full-abi/`、TS 层目录 `src/raw/` 与包子导出 `./raw`（描述松类型逃生舱层，与 §4.3 raw 层命名一致）；本节旧称 `--raw-abi` 与 `/full` 子导出弃用。
 
 **构建分发策略：CI 是一切构建的唯一执行地**（2026-09-03 用户指示：本机零重任务，纪律详见 `.trellis/spec/build-ci/execution-discipline.md`）——开发机不安装/运行 emsdk 等工具链、不执行任何编译；冷全量构建是重任务（分钟到十分钟量级，emsdk 下载数百 MB；实测基线 M1 记录），全部在 GitHub Actions 内完成：
 
