@@ -11,6 +11,11 @@
  * - a B channel XOR texture → high-frequency content for sobel/morph
  * - a dark diagonal band → strong skew signal for deskew/findSkew
  */
+/**
+ * @param {number} width
+ * @param {number} height
+ * @returns {Uint8Array}
+ */
 export function generateRgba(width, height) {
   if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
     throw new Error(`generateRgba: bad dimensions ${width}x${height}`);

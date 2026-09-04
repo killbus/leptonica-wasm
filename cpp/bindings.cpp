@@ -1,5 +1,6 @@
 #include <emscripten/bind.h>
 #include <emscripten/val.h>
+#include <string>
 #include "allheaders.h"
 // class_<PIX> needs the complete Pix type for typeid and its (unused) raw
 // destructor; the definition lives in leptonica's internal header, which is
@@ -8,6 +9,13 @@
 
 using emscripten::val;
 using emscripten::typed_memory_view;
+
+/* ------------------------------------------------------------------ */
+/* Chain operators (M4, design §4.2). Call shapes mirror cpp/oracle.c
+ * 1:1 — the golden comparison is only meaningful if both sides make the
+ * same leptonica calls with the same argument conventions. Any divergence
+ * here must be mirrored in oracle.c or the golden suite will catch it. */
+/* ------------------------------------------------------------------ */
 
 PIX *fromRGBA(val data, int w, int h) {
   if (w <= 0 || h <= 0 || w > 0x00ffffff / h) return nullptr;
@@ -31,6 +39,179 @@ PIX *fromRGBA(val data, int w, int h) {
 PIX *toGray(PIX *pix) {
   if (!pix) return nullptr;
   return pixConvertTo8(pix, 0);
+}
+
+PIX *toGrayWeighted(PIX *pix, float r, float g, float b) {
+  if (!pix) return nullptr;
+  return pixConvertRGBToGray(pix, r, g, b);
+}
+
+PIX *threshold(PIX *pix, int level) {
+  if (!pix) return nullptr;
+  return pixThresholdToBinary(pix, level);
+}
+
+/* Otsu adaptive threshold, mirrored from pixOtsuAdaptiveThreshold
+ * (binarize.c:157) — but with pixSplitDistributionFgBg inlined to its
+ * exact non-debug expansion (pix4.c:3449-3460, the else branch otsu's
+ * ppixdb=NULL call takes). Reason: the wrapper's *body* also contains
+ * the debug branch, which calls gplotMakeOutputPix → pixRead → the whole
+ * decode cluster; a call site that passes NULL is indistinguishable to
+ * the linker, so the decode path cannot be gc'd when we call the wrapper.
+ * Mirroring the loop keeps the exact same leptonica calls on both sides
+ * (oracle.c opOtsu) while dropping the decode-side reference. */
+PIX *otsu(PIX *pix, int tile, float factor) {
+  if (!pix || pixGetDepth(pix) != 8 || tile < 16) return nullptr;
+  l_int32 w, h, nx, ny, i, j, thresh;
+  pixGetDimensions(pix, &w, &h, nullptr);
+  nx = L_MAX(1, w / tile);
+  ny = L_MAX(1, h / tile);
+  PIX *pixd = pixCreate(w, h, 1);
+  if (!pixd) return nullptr;
+  pixCopyResolution(pixd, pix);
+  PIXTILING *pt = pixTilingCreate(pix, nx, ny, 0, 0, 0, 0);
+  if (!pt) { pixDestroy(&pixd); return nullptr; }
+  for (i = 0; i < ny; i++) {
+    for (j = 0; j < nx; j++) {
+      PIX *pixt = pixTilingGetTile(pt, i, j);
+      if (!pixt) continue;
+      /* pixSplitDistributionFgBg(pixt, factor, 1, &thresh, ...) expanded:
+       * the debug branch is the decode-path leak; this is the else. */
+      PIX *pixg = pixConvertTo8BySampling(pixt, 1, 0);
+      NUMA *na = pixGetGrayHistogram(pixg, 1);
+  numaSplitDistribution(na, factor, &thresh, nullptr, nullptr, nullptr, nullptr, nullptr);
+      numaDestroy(&na);
+      pixDestroy(&pixg);
+      PIX *pixb = pixThresholdToBinary(pixt, thresh);
+      pixTilingPaintTile(pixd, i, j, pixb, pt);
+      pixDestroy(&pixt);
+      pixDestroy(&pixb);
+    }
+  }
+  pixTilingDestroy(&pt);
+  return pixd;
+}
+
+PIX *sauvola(PIX *pix, int whsize, float factor) {
+  if (!pix) return nullptr;
+  PIX *pixd = nullptr;
+  if (pixSauvolaBinarize(pix, whsize, factor, 1, nullptr, nullptr, nullptr, &pixd) != 0) return nullptr;
+  return pixd;
+}
+
+PIX *deskew(PIX *pix, int reduction) {
+  if (!pix) return nullptr;
+  return pixDeskew(pix, reduction);
+}
+
+PIX *rotate(PIX *pix, float angle, val quality) {
+  if (!pix) return nullptr;
+  const bool shear = quality.as<std::string>() == "shear";
+  return pixRotate(pix, angle, shear ? L_ROTATE_SHEAR : L_ROTATE_AREA_MAP, L_BRING_IN_WHITE, 0, 0);
+}
+
+PIX *scale(PIX *pix, float fx, float fy) {
+  if (!pix) return nullptr;
+  return pixScale(pix, fx, fy);
+}
+
+PIX *shear(PIX *pix, val direction, float angle) {
+  if (!pix) return nullptr;
+  const bool horizontal = direction.as<std::string>() == "h";
+  if (horizontal) return pixHShearCenter(nullptr, pix, angle, L_BRING_IN_WHITE);
+  return pixVShearCenter(nullptr, pix, angle, L_BRING_IN_WHITE);
+}
+
+PIX *clip(PIX *pix, int x, int y, int w, int h) {
+  if (!pix) return nullptr;
+  BOX *box = boxCreate(x, y, w, h);
+  PIX *out = pixClipRectangle(pix, box, nullptr);
+  boxDestroy(&box);
+  return out;
+}
+
+PIX *translate(PIX *pix, int dx, int dy) {
+  if (!pix) return nullptr;
+  return pixTranslate(nullptr, pix, dx, dy, L_BRING_IN_WHITE);
+}
+
+PIX *morphDilate(PIX *pix, int w, int h) {
+  if (!pix) return nullptr;
+  return pixDilateBrickDwa(nullptr, pix, w, h);
+}
+
+PIX *morphErode(PIX *pix, int w, int h) {
+  if (!pix) return nullptr;
+  return pixErodeBrickDwa(nullptr, pix, w, h);
+}
+
+PIX *morphOpen(PIX *pix, int w, int h) {
+  if (!pix) return nullptr;
+  return pixOpenBrickDwa(nullptr, pix, w, h);
+}
+
+PIX *morphClose(PIX *pix, int w, int h) {
+  if (!pix) return nullptr;
+  return pixCloseBrickDwa(nullptr, pix, w, h);
+}
+
+PIX *bitwiseOr(PIX *pix, PIX *other) {
+  PIX *out = pixCopy(nullptr, pix);
+  if (!out) return nullptr;
+  if (pixOr(out, pix, other) != 0) { pixDestroy(&out); return nullptr; }
+  return out;
+}
+
+PIX *bitwiseAnd(PIX *pix, PIX *other) {
+  PIX *out = pixCopy(nullptr, pix);
+  if (!out) return nullptr;
+  if (pixAnd(out, pix, other) != 0) { pixDestroy(&out); return nullptr; }
+  return out;
+}
+
+PIX *bitwiseXor(PIX *pix, PIX *other) {
+  PIX *out = pixCopy(nullptr, pix);
+  if (!out) return nullptr;
+  if (pixXor(out, pix, other) != 0) { pixDestroy(&out); return nullptr; }
+  return out;
+}
+
+PIX *blend(PIX *pix, PIX *other, float frac) {
+  if (!pix || !other) return nullptr;
+  return pixBlend(pix, other, 0, 0, frac);
+}
+
+PIX *addBorder(PIX *pix, int t, int val) {
+  if (!pix) return nullptr;
+  return pixAddBorder(pix, t, val);
+}
+
+PIX *sobel(PIX *pix, val orientation) {
+  if (!pix) return nullptr;
+  const std::string orient = orientation.as<std::string>();
+  int flag = L_ALL_EDGES;
+  if (orient == "h") flag = L_HORIZONTAL_EDGES;
+  else if (orient == "v") flag = L_VERTICAL_EDGES;
+  return pixSobelEdgeFilter(pix, flag);
+}
+
+/* Queries (design §4.2 — values, no Pix produced). */
+
+val findSkew(PIX *pix) {
+  if (!pix) return val::null();
+  l_float32 angle = 0, conf = 0;
+  if (pixFindSkew(pix, &angle, &conf) != 0) return val::null();
+  val out = val::object();
+  out.set("angle", angle);
+  out.set("confidence", conf);
+  return out;
+}
+
+int countPixels(PIX *pix) {
+  if (!pix) return -1;
+  l_int32 count = 0;
+  if (pixCountPixels(pix, &count, 0) != 0) return -1;
+  return count;
 }
 
 val toPNG(PIX *pix) {
@@ -73,6 +254,28 @@ EMSCRIPTEN_BINDINGS(leptonica_wasm) {
   emscripten::class_<PIX>("Pix");
   emscripten::function("fromRGBA", &fromRGBA, emscripten::allow_raw_pointers());
   emscripten::function("toGray", &toGray, emscripten::allow_raw_pointers());
+  emscripten::function("toGrayWeighted", &toGrayWeighted, emscripten::allow_raw_pointers());
+  emscripten::function("threshold", &threshold, emscripten::allow_raw_pointers());
+  emscripten::function("otsu", &otsu, emscripten::allow_raw_pointers());
+  emscripten::function("sauvola", &sauvola, emscripten::allow_raw_pointers());
+  emscripten::function("deskew", &deskew, emscripten::allow_raw_pointers());
+  emscripten::function("rotate", &rotate, emscripten::allow_raw_pointers());
+  emscripten::function("scale", &scale, emscripten::allow_raw_pointers());
+  emscripten::function("shear", &shear, emscripten::allow_raw_pointers());
+  emscripten::function("clip", &clip, emscripten::allow_raw_pointers());
+  emscripten::function("translate", &translate, emscripten::allow_raw_pointers());
+  emscripten::function("morphDilate", &morphDilate, emscripten::allow_raw_pointers());
+  emscripten::function("morphErode", &morphErode, emscripten::allow_raw_pointers());
+  emscripten::function("morphOpen", &morphOpen, emscripten::allow_raw_pointers());
+  emscripten::function("morphClose", &morphClose, emscripten::allow_raw_pointers());
+  emscripten::function("bitwiseOr", &bitwiseOr, emscripten::allow_raw_pointers());
+  emscripten::function("bitwiseAnd", &bitwiseAnd, emscripten::allow_raw_pointers());
+  emscripten::function("bitwiseXor", &bitwiseXor, emscripten::allow_raw_pointers());
+  emscripten::function("blend", &blend, emscripten::allow_raw_pointers());
+  emscripten::function("addBorder", &addBorder, emscripten::allow_raw_pointers());
+  emscripten::function("sobel", &sobel, emscripten::allow_raw_pointers());
+  emscripten::function("findSkew", &findSkew, emscripten::allow_raw_pointers());
+  emscripten::function("countPixels", &countPixels, emscripten::allow_raw_pointers());
   emscripten::function("toPNG", &toPNG, emscripten::allow_raw_pointers());
   emscripten::function("toJPEG", &toJPEG, emscripten::allow_raw_pointers());
   emscripten::function("toRGBA", &toRGBA, emscripten::allow_raw_pointers());

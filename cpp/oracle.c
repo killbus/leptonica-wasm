@@ -130,13 +130,42 @@ static PIX *opToGray(PIX *src) { return pixConvertTo8(src, 0); }
 
 static PIX *opThreshold(PIX *src, int level) { return pixThresholdToBinary(src, level); }
 
+/* Otsu adaptive threshold, mirrored 1:1 from bindings.cpp otsu() — which
+ * is itself pixOtsuAdaptiveThreshold (binarize.c:157) with the decode-
+ * leaking pixSplitDistributionFgBg debug branch inlined away (see the
+ * bindings comment for the full chain). The wasm build's check-exports
+ * gate fails on any transitive pixRead reference, so the native oracle
+ * mirrors the wasm call shape rather than the library wrapper. */
 static PIX *opOtsu(PIX *src, int tile, float factor) {
-    PIX *pixth = NULL, *pixd = NULL;
-    if (pixOtsuAdaptiveThreshold(src, tile, tile, 0, 0, factor, &pixth, &pixd) != 0) {
-        pixDestroy(&pixth);
-        return NULL;
+    if (pixGetDepth(src) != 8 || tile < 16) return NULL;
+    l_int32 w, h, nx, ny, i, j, thresh;
+    pixGetDimensions(src, &w, &h, NULL);
+    nx = L_MAX(1, w / tile);
+    ny = L_MAX(1, h / tile);
+    PIX *pixd = pixCreate(w, h, 1);
+    if (!pixd) return NULL;
+    pixCopyResolution(pixd, src);
+    PIXTILING *pt = pixTilingCreate(src, nx, ny, 0, 0, 0, 0);
+    if (!pt) { pixDestroy(&pixd); return NULL; }
+    for (i = 0; i < ny; i++) {
+        for (j = 0; j < nx; j++) {
+            PIX *pixt = pixTilingGetTile(pt, i, j);
+            if (!pixt) continue;
+            /* pixSplitDistributionFgBg(src, factor, 1, &thresh, ...) — the
+             * non-debug branch, expanded (decode-path leak documented in
+             * bindings.cpp). */
+            PIX *pixg = pixConvertTo8BySampling(pixt, 1, 0);
+            NUMA *na = pixGetGrayHistogram(pixg, 1);
+            numaSplitDistribution(na, factor, &thresh, NULL, NULL, NULL, NULL, NULL);
+            numaDestroy(&na);
+            pixDestroy(&pixg);
+            PIX *pixb = pixThresholdToBinary(pixt, thresh);
+            pixTilingPaintTile(pixd, i, j, pixb, pt);
+            pixDestroy(&pixt);
+            pixDestroy(&pixb);
+        }
     }
-    pixDestroy(&pixth);
+    pixTilingDestroy(&pt);
     return pixd;
 }
 
