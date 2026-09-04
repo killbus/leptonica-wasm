@@ -270,10 +270,10 @@ jobs:
       # ESM-only package; that failure is in the allowlist).
       - name: Consumer fixture
         run: |
+          node scripts/gen-types.mjs
           cd tests/consumer
           npm install --no-fund --no-audit
-          npx tsc --noEmit
-          npx attw --pack . --entrypoints . --format table || true
+          npm run check
 
       - name: Determinism check (same runner)
         # Relink from the same .a files and compare all four artifacts —

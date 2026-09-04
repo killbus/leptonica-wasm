@@ -5,7 +5,7 @@
  * mirroring src/raw/emscripten-glue.d.ts for the full-abi build.
  */
 declare module "leptonica-wasm/leptonica.mjs" {
-  interface EmscriptenModuleArg {
+  export interface EmscriptenModuleArg {
     wasmBinary?: ArrayBuffer | Uint8Array;
     instantiateWasm?(
       imports: WebAssembly.Imports,
@@ -15,14 +15,14 @@ declare module "leptonica-wasm/leptonica.mjs" {
   }
 
   /** Embind class handle for PIX. Opaque — the curated layer wraps it. */
-  interface PixHandle {
+  export interface PixHandle {
     delete(): void;
     deleteLater(): this;
     isDeleted(): boolean;
   }
 
   /** The curated bindings surface (cpp/bindings.cpp EMSCRIPTEN_BINDINGS). */
-  interface CuratedModule {
+  export interface CuratedModule {
     destroyPix(pix: PixHandle | null): void;
     pixWidth(pix: PixHandle | null): number;
     pixHeight(pix: PixHandle | null): number;
@@ -61,5 +61,4 @@ declare module "leptonica-wasm/leptonica.mjs" {
 
   const factory: (moduleArg?: EmscriptenModuleArg) => Promise<CuratedModule>;
   export default factory;
-  export type { EmscriptenModuleArg, PixHandle, CuratedModule };
 }
