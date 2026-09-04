@@ -197,7 +197,14 @@ check(grayPng[25] === 0, `gray PNG color type mismatch: ${grayPng[25]}`);
     for (let x = 0; x < W2; x++) {
       const got = dec.rows[y][x];
       const [r, g, b] = anchors[y * W2 + x];
-      const want = grayAnchor(r, g, b);
+      // Hard-coded expected values (M2 review F4): the anchors above are
+      // exactly the discrimination table's four rows, in order — computing
+      // them at runtime via grayAnchor() would make this a second
+      // implementation agreeing with itself, not an independent
+      // observation. Values verified once against the pinned source
+      // arithmetic (see grayAnchor's table + the notes above).
+      const expected = [120, 128, 77, 51][y * W2 + x];
+      const want = expected;
       check(got === want, `toGray pixel (${x},${y}) rgb(${r},${g},${b}): got ${got}, want ${want} (weights 0.3/0.5/0.2, f32 round-half-up)`);
     }
   }
