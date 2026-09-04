@@ -29,6 +29,13 @@
     },
     "./full-abi/leptonica.wasm": {
       "default": "./dist/full-abi/leptonica.wasm"
+    },
+    "./leptonica.mjs": {
+      "types": "./dist/leptonica.d.ts",
+      "import": "./dist/leptonica.mjs"
+    },
+    "./leptonica.wasm": {
+      "default": "./dist/leptonica.wasm"
     }
   },
   "scripts": {

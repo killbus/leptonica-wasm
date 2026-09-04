@@ -1,0 +1,15 @@
+{
+  "name": "leptonica-wasm-consumer-fixture",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit && attw --pack ."
+  },
+  "dependencies": {
+    "leptonica-wasm": "file:../.."
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.0",
+    "typescript": "^7.0.2"
+  }
+}
