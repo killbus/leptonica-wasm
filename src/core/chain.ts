@@ -1,6 +1,7 @@
 import type { BlendOp, BitwiseOp, Op } from "../protocol.ts";
 import { OP_DEPTH_RULES, type Depth } from "../protocol.ts";
 import type { Leptonica, Pix } from "./types.ts";
+import type { PixHandle } from "leptonica-wasm/leptonica.mjs";
 
 /**
  * Chain builder (design §5.1: builder IS the protocol).
@@ -208,11 +209,10 @@ export function runChain(lp: Leptonica, src: Pix, ops: readonly Op[]): Pix {
   };
   try {
     for (const op of ops) {
-      const next = applyOp(M, lp, current, op);
-      if (next !== current) {
-        track(next);
-        current = next;
-      }
+      const handle = applyOp(M, current, op);
+      const next = lp.adopt(handle);
+      track(next);
+      current = next;
     }
     // Adopt the final handle: hand ownership to the caller's Pix wrapper.
     const result = current;
@@ -226,14 +226,13 @@ export function runChain(lp: Leptonica, src: Pix, ops: readonly Op[]): Pix {
   }
 }
 
-function applyOp(M: import("./types.ts").Leptonica["module"], lp: Leptonica, src: Pix, op: Op): Pix {
-  void lp;
+function applyOp(M: import("./types.ts").Leptonica["module"], src: Pix, op: Op): PixHandle {
   const h = src.handle;
-  const must = (next: unknown, name: string): Pix => {
+  const must = (next: unknown, name: string): PixHandle => {
     if (next === null || next === undefined) {
       throw new Error(`op ${name} returned null`);
     }
-    return next as Pix;
+    return next as PixHandle;
   };
   switch (op.op) {
     case "toGray":

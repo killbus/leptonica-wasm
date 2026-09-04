@@ -111,10 +111,24 @@ describe.skipIf(!distPresent)("core invariants", () => {
   it("chain failure cleans up intermediates (no crash, source intact)", async () => {
     const lp = await loadInstance()
     using src = lp.fromRGBA(generateRgba(48, 48), 48, 48)
-    // clip with w beyond the image: leptonica returns null → executor throws.
+    // clip with w beyond the image: leptonica clamps the box to the image
+    // bounds, so the chain succeeds with a full-size result.
     expect(() => lp.chain(src).toGray().clip(0, 0, 9999, 9999).run()).not.toThrow()
     // Source still usable after a failed chain.
     expect(src.depth).toBe(32)
+  })
+
+  it("or/and/xor: same-image idempotence is observable through the core API", async () => {
+    const lp = await loadInstance()
+    using src = lp.fromRGBA(generateRgba(48, 48), 48, 48)
+    using operand = lp.chain(src).toGray().threshold(128).run()
+    using or = lp.chain(operand).or(operand).run()
+    using and = lp.chain(operand).and(operand).run()
+    using xor = lp.chain(operand).xor(operand).run()
+    // Idempotence: x OR x == x, x AND x == x, x XOR x == 0.
+    expect(or.countPixels()).toBe(operand.countPixels())
+    expect(and.countPixels()).toBe(operand.countPixels())
+    expect(xor.countPixels()).toBe(0)
   })
 })
 
@@ -130,7 +144,25 @@ describe.skipIf(!canRun)("core parity (golden replay through the core API)", () 
       using _src = src
       const builder = lp.chain(src)
       // Record every op through the builder's fluent API.
-      for (const op of chain.ops) recordOp(builder, op)
+      for (const [i, op] of chain.ops.entries()) {
+        if (op.op === "or" || op.op === "and" || op.op === "xor") {
+          // Same-image idempotence strategy (F5): the golden oracle runs the
+          // bitwise op with the current image as BOTH operands. Replay the
+          // prefix to produce that 1bpp operand for record-time validation;
+          // the executor itself mirrors it as bitwiseOr(h, h).
+          const operand = replayPrefix(lp, src, chain.ops.slice(0, i))
+          builder[op.op](operand)
+          // The operand's handle is never referenced past record time — the
+          // recorded Op carries no handle id on this path — so release it now.
+          operand.dispose()
+        } else if (op.op === "blend") {
+          // The blend golden chain starts at src: both operands are the raw
+          // 32bpp image (executor: blend(h, h, frac)).
+          builder.blend(src, op.frac)
+        } else {
+          recordOp(builder, op)
+        }
+      }
       const out = builder.run()
       using _out = out
       const png = out.toPNG()
@@ -184,9 +216,21 @@ function recordOp(builder: ReturnType<Leptonica["chain"]>, op: Op): void {
     case "erode": builder.erode(op.w, op.h); break
     case "open": builder.open(op.w, op.h); break
     case "close": builder.close(op.w, op.h); break
-    case "or": case "and": case "xor": builder[op.op](builder as unknown as Pix); break
-    case "blend": builder.blend(builder as unknown as Pix, op.frac); break
+    case "or": case "and": case "xor": case "blend":
+      throw new Error(`recordOp: binary op '${op.op}' is handled by the parity loop`)
     case "addBorder": builder.addBorder(op.t, op.val); break
     case "sobel": builder.sobel(op.orientation); break
   }
+}
+
+/** Replay the ops preceding a binary op to produce its operand Pix. */
+function replayPrefix(lp: Leptonica, src: Pix, prefix: readonly Op[]): Pix {
+  const b = lp.chain(src)
+  for (const op of prefix) {
+    if (op.op === "or" || op.op === "and" || op.op === "xor" || op.op === "blend") {
+      throw new Error(`parity replay: binary op '${op.op}' inside a prefix`)
+    }
+    recordOp(b, op)
+  }
+  return b.run()
 }

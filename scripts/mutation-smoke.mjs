@@ -36,8 +36,8 @@ const original = readFileSync(goldenTestPath, 'utf8');
 // The mutation site: threshold's level mapping. The original passes
 // op.level; the mutant passes op.level + 1 — a classic off-by-one in
 // parameter translation that pixel-exact goldens must catch.
-const MUTATION_FROM = "case 'threshold': mustPix(L.threshold(pix, op.level), 'threshold'); break;";
-const MUTATION_TO = "case 'threshold': mustPix(L.threshold(pix, op.level + 1), 'threshold'); break;";
+const MUTATION_FROM = "case 'threshold': mustPix(L.threshold(pix, op.level), 'threshold'); break";
+const MUTATION_TO = "case 'threshold': mustPix(L.threshold(pix, op.level + 1), 'threshold'); break";
 if (!original.includes(MUTATION_FROM)) {
   fail('mutation anchor not found in golden.test.ts — the line to mutate changed:\n  ' + MUTATION_FROM);
 }
