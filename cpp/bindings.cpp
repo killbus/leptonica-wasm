@@ -214,6 +214,50 @@ int countPixels(PIX *pix) {
   return count;
 }
 
+val connComp(PIX *pix) {
+  if (!pix || pixGetDepth(pix) != 1) return val::null();
+  BOXA *boxa = pixConnComp(pix, nullptr, 8);
+  if (!boxa) return val::null();
+  const int n = boxaGetCount(boxa);
+  val out = val::array();
+  for (int i = 0; i < n; i++) {
+    BOX *box = boxaGetBox(boxa, i, L_CLONE);
+    if (!box) continue;
+    l_int32 x = 0, y = 0, w = 0, h = 0;
+    boxGetGeometry(box, &x, &y, &w, &h);
+    val b = val::object();
+    b.set("x", x);
+    b.set("y", y);
+    b.set("w", w);
+    b.set("h", h);
+    out.call<void>("push", b);
+    boxDestroy(&box);
+  }
+  boxaDestroy(&boxa);
+  return out;
+}
+
+val histogram(PIX *pix) {
+  if (!pix) return val::null();
+  NUMA *na = pixGetGrayHistogram(pix, 1);
+  if (!na) return val::null();
+  val out = val::array();
+  for (int i = 0; i < 256; i++) {
+    l_int32 v = 0;
+    if (numaGetIValue(na, i, &v) != 0) { numaDestroy(&na); return val::null(); }
+    out.call<void>("push", v);
+  }
+  numaDestroy(&na);
+  return out;
+}
+
+val average(PIX *pix) {
+  if (!pix) return val::null();
+  l_float32 val = 0;
+  if (pixGetAverageMasked(pix, nullptr, 0, 0, 1, L_MEAN_ABSVAL, &val) != 0) return val::null();
+  return val(val);
+}
+
 val toPNG(PIX *pix) {
   l_uint8 *data = nullptr;
   size_t size = 0;
@@ -276,6 +320,9 @@ EMSCRIPTEN_BINDINGS(leptonica_wasm) {
   emscripten::function("sobel", &sobel, emscripten::allow_raw_pointers());
   emscripten::function("findSkew", &findSkew, emscripten::allow_raw_pointers());
   emscripten::function("countPixels", &countPixels, emscripten::allow_raw_pointers());
+  emscripten::function("connComp", &connComp, emscripten::allow_raw_pointers());
+  emscripten::function("histogram", &histogram, emscripten::allow_raw_pointers());
+  emscripten::function("average", &average, emscripten::allow_raw_pointers());
   emscripten::function("toPNG", &toPNG, emscripten::allow_raw_pointers());
   emscripten::function("toJPEG", &toJPEG, emscripten::allow_raw_pointers());
   emscripten::function("toRGBA", &toRGBA, emscripten::allow_raw_pointers());

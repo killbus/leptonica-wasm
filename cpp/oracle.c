@@ -95,6 +95,16 @@ typedef struct {
     PIX *pix;
     double skewAngle, skewConf;
     long pixelCount;
+    /* connComp: number of connected components (8-connectivity, the
+     * protocol default). The boxes themselves are compared as part of
+     * the PNG bytes only if the chain produces them; the count is the
+     * scalar surface for the golden JSON. */
+    long connCompCount;
+    /* histogram: 256 bins (the golden chains feed 8bpp after toGray);
+     * serialized as a compact JSON array, summed for the scalar check. */
+    long histBins[256];
+    long histSum; /* sum of all bins — catches off-by-one shifts cheaply */
+    double averageValue; /* pixGetAverageMasked L_MEAN_ABSVAL, factor 1 */
 } Chain;
 
 static void applyOp(Chain *ch, Json *j);
@@ -406,6 +416,33 @@ static void applyQuery(Chain *ch, Json *j) {
     } else if (!strcmp(kind, "countPixels")) {
         l_int32 count = 0;
         if (pixCountPixels(ch->pix, &count, 0) == 0) ch->pixelCount = count;
+    } else if (!strcmp(kind, "connComp")) {
+        /* pixConnComp(pixs, NULL, 8) → pixConnCompBB path: boxa only, no
+         * per-component pixa. Mirrors bindings.cpp connComp() 1:1. */
+        BOXA *boxa = pixConnComp(ch->pix, NULL, 8);
+        if (!boxa) { fprintf(stderr, "oracle: connComp failed\n"); exit(3); }
+        ch->connCompCount = boxaGetCount(boxa);
+        boxaDestroy(&boxa);
+    } else if (!strcmp(kind, "histogram")) {
+        /* pixGetGrayHistogram(pixs, 1) — full-sample, no subsampling.
+         * Mirrors bindings.cpp histogram(). */
+        NUMA *na = pixGetGrayHistogram(ch->pix, 1);
+        if (!na) { fprintf(stderr, "oracle: histogram failed\n"); exit(3); }
+        for (int i = 0; i < 256; i++) {
+            l_int32 v = 0;
+            if (numaGetIValue(na, i, &v) != 0) { fprintf(stderr, "oracle: histogram bin %d read failed\n", i); exit(3); }
+            ch->histBins[i] = v;
+            ch->histSum += v;
+        }
+        numaDestroy(&na);
+    } else if (!strcmp(kind, "average")) {
+        /* pixGetAverageMasked(pixs, NULL, 0, 0, 1, L_MEAN_ABSVAL, &val).
+         * Mirrors bindings.cpp average(). */
+        l_float32 val = 0;
+        if (pixGetAverageMasked(ch->pix, NULL, 0, 0, 1, L_MEAN_ABSVAL, &val) != 0) {
+            fprintf(stderr, "oracle: average failed\n"); exit(3);
+        }
+        ch->averageValue = val;
     } else {
         fprintf(stderr, "oracle: unknown query '%s'\n", kind); exit(2);
     }
@@ -450,7 +487,7 @@ int main(int argc, char **argv) {
 
     if (width <= 0 || height <= 0) { fprintf(stderr, "oracle: bad dimensions\n"); return 2; }
 
-    Chain ch = { opFromRGBA(argv[2], width, height), 0, 0, 0 };
+    Chain ch = { opFromRGBA(argv[2], width, height), 0, 0, 0, 0, {0}, 0, 0 };
     if (!ch.pix) { fprintf(stderr, "oracle: fromRGBA failed\n"); return 3; }
 
     if (opsStart) {
@@ -476,8 +513,12 @@ int main(int argc, char **argv) {
 
     FILE *out = fopen(argv[4], "wb");
     if (!out) return 4;
-    fprintf(out, "{\"skewAngle\":%.6f,\"skewConf\":%.6f,\"pixelCount\":%ld}\n",
-            ch.skewAngle, ch.skewConf, ch.pixelCount);
+    fprintf(out, "{\"skewAngle\":%.6f,\"skewConf\":%.6f,\"pixelCount\":%ld,"
+                 "\"connCompCount\":%ld,\"histogram\":[",
+            ch.skewAngle, ch.skewConf, ch.pixelCount, ch.connCompCount);
+    for (int i = 0; i < 256; i++)
+        fprintf(out, "%s%ld", i ? "," : "", ch.histBins[i]);
+    fprintf(out, "],\"histSum\":%ld,\"average\":%.6f}\n", ch.histSum, ch.averageValue);
     fclose(out);
 
     pixDestroy(&ch.pix);
