@@ -3,10 +3,10 @@
 {"file": ".trellis/tasks/09-03-leptonica-wasm-modern/research-tesseract-wasm.md", "reason": "Emscripten 构建路线证据：零 patch CMake flag 组合、依赖 pin 方式、Node worker_threads 先例"}
 {"file": ".trellis/tasks/09-03-leptonica-wasm-modern/research-liteparse.md", "reason": "Rust 路线对照（已否决）；npm provenance 与发布管线可借鉴"}
 {"file": ".trellis/tasks/09-03-leptonica-wasm-modern/research-vendor-pins.md", "reason": "全部依赖 pin 的 API 核验证据；libpng 错值修正记录；emsdk 工具名/URL 事实"}
-{"file": "scripts/build.mjs", "reason": "M1 spike 构建脚本：versions.json pin 四依赖 → codeload commit 级 tarball → emcmake/ninja → emcc；default 归档链接裁剪 + full-abi whole-archive 双模式；build-report.json 记录体积/sha256/耗时"}
-{"file": "cpp/bindings.cpp", "reason": "M1 spike embind 五函数：fromRGBA/toGray/toPNG/toJPEG/toRGBA；0xRRGGBBAA 字序 + pixEndianByteSwap 归一化；16MP 守卫；M1 有意保留编码器缓冲泄漏（记录于 research-size-spike.md）"}
+{"file": "scripts/build.mjs", "reason": "M1 spike 构建脚本：versions.json pin 四依赖 → codeload commit 级 tarball → emcmake/ninja → em++；default 归档链接裁剪 + full-abi whole-archive 双模式；build-report.json 记录体积/sha256/耗时"}
+{"file": "cpp/bindings.cpp", "reason": "M1 spike embind 五函数：fromRGBA/toGray/toPNG/toJPEG/toRGBA；0xRRGGBBAA 字序 + pixEndianByteSwap 归一化；16MP 守卫；M1 有意保留编码器 + toRGBA 缓冲泄漏（记录于 research-size-spike.md）"}
 {"file": "scripts/gen-exports.mjs", "reason": "allheaders.h → LEPT_DLL extern 声明扫描 → C ABI 导出表（可 import；2743 函数实测）"}
 {"file": "scripts/smoke.mjs", "reason": "M1 冒烟：PNG IHDR/JPEG SOI/toRGBA 往返断言 + 负向用例 + default 模式 pixRead* 缺席验证（symbol map + wasm 导出表）"}
 {"file": ".github/workflows/size-spike.yml", "reason": "M1 CI：workflow_dispatch；checkout/setup-node/upload-artifact 全 pin（证据注释）；emsdk 按 pin 安装；双次从零构建 sha256 一致性；双模式构建 + 冒烟；step summary + artifact"}
-{"file": ".trellis/tasks/09-03-leptonica-wasm-modern/research-size-spike.md", "reason": "M1 spike 报告：方法/关键决策完整；结果/结论占位待 CI 运行回填；含 flat 命名偏差说明"}
+{"file": ".trellis/tasks/09-03-leptonica-wasm-modern/research-size-spike.md", "reason": "M1 spike 报告（已收口）：方法/关键决策/CI 结果与结论（裁决：精选默认 + full-abi 逃生舱）均已回填；含 flat 命名偏差说明与 M2 已知项清单"}
 {"file": ".trellis/tasks/09-03-leptonica-wasm-modern/handover-team-c.md", "reason": "M1 尾段交接：push 完成（main@12ce162）后剩余步骤清单（触发 CI→回填→评审门→M2）、预审发现、纪律提醒；TEAM C 从此接手"}

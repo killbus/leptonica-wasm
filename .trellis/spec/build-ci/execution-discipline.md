@@ -92,9 +92,54 @@ Invoke-WebRequest … -OutFile build/deps/leptonica.tar.gz
 Invoke-WebRequest … -OutFile tmp/deps/leptonica.tar.gz
 ```
 
+## 规则 4：主会话对子代理/worker 的 monitor 职能（2026-09-04 用户指示）
+
+### Scope / Trigger
+
+主会话（dispatcher）派出任何后台执行体——`trellis channel spawn` 的 worker、后台 Bash、后台 Agent——之后的时间窗。
+
+### 契约
+
+- **派即监**：dispatch 不是终点。任何后台执行体启动后，主会话必须持有其完成信号的监督手段（harness 原生通知、`wait --kind done,error`、或显式轮询），且监督必须覆盖**失败信号**（error/killed/非零退出），不只是成功信号。fire-and-forget 禁止。
+- **早失败检测**：spawn 后的最初 2 分钟是死亡高峰（spawn 失败、context 超限、provider 报错）。监督的第一职责是尽早发现"根本没跑起来"，而不是等超时。判据：worker 日志/事件流出现 `error` 类事件，或产出体积/事件数长时间为零且无 progress。
+- **timeout ≠ 完成判据**：`wait` 超时（exit 124）意味着"没等到"，必须回到事件流核实实际状态（done/error/仍活着），不得假定成功也不得静默重试。
+- **失败处置**：确认执行体死亡后——收集死因（worker 日志 `*.log`、channel 事件流 `--raw`）→ 修复或绕行 → 重派。绕行时要保留失败证据供事后归档（M1 先例：channel worker 因 pnpm shim 不被 trellis resolveProviderPath 支持 spawn ENOENT → 改用 Agent 工具直派，channel 事件流留档）。
+- **适用范围**：同一纪律适用于 Agent 工具的后台 subagent 与 4xx/5xx 网络错误的重试节奏（指数退避，不静默放弃）。
+
+### Validation & Error Matrix
+
+| 条件 | 处置 |
+| --- | --- |
+| 后台 worker spawn 后无监督手段 | 阻断：先建立监督再继续主线工作 |
+| `wait` 超时退出 | 核实事件流实际状态，禁止假定成功 |
+| worker 日志出现 error 事件 | 停止等待，诊断死因，决定修复/绕行 |
+| 子代理/worker 连续失败 | 按指数退避重试；仍失败换通道（如 channel → Agent 工具） |
+
+### Wrong vs Correct
+
+```text
+# Wrong：spawn 三个 worker 后直接 wait done，只等成功不看 error；
+# worker 早已 error 死亡，wait 挂到超时（M1 实际发生，25 分钟后用户发现）
+trellis channel spawn … ×3
+trellis channel wait … --kind done --timeout 29m   # 只订阅 done，漏 error
+
+# Correct：wait 同时订阅 done,error；超时后回查 --raw 事件流
+trellis channel wait … --kind done,error --all --timeout 29m
+# 超时/可疑时：
+trellis channel messages <ch> --raw --last 10     # 核实真实状态再行动
+```
+
 ## Common Mistakes
 
 ### 本机装工具链「图省事」
+
+### 派后不监，靠用户发现卡死
+
+- **Symptom**：三个 reviewer worker spawn 后全部 ENOENT 死亡，主会话只挂 `wait --kind done`，25 分钟无输出，用户主动问"是不是卡住了"。
+- **Cause**：wait 只订阅成功信号；spawn 失败写入的是 `error` 事件，从未被消费。监督缺位 + 失败信号盲区叠加。
+- **Fix**：wait 一律 `--kind done,error`；spawn 后数分钟内主动抽查一次事件流确认 worker 真的活起来了。
+- **Prevention**：本规则 4；channel runtime 的 provider 解析在 pnpm 安装环境下有上游 bug（trellis 0.6.16 resolveProviderPath 只认 npm 格式 .cmd shim），Windows + pnpm 环境暂用 Agent 工具直派替代。
+
 
 - **Symptom**：agent 计划本地装 emsdk「先验证可行性」。
 - **Cause**：把「快速验证」置于执行纪律之上。
@@ -103,4 +148,4 @@ Invoke-WebRequest … -OutFile tmp/deps/leptonica.tar.gz
 
 ## 一句话版
 
-> 开发机产出代码与 workflow；GitHub Actions 产出一切二进制。
+> 开发机产出代码与 workflow；GitHub Actions 产出一切二进制；派出的一切执行体都在主会话的监督之下。

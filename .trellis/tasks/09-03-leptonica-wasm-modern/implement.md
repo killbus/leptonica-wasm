@@ -41,22 +41,23 @@
 
 执行纪律（2026-09-03 用户指示，详见 `.trellis/spec/build-ci/execution-discipline.md`）：本机零重任务——一切编译在 GitHub Actions 执行，依赖源码 fetch 落 `tmp/deps/`，本机仅编辑、头文件解析与 npm test/typecheck 级验证。
 
-- [x] `scripts/build.mjs` 最小可跑：`vendor/versions.json` pin 四依赖（zlib/libpng/libjpeg-turbo/leptonica 精确 commit）→ fetch（`tmp/deps/`）→ emcmake → ninja → emcc 出 wasm（脚本在 CI 内执行，本机只验语法）——233 行，`node --check` 通过；default/full-abi 双模式 + build-report.json（wasm raw/gzip 体积、sha256、耗时）
-- [x] `cpp/bindings.cpp` 最小 embind：`fromRGBA` / `toGray` / `toPNG` / `toJPEG` / `toRGBA` 五函数跑通——75 行已写；冒烟脚本 `scripts/smoke.mjs`（121 行）在 CI 内验证运行时行为（PNG IHDR 断言 / JPEG SOI / toRGBA 字节往返 / 负向用例）
+- [x] `scripts/build.mjs` 最小可跑：`vendor/versions.json` pin 四依赖（zlib/libpng/libjpeg-turbo/leptonica 精确 commit）→ fetch（`tmp/deps/`）→ emcmake → ninja → em++ 出 wasm（脚本在 CI 内执行，本机只验语法）——242 行，`node --check` 通过；default/full-abi 双模式 + build-report.json（wasm raw/gzip 体积、sha256、耗时）
+- [x] `cpp/bindings.cpp` 最小 embind：`fromRGBA` / `toGray` / `toPNG` / `toJPEG` / `toRGBA` 五函数跑通——79 行已写；冒烟脚本 `scripts/smoke.mjs`（132 行）在 CI 内验证运行时行为（PNG IHDR 断言 / JPEG SOI / toRGBA 字节往返 / 负向用例）
 - [x] `.github/workflows/size-spike.yml`（M1 构建执行地）：逐 action 研究后引用（最新 release + 文档，证据留注释）→ emsdk 按 pin 安装 → 双次从零构建产物哈希一致性 → Node 冒烟 + `pixRead*` 缺席验证 → 全量对照构建 → 体积（raw+gzip）/耗时采集 → step summary + artifact 上传——97 行 workflow_dispatch 触发；checkout/setup-node/upload-artifact 三 action 全 pin（证据注释内含 release tag/日期/链接）
-- [x] 测量：产物体积（raw + gzip）、冷构建耗时基线（供 CI 缓存与超时配置）；导出表/符号表确认无解码入口（`pixRead*` 缺席验证）——CI run 33767637278 全绿：default 406KB/105KB gzip、full-abi 2.59MB/856KB gzip；双次构建 sha256 稳定；冷构建 93.8s；符号表 `pixRead*` 0 项、full-abi 无真实 `WebP*` 解码符号
+- [x] 测量：产物体积（raw + gzip）、冷构建耗时基线（供 CI 缓存与超时配置）；导出表/符号表确认无解码入口（`pixRead*` 缺席验证）——CI run 33767637278 全绿：default 406KB/105KB gzip、full-abi 2.59MB/855KB gzip；双次构建 sha256 稳定；冷构建 93.8s；符号表 `pixRead*` 0 项、full-abi 无真实 `WebP*` 解码符号
 - [x] 对照构建：`gen-exports.mjs` 首版扫 `allheaders.h` → 全量 C ABI 导出再测体积——2745 函数（声明 ∩ 归档定义），full-abi 模式体积见上
-- [x] 产出 `research/size-spike.md`（design §8 四项裁决建议；CI 数据回填后收口）——`research-size-spike.md` 结果/结论已回填：裁决"精选为默认、full-abi 逃生舱"（gzip 增量 ~750KB 远超 100KB 阈值）；含 7 次 CI 迭代的裁决记录（embind 完整类型、em++ 链接、-O3 内联与导出名压缩、WebP 错误桩）
+- [x] 产出 `research-size-spike.md`（原计划名 `research/size-spike.md`，随实际扁平落盘同步；design §8 四项裁决建议；CI 数据回填后收口）——结果/结论已回填：裁决"精选为默认、full-abi 逃生舱"（gzip 增量 ~750KB 远超 100KB 阈值）；含 7 次 CI 迭代的裁决记录（embind 完整类型、em++ 链接、-O3 内联与导出名压缩、WebP 错误桩）
 - 验证：CI workflow 内从零连续两次构建产物一致；Node 脚本 load wasm 跑通 fromRGBA→toGray→toPNG（本机仅静态验证，运行时验证由 CI 承担）；`npm test` + `npx tsc --noEmit` 保持绿
 - 评审门：体积数据回填 PRD 决策 ⑦（core/full 与 raw 层默认产物裁决），用户确认后进 M2
 - 回滚点：spike 结论不满足预期 → 回 design §3 重新裁决，不动后续里程碑
 
 ## M2 构建管线正式化
 
-- [ ] `build.mjs` 完整化：`--raw-abi` 开关（或按 M1 裁决定产物形态）、依赖 fetch 缓存、`--emit-tsd` 接入
-- [ ] `scripts/check-exports.mjs`：d.ts 符号 vs `WebAssembly.Module.exports` diff
-- [ ] GitHub Actions PR CI：pin emsdk → wasm 构建 + 原生构建（cmake+ninja，同 versions.json pin）→ check-exports → node test；缓存分层（emsdk 按版本键、deps 源码+静态库按 versions.json+工具链哈希键，design §3 构建分发策略）
-- [ ] 供应链防线（M0 评审回填）：CI 默认 `npm ci --ignore-scripts`；committed pre-commit 通用 secret 模式扫描（gitleaks 类，不点名任何文件）；依赖升级自动化（dependabot/renovate 分组小步，盯 TS 7.x 补丁链）
+- [ ] `build.mjs` 完整化：开关名裁决统一（现 `--full-abi` vs 本清单旧称 `--raw-abi` vs design §3 `/full` 子导出——三分裂，评审 build-eng 议题）、依赖 fetch 缓存、`--emit-tsd` 接入；**前置修复**：`.done` 编译标记纳入 pin commit + flags 哈希失效（M1 评审 build-eng W1：现状 pin 变更后 stale `.done` 静默跳过编译、链接旧库——M2 缓存复用 `tmp/build` 前必修）；curl 下载原子性（.part + rename，build-eng N2）；build-report 增 `jsGzipBytes` + provenance 字段（sdkVersion/四依赖 pin/git sha/优化级别，perf F3 + build-eng N4）；`CMAKE_POLICY_VERSION_MINIMUM=3.5` 移除验证（build-eng N1：四依赖全部声明 ≥3.10，flag 必要性未复现）；full-abi 默认 outdir 改 `dist/full-abi/` 防覆盖（build-eng N2）
+- [ ] `scripts/check-exports.mjs`：d.ts 符号 vs `WebAssembly.Module.exports` diff（**按模式分层定义比较对象**——full-abi 比 d.ts↔wasm exports，default 比 d.ts EmbindModule↔模块实例方法，build-eng 议题 4）；**库级解码符号缺席断言自动化**：png_create_read_struct / png_read_* / jpeg_read_header / jpeg_start_decompress / inflateInit_* = 0 + 正则 `\w*` 收紧（perf F2/F5——现 CI 断言一弱一空：漏裸名 pixRead；default 模式 metadce 压缩导出名使 `/^pix(Read|Write)/` 检查结构性空转；强证据仅一次性人工核验不在 CI）
+- [ ] GitHub Actions PR CI：pin emsdk（**改从 versions.json 读取注入，消除 yml 硬编码双写**——M1 评审 build-eng W2：现 yml 注释宣称来源 versions.json 但实际硬编码，versions.json emsdk 节零消费者）→ wasm 构建 + **default@-O2 同优化级别对照**（perf 议题 1：复用依赖仅 ~6s，澄清 -O2/-O3 混合对照的精确数字）+ 原生构建（cmake+ninja，同 versions.json pin）→ check-exports → node test；缓存分层（emsdk 按版本键、deps 源码+静态库按 versions.json+工具链哈希键 + **flags 哈希**（build-eng 议题 1：只键 pin 不键 flags 会在"缓存恢复+调 flags"下产生 stale build）+ **restore 后内容复验**（supply N3：缓存键非内容寻址，缓存层是绕过 fetch 校验的旁路），design §3 构建分发策略）；确定性比对扩面（.mjs/.d.ts/.symbols 哈希 + 跨 runner，supply W3/build-eng W3）；runner pin `ubuntu-24.04`（supply N4）
+- [ ] 供应链防线（M0 评审回填 + M1 评审扩展）：CI 默认 `npm ci --ignore-scripts`（**提前落地**，supply N1：M1 已跑首个 npm ci，递延窗口已活化）；committed pre-commit 通用 secret 模式扫描（gitleaks 类，不点名任何文件；落地时忽略模式同步固化到 .gitignore，supply N5）；依赖升级自动化（dependabot/renovate 分组小步，盯 TS 7.x 补丁链；**显式加 github-actions ecosystem**——supply W2a：action pin 更新检测未覆盖会静默腐化）；**sha256 白名单扩展覆盖工具链**（supply W1：emsdk install 拉取的 298MB wasm-binaries.tar.xz 等无任何内容哈希校验，sdkReleaseHash 是 revision 寻址非哈希——versions.json 增列 sha256 + install 后置比对）；**白名单再生成纪律**（supply 议题 1：codeload 字节级稳定性无契约，走 research-vendor-pins.md 式 API 复核 + PR review）；**分支保护**（supply W3：main 无保护是 pin 完整性根信任单点——禁 force push、versions.json/workflow 变更走 PR review，与白名单同批）
+- [ ] toGray 手算金样（P2 末位，M4 oracle 前的像素值级补丁）：现有冒烟对 toGray 只验灰度 PNG 头（位深/颜色类型），像素值从未断言——M2 恰好要动构建（`.done` 修复、default@-O2 对照、CMAKE_POLICY flag 移除），是引入回归的时机而现有断言抓不住。2×2 渐变输入按 BT.601（0.299R+0.587G+0.114B）手算期望值断言 toGray 像素。**前置条件**：写断言前先读 pin 版 `pixConvertTo8` 源码确认确切舍入行为（整数近似 vs 浮点截断），期望值不符则断言围绕实现确切行为而非期望公式——避免手算公式与实现行为不符时测出假红。M4 oracle harness 进来后被吸收
 - 验证：干净 checkout 一条命令出 `dist/`；CI 全绿；连续两次运行第二次命中缓存
 - 回滚点：`git revert` 构建脚本提交
 

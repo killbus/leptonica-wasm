@@ -72,7 +72,7 @@ leptonica-wasm/
 
 1. fetch：按 pin 拉源码到 `tmp/deps/`（浅 clone 或 tarball，本地缓存；临时内容路径纪律见 `.trellis/spec/build-ci/execution-discipline.md`）。
 2. 逐依赖 `emcmake cmake + ninja` 构建静态库（zlib → libpng → libjpeg-turbo → leptonica）。
-3. `emcc` 编译 `cpp/bindings.cpp` 并链接全部静态库 → 单 `leptonica.wasm` + ESM glue。
+3. `em++` 编译 `cpp/bindings.cpp` 并链接全部静态库 → 单 `leptonica.wasm` + ESM glue（M1 实测：embind RTTI 需 C++ 驱动链接，`emcc` 留下未定义的 `__cxxabiv1` 符号）。
 
 **Leptonica CMake 开关**（起点组合，构建期调通为准）：`HAVE_LIBJPEG/LIBPNG` 留，`LIBWEBP/OPENJPEG/GIFLIB` 全 OFF；`-DCMAKE_POLICY_VERSION_MINIMUM=3.5`（tesseract-wasm 已验证）。
 
@@ -82,7 +82,7 @@ leptonica-wasm/
 - `-sALLOW_MEMORY_GROWTH=1`，`INITIAL_MEMORY` 32MB，`MAXIMUM_MEMORY` 可配
 - `-sENVIRONMENT=web,worker,node`
 - `--emit-tsd`（d.ts 产出，见 §6）
-- `-O3` + `-sWASM_BIGINT`；SIMD 不做构建变体（决策 ⑨，运行时 `WebAssembly.validate` 探测暴露能力标志）
+- `-O3`（M1 实测：`-sWASM_BIGINT` 在 emsdk 6.0.9 已废弃，不再需要）；SIMD 不做构建变体（决策 ⑨，运行时 `WebAssembly.validate` 探测暴露能力标志）
 
 **体积控制**：
 
@@ -279,7 +279,7 @@ oracle 细则：
 3. 「不暴露 `pixRead` → 解码路径被裁剪」验证（wasm 导出表/符号表无解码入口残留）。
 4. 裁决：默认产物 = 精选 or 含全量 raw；core/full 是否拆分。
 
-产出：`research/size-spike.md`，结论回写 PRD 决策 ⑦。
+产出：`research-size-spike.md`（任务目录扁平命名，与既有 research-*.md 约定一致），结论回写 PRD 决策 ⑦。
 
 ## 9. 兼容性与回滚
 

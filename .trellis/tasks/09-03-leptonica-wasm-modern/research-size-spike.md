@@ -1,6 +1,6 @@
 # size spike 研究（M1）
 
-> 命名偏差：design.md §8 与 implement.md 指定产物名为 `research/size-spike.md`；实际落盘为本任务目录下的扁平文件 `research-size-spike.md`，与既有 `research-vendor-pins.md` / `research-tesseract-wasm.md` / `research-liteparse.md` 的扁平命名约定一致。
+> 命名偏差：design.md §8 与 implement.md 原指定产物名为 `research/size-spike.md`；实际落盘为本任务目录下的扁平文件 `research-size-spike.md`，与既有 `research-vendor-pins.md` / `research-tesseract-wasm.md` / `research-liteparse.md` 的扁平命名约定一致。design.md §8 与 implement.md M1 清单已于 M1 评审（trellis-check）同步为扁平名。
 
 ## 目标
 
@@ -20,7 +20,7 @@
 
 ### 各依赖 CMake 配置
 
-- 公共：`emcmake cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=<install> -DCMAKE_PREFIX_PATH=<install> -DCMAKE_POLICY_VERSION_MINIMUM=3.5`。`CMAKE_POLICY_VERSION_MINIMUM=3.5` 是 CMake 4.2 跑通旧策略声明（`cmake_minimum_required` < 3.5）依赖的关键。
+- 公共：`emcmake cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=<install> -DCMAKE_PREFIX_PATH=<install> -DCMAKE_POLICY_VERSION_MINIMUM=3.5`。`CMAKE_POLICY_VERSION_MINIMUM=3.5` 为预置防御 flag（CMake 4.x 移除 <3.5 兼容的官方逃生阀）；M1 评审复核（2026-09-04）：四个依赖树内全部声明 ≥3.10（zlib `3.12...3.31` / libpng `3.14...4.2` / libjpeg-turbo `3.15...3.28` / leptonica `3.10`），无任何 <3.5 声明，该 flag 必要性未复现——M2 验证移除（评审 build-eng N1）。
 - zlib：`-DZLIB_BUILD_SHARED=OFF -DZLIB_BUILD_TESTING=OFF`。
 - libpng：`-DPNG_SHARED=OFF -DPNG_STATIC=ON -DPNG_TESTS=OFF -DPNG_TOOLS=OFF` + 显式 `ZLIB_LIBRARY` / `ZLIB_INCLUDE_DIR` 指向安装前缀。
 - libjpeg-turbo：`-DWITH_SIMD=OFF`（SIMD 汇编只覆盖 x86/ARM 原生目标，wasm 不可用）+ `-DENABLE_SHARED=OFF`。
@@ -34,7 +34,9 @@
 - `typed_memory_view<unsigned char>`（emscripten::val）让 JS 拿到真实 Uint8Array 视图；`.call<void>("set", data)` 即 `TypedArray.prototype.set`。
 - `allow_raw_pointers()` 注册裸指针签名；`class_<PIX>("Pix")` 以不透明句柄暴露。
 - 16MP 守卫：`w > 0x00ffffff / h`（w·h ≤ 0x00ffffff）拦截尺寸溢出。
-- M1 有意简化：编码器输出缓冲不释放（泄漏换正确性），失败路径 `lept_free` 兜底。
+- M1 有意简化：`toPNG`/`toJPEG` 的编码器输出缓冲与 `toRGBA` 的 `lept_calloc` 缓冲均不释放（逐次泄漏换正确性，view 生命周期依赖该缓冲；M2 承诺层 API 需显式 release/free 设计），失败路径 `lept_free` 兜底。
+- `pix_internal.h` 内部头引入：`class_<PIX>` 的 typeid/RTTI 要求 `struct Pix` 完整类型，定义在 leptonica 内部头（`allheaders.h` 之后包含，`bmf.c` 官方先例；`make install` 不装该头，故 `-I` 指向源码树）。CI run 33735115539。
+- 链接驱动 `em++`（非 `emcc`）：class_<PIX> 的 `__cxxabiv1` RTTI 符号需要 libc++/libc++abi，C 驱动链接留下未定义符号。CI run 33743439895。
 
 ### 链接
 
@@ -44,6 +46,11 @@
 - 导出表生成：allheaders.h 提取（`LEPT_DLL extern` 声明）∩ `emnm --defined-only`（libleptonica.a 实际定义）+ `_malloc` / `_free`，排序落 `tmp/build/full-abi-exports.txt`。交集过滤排除未编译的编解码器（如 `pixReadMemWebP`，WebP 已禁用）。
 - 不加 `-lm`（wasm 目标下 emscripten 自带 math 实现，链接系统库无意义）；M1 不加 `-sFILESYSTEM=0`（留 M2 裁剪）。
 
+### 已知项（主会话预审，M2 处置）
+
+- 依赖 tarball 仅 commit pin、无 sha256 校验（`codeload.github.com` commit 级寻址本身不可变，供应链风险低；M2 供应链防线可加 sha256 白名单）。
+- `-sFILESYSTEM` 未关（体积小项，随 M2 裁剪）。
+
 ### 验证
 
 - 产物旁 `.symbols` 符号表（`--emit-symbol-map`）做 name-section 级检查：default 模式不含任何 `pixRead\*`；同时检查 `WebAssembly.Module.exports` 无 `pixRead` / `pixWrite` 导出。（初版还断言 `pixWriteMemPng` 名字在场——实测 -O3 将单一调用点的 wrapper 内联进 embind 包装后该名从 name section 消失，属合法优化；编码器在场已由字节级断言证明，断言已收窄。2026-09-03，CI run 33744418718。）
@@ -52,11 +59,6 @@
 - 确定性：CI 中双次从零构建（第二次 `rm -rf dist tmp/build`）比对 `wasmSha256` 一致。
 
 ## 结果
-
-| mode | wasm bytes | wasm gzip bytes | js bytes | wall (s) |
-| --- | ---: | ---: | ---: | ---: |
-| default | TBD | TBD | TBD | TBD |
-| full-abi | TBD | TBD | TBD | TBD |
 
 CI run `33767637278`（commit `343a6cd`，2026-09-03，全部 step 绿；数据源 dist artifact `build-report.json`）：
 
@@ -74,12 +76,12 @@ CI run `33767637278`（commit `343a6cd`，2026-09-03，全部 step 绿；数据�
 
 **裁决：精选（default）为默认产物，full-abi 作为逃生舱发布**（对应 PRD 决策 ⑦）。
 
-依据：full-abi 相对 default 的 wasm gzip 增量 **~750KB（855KB vs 105KB，约 8 倍）**，远超 ~100KB 初始阈值——精选模式函数级 GC 裁剪（链接期归档语义 + 未引用代码消除）效果显著，全量 C ABI 导出的体积代价对绝大多数消费者不可接受。105KB gzip 的精选产物落在"可接受的首屏负载"区间。
+依据：full-abi 相对 default 的 wasm gzip 增量 **~750KB（855KB vs 105KB，约 8 倍）**，远超 ~100KB 初始阈值——精选模式函数级 GC 裁剪（链接期归档语义 + 未引用代码消除）效果显著，全量 C ABI 导出的体积代价对绝大多数消费者不可接受。105KB gzip 的精选产物落在"可接受的首屏负载"区间（~100KB 为量级锚非硬顶；消费者真实首屏 ≈ wasm gzip 105.4KB + js glue gzip ~13KB ≈ 118KB——js gzip 未入 M1 报告，M2 补计费口径，评审 perf F3/F4）。
 
-注意（评审门议题）：上述 8 倍增量是 -O2 vs -O3 的混合对照；但即便 full-abi 也回到 -O3，全量导出（2745 函数 + 全量解码器）相对精选裁剪的量级差距不会逆转——裁决方向稳健，精确数字待 M2 同优化级别复核。
+注意（评审门议题）：上述 8 倍增量是 -O2 vs -O3 的混合对照；但即便 full-abi 也回到 -O3，全量导出（2745 函数 + 全量解码器）相对精选裁剪的量级差距不会逆转——裁决方向稳健，精确数字待 M2 同优化级别复核。评审 perf 视角量化（2026-09-04）：gzip(full-abi) ≥ ~2× gzip(default) 是结构性下界（full-abi 严格包含 default 全功能 + 全解码侧 + ~2700 函数体传递闭包）；且 -O2 关 metadce 使 full-abi 偏大，实测 8x 是保守上界而非下界。同优化级别复核无需解导出名压缩——加一次 default@-O2 对照构建（复用依赖仅 ~6s 链接）即得干净对照。
 
 ## 后续动作
 
 - [x] 手动触发 `size-spike` workflow（7 次 CI 迭代后全绿，演进记录见 journal），回填结果表与结论。
 - M1 评审门：trellis-check + chatroom 评审 + 用户确认后进入 M2。
-- M2：`check-exports.mjs`（防止绑定回归）+ CI 体积门禁（gzip 上限，锚定本次 default 105KB 基线）。
+- M2：`check-exports.mjs`（防止绑定回归 + 库级解码符号缺席断言自动化：png_create_read_struct / png_read_* / jpeg_read_header / jpeg_start_decompress / inflateInit_* 系 = 0，正则 \w* 收紧——评审 perf F2/F5）+ CI 体积门禁（**预算阶梯制**而非静态锚定 105KB：M2 设初始预算含余量说明，M4 算子集冻结后重定基线——评审 perf F1，DWA 形态学等体积大户将使 default 增长）。

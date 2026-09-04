@@ -33,7 +33,7 @@
 ### 编解码与构建
 
 6. 编解码：PNG + JPEG 写入进承诺层（证据：jsquash / wasm-vips / tesseract.js，operator 与 encoder 都在 wasm 是严肃图像工具的默认架构）；TIFF 延后至真实用户出现；TIFF/G4 需求走 raw 层。
-7. 构建：单构建起步；codecs 为构建期开关（CMake flag）而非发布矩阵。**已裁决（2026-09-03，M1 size spike 数据回填）**：精选模式为默认产物（wasm 406KB / gzip 105KB），全量 C ABI 为逃生舱层（2.59MB / gzip 856KB，2745 函数导出）——gzip 增量 ~750KB（8 倍）远超 ~100KB 阈值，全量导出对默认消费者不可接受；「按读/写方向切」的 escape hatch 不需要（精选模式已天然只含写侧 + 无解码入口）。对照混入 -O2/-O3 变量（full-abi 保导出名降优化级别），量级结论稳健，精确数字 M2 同优化级别复核。证据：`research-size-spike.md`，CI run 33767637278。
+7. 构建：单构建起步；codecs 为构建期开关（CMake flag）而非发布矩阵。**已裁决（2026-09-03，M1 size spike 数据回填；2026-09-04 M1 评审确认方向稳健）**：精选模式为默认产物（wasm 406KB / gzip 105KB），全量 C ABI 为逃生舱层（2.59MB / gzip 855KB，2745 函数导出）——gzip 增量 ~750KB（8 倍）远超 ~100KB 阈值（量级锚非硬顶），全量导出对默认消费者不可接受；「按读/写方向切」的 escape hatch 不需要（精选模式已天然只含写侧 + 无解码入口）。对照混入 -O2/-O3 变量（full-abi 保导出名降优化级别），量级结论稳健——结构性下界 ≥2×（评审 perf 量化），实测 8x 为保守上界，精确数字 M2 同优化级别复核（default@-O2 对照）。证据：`research-size-spike.md`，CI run 33767637278；M1 评审 reviews/M1.md。
 8. 无 pthread / SAB / COOP-COEP（Leptonica 有全局状态非线程安全，一 Worker 一实例本来就是安全模型）；图片级并发 = 多实例 Worker，transfer ArrayBuffer。
 9. SIMD：不做构建变体（主流浏览器均已支持），运行时 WebAssembly.validate 探测。
 10. 类型管线：精选层手写 embind + Emscripten `--emit-tsd` 生成 d.ts；CI 用 `WebAssembly.Module.exports()` / `wasm-objdump -x` diff 实际导出防漂移；不上 doxygen XML、不自造 libclang 生成器。
