@@ -34,7 +34,6 @@ jobs:
           # Linux); vitest's toolchain uses prebuilt rolldown napi bindings,
           # no postinstall required.
           npm ci --ignore-scripts
-          npm test
           npm run typecheck
 
       # Toolchain pins are read from vendor/versions.json (single source of
@@ -137,6 +136,12 @@ jobs:
 
       - name: Check exports (default)
         run: node scripts/check-exports.mjs dist
+
+      # npm test runs AFTER the builds: the raw-layer unit tests instantiate
+      # dist/full-abi artifacts (M3) — dev machines have no build (zero-build
+      # discipline), CI runs the full suite.
+      - name: Test
+        run: npm test
 
       - name: Smoke test (default)
         run: node scripts/smoke.mjs dist

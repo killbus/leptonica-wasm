@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
-import { extractExportedFunctions } from "./gen-exports.mjs";
+import { extractExportedFunctions, renderLooseDts } from "./gen-exports.mjs";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const depsRoot = join(repoRoot, "tmp", "deps");
@@ -147,7 +147,7 @@ function nmDefinedSymbols(archivePath) {
   return defined;
 }
 
-function writeFullAbiExports() {
+function writeFullAbiExports(outDir) {
   const headerPath = join(depsRoot, "leptonica", "src", "allheaders.h");
   const names = extractExportedFunctions(readFileSync(headerPath, "utf8"));
   const defined = nmDefinedSymbols(join(installRoot, "lib", "libleptonica.a"));
@@ -156,6 +156,10 @@ function writeFullAbiExports() {
   filtered.sort();
   const exportsPath = join(buildRoot, "full-abi-exports.txt");
   writeFileSync(exportsPath, filtered.map((name) => `${name}\n`).join(""));
+  // Loose raw-layer d.ts (design §6): name-level presence with a single
+  // loose signature per symbol, generated alongside the exports list so the
+  // two can never drift apart.
+  writeFileSync(join(outDir, "leptonica-raw.d.ts"), renderLooseDts(filtered));
   return exportsPath;
 }
 
@@ -276,7 +280,7 @@ for (const dep of depConfigs) {
 let exportsPath = null;
 let exportedFunctions = null;
 if (opts.fullAbi) {
-  exportsPath = writeFullAbiExports();
+  exportsPath = writeFullAbiExports(opts.outDir);
   exportedFunctions = readFileSync(exportsPath, "utf8").split("\n").filter((line) => line.length > 0).length;
 }
 const linkStartedAt = Date.now();

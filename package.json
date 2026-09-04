@@ -8,9 +8,29 @@
     "node": ">=20"
   },
   "packageManager": "npm@11.13.0",
+  "sideEffects": false,
+  "files": [
+    "src",
+    "dist",
+    "vendor/versions.json"
+  ],
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    },
+    "./raw": {
+      "types": "./src/raw/index.ts",
+      "import": "./src/raw/index.ts"
+    },
+    "./full-abi/leptonica.mjs": {
+      "types": "./dist/full-abi/leptonica-raw.d.ts",
+      "import": "./dist/full-abi/leptonica.mjs"
+    }
+  },
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit"
   },
   "devDependencies": {
     "@types/node": "^26.4.0",
