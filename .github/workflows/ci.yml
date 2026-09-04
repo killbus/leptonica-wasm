@@ -63,15 +63,18 @@ jobs:
       - name: Generate goldens
         run: node scripts/run-oracle.mjs tmp/build-native/oracle/oracle
 
-      # Sanity: every chain must have produced both artifacts (a missing
-      # png/json would otherwise surface as a confusing skip downstream).
+      # Sanity: every chain must have produced exactly one png and one json
+      # (the artifact must be outputs-only — run 33918364134's first wiring
+      # let .chain.json inputs into goldens/ and this check caught the
+      # 2x json count before it could confuse the comparison step).
       - name: Verify golden artifact count
         run: |
-          n=$(ls tests/golden/goldens/*.png | wc -l)
-          m=$(ls tests/golden/goldens/*.json | wc -l)
+          n=$(ls tests/golden/goldens | grep -c '\.png$' || true)
+          m=$(ls tests/golden/goldens | grep -c '\.json$' || true)
+          t=$(ls tests/golden/goldens | wc -l)
           c=$(node -e "process.stdout.write(String(JSON.parse(require('fs').readFileSync('tests/golden/chains.json','utf8')).length))")
-          echo "goldens: $n png / $m json / $c chains"
-          test "$n" -eq "$c" && test "$m" -eq "$c"
+          echo "goldens: $t files ($n png / $m json) / $c chains"
+          test "$n" -eq "$c" && test "$m" -eq "$c" && test "$t" -eq "$((c * 2))"
 
       # v7.0.1 (2026-04-10): https://github.com/actions/upload-artifact/releases/tag/v7.0.1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -81,6 +84,10 @@ jobs:
           if-no-files-found: error
 
   ci:
+    # The golden suite (inside Test below) compares against goldens the
+    # native-oracle job produces this run — never a repo fixture, so the
+    # comparison is always anchored to this commit's pinned oracle.
+    needs: native-oracle
     # Pinned image: ubuntu-latest is a moving target (monthly image rolls,
     # preinstalled toolchain changes unannounced) — M1 review supply N4.
     runs-on: ubuntu-24.04
