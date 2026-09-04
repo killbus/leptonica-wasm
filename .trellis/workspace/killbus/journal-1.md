@@ -31,3 +31,44 @@
 - 数据回填：default 406KB/105KB gzip (93.8s cold)；full-abi 2.59MB/856KB gzip (2745 导出, 5.8s 复用依赖)；双构建 sha256 稳定 `f5b64575…`；冒烟全过。
 - 裁决：**精选为默认产物、full-abi 逃生舱**（gzip 增量 ~750KB 远超 100KB 阈值）——回填 PRD 决策 ⑦ + research-size-spike.md 结果/结论 + implement.md M1 第 4/5/6 项勾选。M1 清单全部完成，进评审门。
 
+
+## 2026-09-04 M1 评审门：两层评审、channel 基建故障与 monitor 纪律落地（TEAM C）
+
+- 第一层 trellis-check（Agent 直派）：A–F 六项全 PASS、0 blocker/warning、3 nit（smoke 正则漏裸名、journal 856KB 时序残留、双次构建覆盖编译+链接层）；3 处文档级自修（implement.md/jsonl 的 emcc→em++ 陈述滞后、research 补 pix_internal.h/em++ 两条裁决使七次迭代单一文档可查）。独立核验超出评审包：default 符号表解码侧库符号 0 个（png_create_read_struct/jpeg_read_header 等）、编码侧在场——「仅写路径存活」在库级符号层成立。
+- 第二层三视角（perf / supply / build-eng）原计划走 trellis channel spawn，**三个 worker 全部 spawn 即死**（`spawn claude ENOENT`）。根因：trellis 0.6.16 `resolveProviderPath` 只认 npm 格式 .cmd shim（正则匹配 `"%dp0%\...exe"`），本机 pnpm 安装的 claude.CMD 用 `%~dp0` + `IF EXIST` 结构不命中 → 裸 spawn("claude") → Windows 无 shell 不可执行 .cmd。上游 bug，无 provider 覆盖配置。绕行：Agent 工具直派三个独立评审员，评审实质不变；channel 失败证据留档 `~/.trellis/channels/.../review-m1/`。
+- 监督失职教训：wait 虽写了 `--kind done,error` 但 fire-and-forget 未主动核查，worker 早死 25 分钟无察觉，靠用户发现。**用户指示：主 agent 对 worker 需补 monitor 职能** → 落地 `execution-discipline.md` 规则 4（派即监、早失败检测 spawn 后 2 分钟死亡高峰、timeout≠完成判据、失败处置留档）+ index.md 同步 + Common Mistakes 补「派后不监」条目。
+- 供应链报告带 classifier 不可用核验提示，主会话抽查载荷性论断全部属实：分支保护 API 实测 enabled:false；pin commit 处 emsdk.py download_file 源码确认零 checksum 逻辑（CI 日志确认 298MB wasm-binaries.tar.xz 从 GCS 拉取）；leptonica tarball 实测 0 穿越。
+- 评审员间事实矛盾裁决：build-eng N1 质疑 research 称 CMAKE_POLICY_VERSION_MINIMUM=3.5「关键」——实测四依赖树全部声明 ≥3.10（zlib 3.12...3.31 / libpng 3.14...4.2 / libjpeg-turbo 3.15...3.28 / leptonica 3.10），journal 七次迭代无 cmake policy 失败记录——build-eng 正确，research 已修正（预置防御 flag，M2 验证移除）。
+- 判官汇总：0 blocker、8 warning（全部回填 M2 清单）、8 nit（豁免留档）。全场唯一实质新发现 supply W1：emsdk 工具链二进制（298MB wasm-binaries.tar.xz）无内容哈希校验，M2 sha256 白名单计划只覆盖依赖 tarball 漏了编译器本身。三视角独立收敛：裁决方向稳健（结构性下界 ≥2×，8x 为保守上界）；supply N3 与 build-eng W1 从不同路径撞上「M2 缓存分层必须带内容复验」。
+- 用户过门确认（2026-09-04「推进」）→ 收口 commit `cd919c5` push。M1 关闭，进 M2。M2 新增高优先级项：.done 纳入 pin+flags 失效、npm ci --ignore-scripts 提前、开关名三分裂裁决、toGray 手算金样（先读 pin 版 pixConvertTo8 舍入行为）。
+
+
+## Session 1: M1 评审门：两层评审、channel 基建故障与 monitor 纪律落地
+
+**Date**: 2026-09-04
+**Task**: M1 评审门：两层评审、channel 基建故障与 monitor 纪律落地
+**Branch**: `main`
+
+### Summary
+
+(Add summary)
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
