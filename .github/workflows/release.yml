@@ -137,16 +137,16 @@ jobs:
           fi
           tar -tzf tmp/leptonica-wasm-*.tgz | sort
 
+      # npm publishing disabled (user direction 2026-09-05): distribution
+      # is the release tarball asset, installable from the release URL.
+      # GitHub's own attestation/signing replaces npm provenance here;
+      # the sha256 manifest inside the tarball remains the content
+      # anchor from CI-built bytes.
+      # v3.0.3 (2026-08-30): https://github.com/softprops/action-gh-release/releases/tag/v3.0.3
+      # (commit pin resolved via the tag object: efb35369e0ad2afab669f228072c1b0d510eae64)
       - name: Create GitHub Release
-        # npm publishing disabled (user direction 2026-09-05): distribution
-        # is the release tarball asset, installable from the release URL.
-        # GitHub's own attestation/signing replaces npm provenance here;
-        # the sha256 manifest inside the tarball remains the content
-        # anchor from CI-built bytes.
-        # v3.0.3 (2026-08-30): https://github.com/softprops/action-gh-release/releases/tag/v3.0.3
-        # (commit pin resolved via the tag object: efb35369e0ad2afab669f228072c1b0d510eae64)
-        - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64
-          with:
-            files: tmp/leptonica-wasm-*.tgz
-            generate_release_notes: true
-            fail_on_unmatched_files: true
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64
+        with:
+          files: tmp/leptonica-wasm-*.tgz
+          generate_release_notes: true
+          fail_on_unmatched_files: true
