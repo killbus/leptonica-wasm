@@ -201,6 +201,39 @@ printf '%s' "$BODY" > tmp/pr-body/body10.md
 gh pr create --body-file tmp/pr-body/body10.md
 ```
 
+## 规则 7：供应链信任根与发布渠道纪律（2026-09-05 固化）
+
+### Scope / Trigger
+
+任何涉及 emsdk/工具链版本 bump、`vendor/versions.json` 变更、发布渠道选择（npm publish vs GitHub Release）的操作。
+
+### 契约
+
+- **emsdk bump 的再生成纪律（顺序硬约束）**：emsdk 任一 pin（commit/sdkVersion/cmakeTool/ninjaTool）要变更时，必须**先** dispatch `.github/workflows/toolchain-hash.yml`（`--record` 模式）拿到新归档哈希，**再**改 `vendor/versions.json`——顺序颠倒 CI 会红（drift 报错），红是`verify-toolchain.mjs` 集合相等强制在起作用，**别绕开这个红**（它就是白名单再生成纪律的执行者，handover-m2-review.md 已交代）。
+- **npm 发包禁用（2026-09-05 用户指示）**：本包只发布到 GitHub Release（tarball 资产），不做 npm publish——release workflow 尾段是 `softprops/action-gh-release` 挂 tarball，不存在 NPM_TOKEN 依赖。后续会话不得以「补全发布渠道」名义重新引入 npm publish 步骤。
+- **缓存命中路径不补工具链哈希验证**：哈希验证只在冷装路径做（supply N3 的 compare job 已复验缓存内容）。缓存命中路径再验哈希需要把 430MB 归档放进缓存层——设计上明确禁止。
+
+### Validation & Error Matrix
+
+| 条件 | 处置 |
+| --- | --- |
+| 未 dispatch toolchain-hash 就改 versions.json pin | 阻断：先 dispatch 拿 record 输出 |
+| CI 红且错误信息含 drift（集合不等） | 这是纪律在执行：回退 pin 或补 record，禁绕过 |
+| 计划向 release workflow 加 npm publish 步骤 | 阻断：发布渠道为 GitHub Release only（用户指示） |
+| 缓存命中路径计划加哈希验证 | 阻断：冷装路径已覆盖，加验会破坏缓存设计 |
+
+### Wrong vs Correct
+
+```text
+# Wrong：先改 pin 再跑 toolchain-hash（drift 红出现后想绕过）
+edit vendor/versions.json sdkVersion → push → CI red (drift)
+# 「绕过」= 注释掉 verify step 或放宽集合相等检查
+
+# Correct：先 dispatch 记录，再改 pin
+gh workflow run toolchain-hash.yml   # --record 模式，等完成
+# 从 run 输出取归档 sha256/bytes，粘进 versions.json → PR review → 合并
+```
+
 ## Common Mistakes
 
 ### 本机装工具链「图省事」
@@ -237,6 +270,13 @@ gh pr create --body-file tmp/pr-body/body10.md
 - **Cause**：tag 锚定在修复之前的 commit，pack 从 tag 的树取文件——合并进 main 的 docs 改动不会回流到已打的 tag。
 - **Fix**：bump version + 重打 tag + 重跑 release（v0.1.0 → v0.1.1 即此路径）。
 - **Prevention**：docs 修复想进发布物，必须 bump + re-tag；检查发布物内容时以 tarball 实际字节为准，不假定 main HEAD 即 tarball。
+
+### 绕开 drift 红 = 拆除信任根
+
+- **Symptom**：emsdk bump 后 CI 红，错误信息指明 drift；agent 想注释 verify step 让 CI 变绿。
+- **Cause**：把「CI 绿」当成了目标，忘了红本身就是白名单再生成纪律的执行机制——集合相等强制正是`verify-toolchain.mjs` 存在的意义。
+- **Fix**：dispatch toolchain-hash 拿 record → 回填 versions.json → PR review。
+- **Prevention**：规则 7 第一条；drift 红出现时第一反应是「回填哈希」而非「绕过检查」。
 
 ## 一句话版
 
