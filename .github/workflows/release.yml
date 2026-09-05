@@ -131,4 +131,11 @@ jobs:
         # from a tag must have a clean tree and an up-to-date tag.
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: pnpm publish --provenance --access public
+        run: |
+          # Fail loud on a missing secret instead of letting pnpm surface
+          # an opaque registry 401 halfway through the release.
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "ERROR: secrets.NPM_TOKEN is not set (repo Settings → Secrets and variables → Actions)"
+            exit 1
+          fi
+          pnpm publish --provenance --access public
