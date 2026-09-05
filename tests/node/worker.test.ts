@@ -89,6 +89,19 @@ describe.skipIf(!artifactsPresent)("worker session (Node worker_threads)", () =>
     await expect(session.run(pix, [])).rejects.toThrow();
   });
 
+  it("poisoned proxies reject (not throw synchronously) from every async method", async () => {
+    const pix = await session.load(generateRgba(16, 16), 16, 16);
+    await session.close();
+    // The uniform failure shape: every promise-returning method must
+    // surface refusal as a rejection — a synchronous throw would punch
+    // through .catch() handlers in caller cleanup paths.
+    await expect(pix.findSkew()).rejects.toThrow();
+    await expect(pix.countPixels()).rejects.toThrow();
+    await expect(pix.connComp()).rejects.toThrow();
+    await expect(pix.histogram()).rejects.toThrow();
+    await expect(pix.average()).rejects.toThrow();
+  });
+
   it("run() failure cleans up intermediates (no handle leak)", async () => {
     const src = await session.load(generateRgba(48, 48), 48, 48);
     // otsu requires 8bpp; feeding it a 32bpp source must fail — the
@@ -114,9 +127,16 @@ describe.skipIf(!artifactsPresent)("worker session (Node worker_threads)", () =>
 
   it("terminate leaves no residue (new session works after old dies)", async () => {
     const pix = await session.load(generateRgba(16, 16), 16, 16);
-    // Kill the worker without close(): pending promises reject.
-    session.markTerminated();
+    // A request in flight when the worker dies must reject (the
+    // #rejectPending terminate path, previously untested).
+    const inFlight = session.run(pix, [{ op: "toGray" }]);
+    // Kill the worker without close(): the public nuclear option.
+    session.terminate();
+    await expect(inFlight).rejects.toThrow();
     await expect(session.run(pix, [])).rejects.toThrow();
+    // close() after termination resolves instead of throwing — cleanup
+    // paths (finally blocks) reach for close() after observing death.
+    await expect(session.close()).resolves.toBeUndefined();
     // A fresh session on a new worker functions normally.
     const fresh = await createSession();
     try {

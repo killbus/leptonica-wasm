@@ -9,8 +9,9 @@
   },
   "packageManager": "npm@11.13.0",
   "sideEffects": [
-    "**/worker.mjs",
-    "**/worker/worker.js"
+    "dist/worker.mjs",
+    "dist/types/worker/worker.mjs",
+    "dist/types/worker/worker.js"
   ],
   "files": [
     "src",

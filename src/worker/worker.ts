@@ -139,6 +139,12 @@ export function wireWorker(lp: Leptonica, surface: PostSurface): void {
           arena.close();
           reply({ id: req.id, ok: true, type: "close" });
           return;
+        default:
+          // Unknown message types must not evaporate from the mailbox
+          // (a silent no-reply leaves the caller's pending forever):
+          // answer loudly with a protocol error instead.
+          reply({ id: req.id, ok: false, error: `worker: unknown request type ${String((req as { type: string }).type)}` });
+          return;
       }
     } catch (err) {
       const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
@@ -153,11 +159,19 @@ export function wireWorker(lp: Leptonica, surface: PostSurface): void {
 async function main(): Promise<void> {
   const surface = await detectSurface();
   surface.onMessage(async (req) => {
+    const replyErr = (error: string) => surface.post({ id: (req as { id: number }).id, ok: false, error });
     if (req.type !== "init") {
       // Before init, everything else is a protocol error.
-      surface.post({ id: (req as { id: number }).id, ok: false, error: "worker: not initialized (init required first)" });
+      replyErr("worker: not initialized (init required first)");
       return;
     }
+    // The init gate is single-shot: a second init would double-boot
+    // the wasm heap. Reply with a protocol error, never silence.
+    if (booted) {
+      replyErr("worker: already initialized (init is single-shot)");
+      return;
+    }
+    booted = true;
     try {
       const moduleArg: import("../core/emscripten-glue-shape.d.ts").EmscriptenModuleArg = {};
       if (req.wasmPath !== undefined) {
@@ -173,6 +187,8 @@ async function main(): Promise<void> {
     }
   });
 }
+
+let booted = false;
 
 /** Pick the postMessage surface by environment. */
 async function detectSurface(): Promise<PostSurface> {

@@ -83,8 +83,11 @@ export class RemotePix {
   }
 
   /** Query: deskew angle estimate (1bpp only). */
-  findSkew(): Promise<{ angle: number; confidence: number }> {
-    this.#assertAlive("findSkew");
+  async findSkew(): Promise<{ angle: number; confidence: number }> {
+    // Async method: liveness refusals surface as rejections, uniform
+    // with toPNG/load/run (a poisoned proxy must never throw
+    // synchronously out of a promise-returning method).
+    await Promise.resolve().then(() => this.#assertAlive("findSkew"));
     return this.#session.query(this, { query: "findSkew" }).then((v) => {
       if (v.kind !== "findSkew") throw new TypeError("worker: findSkew response kind mismatch");
       return { angle: v.angle, confidence: v.confidence };
@@ -92,8 +95,8 @@ export class RemotePix {
   }
 
   /** Query: count of ON pixels (1bpp only). */
-  countPixels(): Promise<number> {
-    this.#assertAlive("countPixels");
+  async countPixels(): Promise<number> {
+    await Promise.resolve().then(() => this.#assertAlive("countPixels"));
     return this.#session.query(this, { query: "countPixels" }).then((v) => {
       if (v.kind !== "countPixels") throw new TypeError("worker: countPixels response kind mismatch");
       return v.count;
@@ -101,8 +104,8 @@ export class RemotePix {
   }
 
   /** Query: connected components, 8-connectivity (1bpp only). */
-  connComp(): Promise<readonly { x: number; y: number; w: number; h: number }[]> {
-    this.#assertAlive("connComp");
+  async connComp(): Promise<readonly { x: number; y: number; w: number; h: number }[]> {
+    await Promise.resolve().then(() => this.#assertAlive("connComp"));
     return this.#session.query(this, { query: "connComp" }).then((v) => {
       if (v.kind !== "connComp") throw new TypeError("worker: connComp response kind mismatch");
       return v.boxes;
@@ -110,8 +113,8 @@ export class RemotePix {
   }
 
   /** Query: 256-bin gray histogram (8bpp). */
-  histogram(): Promise<readonly number[]> {
-    this.#assertAlive("histogram");
+  async histogram(): Promise<readonly number[]> {
+    await Promise.resolve().then(() => this.#assertAlive("histogram"));
     return this.#session.query(this, { query: "histogram" }).then((v) => {
       if (v.kind !== "histogram") throw new TypeError("worker: histogram response kind mismatch");
       return v.bins;
@@ -119,8 +122,8 @@ export class RemotePix {
   }
 
   /** Query: mean gray value. */
-  average(): Promise<number> {
-    this.#assertAlive("average");
+  async average(): Promise<number> {
+    await Promise.resolve().then(() => this.#assertAlive("average"));
     return this.#session.query(this, { query: "average" }).then((v) => {
       if (v.kind !== "average") throw new TypeError("worker: average response kind mismatch");
       return v.value;
@@ -227,7 +230,13 @@ export class WorkerSession {
 
   /** Every live Pix in the worker's arena is released; the session is poisoned. */
   async close(): Promise<void> {
-    if (this.#closed) return;
+    // A terminated session is already fully torn down (markTerminated
+    // released the worker and poisoned every proxy); close() after
+    // worker death must stay a no-op resolve, not throw — callers
+    // routinely reach for close() in cleanup/finally paths after
+    // observing the death. Without this guard the farewell request
+    // hits #request's isClosed() gate and rejects.
+    if (this.isClosed()) return;
     // Send the close request BEFORE flipping the flag — #request() gates
     // on isClosed() and would reject our own farewell message.
     const farewell = this.#request({ id: this.#nextRequestId++, type: "close" });
@@ -235,11 +244,28 @@ export class WorkerSession {
     this.#live.clear();
     try {
       this.#closed = true;
-      await farewell;
+      // close is an instruction, not a request that needs the worker's
+      // confirmation: if the worker dies mid-handshake (exit event
+      // arriving while the farewell is in flight), the pending farewell
+      // is rejected by markTerminated — swallowing it keeps close()
+      // usable in finally/cleanup paths without masking the original
+      // error the caller is already handling.
+      await farewell.catch(() => {});
     } finally {
       this.#rejectPending(new Error("session closed"));
       this.#runTeardown();
     }
+  }
+
+  /**
+   * Kill the worker thread outright — the whole wasm heap dies with it
+   * (design §5: the nuclear option). In-flight requests reject with
+   * "worker terminated"; every live proxy is poisoned; close() after
+   * this is a no-op resolve. Use when close() cannot drain fast enough
+   * (a long-running op holds the farewell FIFO slot indefinitely).
+   */
+  terminate(): void {
+    this.markTerminated();
   }
 
   /** @internal — mark terminated without a round trip (worker died). */
