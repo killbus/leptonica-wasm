@@ -450,7 +450,7 @@ jobs:
       # independently compiled trees — if the manifest is generated from
       # both and the two artifacts are byte-identical (asserted above),
       # the published manifest is proven to describe the other tree too.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae8e656e7c1c64a875d1fc6a0
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: dist-sha256-manifest
           path: artifacts/ci-dist/sha256.json
