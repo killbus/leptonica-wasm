@@ -117,3 +117,38 @@
   native-oracle / reproducibility). Consumer fixture step now runs
   gen-types then tsc + attw (esm-only profile; node10/CJS waived per
   ADR 1). M4 implement.md checklist fully checked.
+
+## 2026-09-05 M4 review fix round closed (uncommitted at write time)
+
+- M4 two-layer review verdict was hold: 2 blocker (binary-op other silently
+  dropped; Node entry import pointed at .ts) + judge-escalated warnings
+  (extraction leak, degenerate deskew anchors). Fix round landed all
+  three batches in one working-tree change set (cpp / TS / entry).
+- cpp batch: copyToJs() frees the C-side toPNG/toJPEG/toRGBA buffers
+  (was +68MB/60 extractions); slant fixture (−0.04 rad) + two golden
+  chains so deskew actually rotates (conf 3.486, residual −0.22°);
+  mutation-smoke rotates 3 sites (threshold/otsu/rotate).
+- TS batch: operand table gives or/and/xor/blend their real second
+  operand; close() poisons the arena; run() re-checks source; finite
+  param validation; it.each parity; degrees documented; depth-rule
+  matrix; the N3 FinalizationRegistry test found a REAL dev-mode bug
+  (register(pix, pix, pix) throws when target===holdings) — fixed with
+  { pix } holdings objects.
+- entry batch: gen-types emits JS now; exports import points at
+  dist/types/*.js; consumer check RUNS main.ts (16×16 real chain);
+  check-exports --curated-methods guards the hand-pinned interface
+  (34 methods), wired as a CI step.
+- W13 waived in writing with corrected reasoning: the otsu mirror is
+  deliberate (real wrapper drags the decode cluster past the
+  check-exports gate); upstream drift protection comes from the
+  exact-commit pin, NOT from the goldens (both sides carry the same
+  mirror — recorded after the trellis-check re-review corrected my
+  first draft of the rationale).
+- Local verification: typecheck both domains, 84/84 tests, 3-site
+  mutation smoke, curated-methods check, consumer check incl. node run.
+  Stale local goldens (missing the 2 slant chains) are filtered to
+  chains-with-goldens; CI regenerates all and pins the count.
+- trellis-check re-review (m4-refix-check channel): all fixable
+  findings verified fixed, no scope creep, regression sweep clean.
+  CI evidence to be appended after push; M4 gate awaits user go-ahead
+  for M5.
