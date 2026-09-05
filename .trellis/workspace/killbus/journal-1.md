@@ -178,3 +178,33 @@
   scripts — the compare job is what makes them visible; one-byte diffs
   with same file size smell like embedded version/date strings, and
   cmp -l pinpoints them in seconds.
+
+## 2026-09-05 M5 fix round + pnpm migration
+
+- M5 review (reviews/M5.md) found two blockers, both confirmed with
+  zero false positives: B1 design promised session.terminate() but
+  only @internal markTerminated() existed; B2 the esbuild fixture
+  shipped a bundle whose worker would 404 the wasm at runtime
+  (build-only false green — exactly the minefield the matrix exists
+  to catch). Fix round ac7ab20 + d848790: public terminate(),
+  uniform async poisoning (five query methods), worker default
+  branch + single-shot init gate, esbuild wasm copy + output-layout
+  assertion in check-bundler-matrix (negative-validated: removing
+  the wasm turns the assertion red).
+- Layout assertion negative validation had a trap: the full check
+  re-runs the esbuild fixture which re-copies the wasm, so the
+  "delete then check" probe must assert ONLY the layout logic against
+  the moved-wasm state. Lesson: when a fixture's check step repairs
+  the state under test, negative validation needs the assertion in
+  isolation.
+- pnpm migration (490bef7, user direction "pnpm instead of npm"):
+  supersedes M0 F11 "main package stays npm". packageManager pin
+  pnpm@10.34.5 — pnpm 11 needs Node >=22.13 (node:sqlite) and dies on
+  the Node 20 CI runner. Traps hit: (1) corepack resolves the pin
+  from the NEAREST package.json — the fixtures workspace and consumer
+  fixture each need their own packageManager pin or a stray pnpm 11
+  runs there; (2) a pnpm 11 run rewrote pnpm-workspace.yaml with an
+  invalid allowBuilds placeholder that pnpm 10 then treated as fatal;
+  (3) pnpm refuses non-TTY node_modules purges without CI=true.
+  Local + CI verification: 95/95, typecheck, consumer check, bundler
+  matrix, runs 33942042722 and 33942410612 green.

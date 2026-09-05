@@ -86,11 +86,11 @@
 
 ## M5 Worker 会话客户端
 
-- [ ] `src/worker/`：会话客户端（句柄代理、chain 录制）、worker 入口（wasm 定位 + `wasmPath` 覆盖）、Node `worker_threads` 适配、`close()` 毒化 + `terminate()`
-- [ ] Worker 单测（Node worker_threads）：协议往返、transfer、close 毒化、terminate 无残留、run() 失败路径中间 Pix 清理
-- [ ] 跨 bundler 冒烟：vite / webpack5 / esbuild / Node ESM 构建最小示例并加载 worker（CI matrix）
-- [ ] `prepublishOnly`（typecheck + test + build 串行，M0 评审 F9）
-- 验证：vitest worker 套件全绿；四 bundler 冒烟通过
+- [x] `src/worker/`：会话客户端（句柄代理、chain 录制）、worker 入口（wasm 定位 + `wasmPath` 覆盖）、Node `worker_threads` 适配、`close()` 毒化 + `terminate()`（M5 评审 B1：terminate 公开化，ac7ab20）
+- [x] Worker 单测（Node worker_threads）：协议往返、transfer、close 毒化、terminate 无残留、run() 失败路径中间 Pix 清理（M5 评审 W3/W4：in-flight terminate + 毒化 rejection 形状统一，95/95）
+- [x] 跨 bundler 冒烟：vite / webpack5 / esbuild / Node ESM 构建最小示例并加载 worker（CI matrix）（M5 评审 B2：esbuild 补拷 wasm + 产物布局断言——负向验证过：删 wasm 断言即红；三 fixture "wasm layout ok"，node-esm 运行时绿）
+- [x] `prepublishOnly`（typecheck + test + build 串行，M0 评审 F9）
+- 验证：vitest worker 套件全绿；四 bundler 冒烟通过（本地 95/95 + typecheck 双域 + check-bundler-matrix 全绿；CI run 33942042722 + 33942410612 全绿）
 - 回滚点：会话层独立于核心——最坏降级为仅同步层发布（包 `exports` 移除 `./worker`）
 
 ## M6 E2E 与发布 ★评审门 3
