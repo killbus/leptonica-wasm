@@ -16,7 +16,8 @@
   "files": [
     "src",
     "dist",
-    "!dist/full-abi",
+    "README.md",
+    "LICENSE",
     "vendor/versions.json"
   ],
   "exports": {

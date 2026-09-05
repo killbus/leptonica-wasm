@@ -14,6 +14,9 @@ Modern ESM/WASM build of [Leptonica](https://github.com/DanBloomberg/leptonica)
 The wasm binary is fetched relative to the module — bundlers (vite,
 webpack 5, esbuild) rewrite the worker entry and its wasm dependency
 automatically (verified by the repo's bundler matrix).
+The package ships the raw escape hatch (dist/full-abi/) alongside
+the curated build — every C symbol, loose types, zero ownership
+semantics. Prefer the curated layer unless you need it.
 
 ## Quick start — worker session (recommended)
 

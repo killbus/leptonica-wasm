@@ -82,15 +82,44 @@ jobs:
       - name: Test
         run: pnpm test
 
-      - name: Pack review (full-abi must not ship)
-        # M2 review F2: ci-dist includes dist/full-abi (the full decode
-        # surface) for test purposes — the published package must not
-        # carry it. This guard fails the release if pack picks it up.
+      - name: Build (full ABI)
+        # The raw escape hatch ships in the package (M3 re-adjudication
+        # of M2 F2: the no-decode promise applies to the DEFAULT dist/
+        # artifacts, not the package scope — dist/full-abi/ is the escape
+        # hatch, design §4.3 / PRD decision ⑦). Built from the same
+        # verified toolchain; its export surface is asserted below.
+        run: |
+          . ./tmp/emsdk/emsdk_env.sh
+          node scripts/build.mjs --full-abi
+
+      - name: Check exports (full ABI)
+        run: node scripts/check-exports.mjs --full-abi dist/full-abi
+
+      - name: Smoke test (full ABI)
+        run: node scripts/smoke.mjs --full-abi dist/full-abi
+
+      - name: Pack review
+        # M2 F2, as re-adjudicated by M3: pack MUST include the full-abi
+        # escape hatch (leptonica.mjs + leptonica.wasm + loose d.ts) and
+        # the dist sha256 manifest. A missing any of these fails the
+        # release — an incomplete raw layer is worse than none.
         run: |
           set -euo pipefail
           pnpm pack --pack-destination tmp
-          if tar -tzf tmp/leptonica-wasm-*.tgz | grep -q "dist/full-abi"; then
-            echo "ERROR: dist/full-abi leaked into the package (M2 review F2)"
+          for required in \
+            package/dist/full-abi/leptonica.mjs \
+            package/dist/full-abi/leptonica.wasm \
+            package/dist/full-abi/leptonica-raw.d.ts \
+            package/dist/sha256.json \
+            package/LICENSE \
+            package/README.md; do
+            if ! tar -tzf tmp/leptonica-wasm-*.tgz | grep -qx "$required"; then
+              echo "ERROR: $required missing from the package"
+              exit 1
+            fi
+          done
+          if [ "$(tar -tzf tmp/leptonica-wasm-*.tgz | grep -c "package/dist/full-abi/" || true)" -lt 3 ]; then
+            echo "ERROR: full-abi escape hatch incomplete in the package"
             exit 1
           fi
           tar -tzf tmp/leptonica-wasm-*.tgz | sort

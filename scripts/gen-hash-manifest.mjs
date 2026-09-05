@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const distRoot = join(repoRoot, "dist");
-const EXCLUDED = new Set(["full-abi", "sha256.json", "tsconfig.gen-types.json"]);
+const EXCLUDED = new Set(["sha256.json", "tsconfig.gen-types.json"]);
 
 /** Depth-first, sorted for deterministic ordering. */
 async function listFiles(dir) {
@@ -24,7 +24,6 @@ async function listFiles(dir) {
 const files = [];
 for (const file of await listFiles(distRoot)) {
   const rel = relative(distRoot, file).split(sep).join("/");
-  if (EXCLUDED.has(rel.split("/")[0])) continue;
   if (EXCLUDED.has(rel)) continue;
   const [content, info] = await Promise.all([readFile(file), stat(file)]);
   files.push({ path: rel, bytes: info.size, sha256: createHash("sha256").update(content).digest("hex") });
