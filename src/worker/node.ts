@@ -45,7 +45,7 @@ function resolveEntry(): URL {
     dir = next;
   }
   throw new Error(
-    "worker entry not found: dist/worker.mjs is missing — run the build first (npm run build outputs it into dist/)",
+    "worker entry not found: dist/worker.mjs is missing — run the build first (pnpm run build outputs it into dist/)",
   );
 }
 

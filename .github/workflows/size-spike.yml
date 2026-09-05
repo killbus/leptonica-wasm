@@ -23,12 +23,16 @@ jobs:
 
       - name: Test
         run: |
-          # --ignore-scripts: see ci.yml Test step (verified safe for this
-          # tree — only lockfile package with an install script is
-          # darwin-only fsevents).
-          npm ci --ignore-scripts
-          npm test
-          npm run typecheck
+          # pnpm migration (2026-09-05): same posture as ci.yml.
+          # --ignore-scripts: defense-in-depth against install-script
+          # supply chain vectors (M0 F14 / M1 supply N1); verified
+          # safe for this tree (only install-script lockfile package is
+          # darwin-only fsevents). Corepack reads the packageManager
+          # pin (pnpm 10.34.5, Node >=18.12; pnpm 11 needs Node >=22.13).
+          corepack enable pnpm
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm test
+          pnpm run typecheck
 
       # Toolchain pins (sdk + cmake + ninja) come from vendor/versions.json —
       # actually injected now, not hardcoded (M1 review build-eng W2: the

@@ -9,10 +9,10 @@
  *  - every fixture main.mjs is a shell importing the shared entry
  *  - each fixture has a check script
  *
- * Fixtures install with pnpm (npm's file: symlink handling mangles
- * nested layouts; pnpm resolves package-relative paths per spec). The
- * root package keeps npm per the M0 pin decision — this script only
- * governs fixtures.
+ * Fixtures install with pnpm, like the root package (2026-09-05 the
+ * whole repo moved to pnpm; the fixtures were pnpm-first since M5 —
+ * npm's file: symlink handling mangles nested layouts, pnpm resolves
+ * package-relative paths per spec).
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
@@ -41,10 +41,10 @@ for (const name of fixtures) {
 }
 if (failed) process.exit(1);
 
-// The packageManager pin at the repo root refuses pnpm here; the
-// fixtures are deliberately pnpm-managed (see header). The env var
-// disables that guard for the fixture installs only.
-const env = { ...process.env, npm_config_package_manager_strict: "false" };
+// CI=true: pnpm refuses to purge a foreign node_modules without a TTY
+// confirmation (the fixtures were installed by a different manager or
+// pnpm major at some point); non-interactive runs need the override.
+const env = { ...process.env, CI: "true" };
 {
   const install = spawnSync("pnpm", ["install", "--frozen-lockfile"], { cwd: matrixDir, encoding: "utf8", env, stdio: "pipe" });
   if (install.status !== 0) {

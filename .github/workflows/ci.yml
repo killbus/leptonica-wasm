@@ -111,8 +111,15 @@ jobs:
           # with a hasInstallScript is fsevents (darwin-only, skipped on
           # Linux); vitest's toolchain uses prebuilt rolldown napi bindings,
           # no postinstall required.
-          npm ci --ignore-scripts
-          npm run typecheck
+          # pnpm migration (2026-09-05, user direction): the repo moved
+          # from npm to pnpm — packageManager pin + pnpm-lock.yaml.
+          # Corepack reads the pin; pnpm 10.34.5 is the latest 10.x
+          # (npm registry, 2026-09-05) with Node >=18.12 engines —
+          # pnpm 11 needs Node >=22.13 (node:sqlite) and crashes on
+          # the Node 20 CI runner (run 33939367655).
+          corepack enable pnpm
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm run typecheck
 
       # Toolchain pins are read from vendor/versions.json (single source of
       # truth — M1 review build-eng W2: size-spike.yml hardcoded the emsdk
@@ -250,7 +257,7 @@ jobs:
       - name: Goldens present
         run: test -f tests/golden/goldens/queries-findSkew-countPixels.json
 
-      # npm test runs AFTER the full-abi build: the raw-layer unit tests
+      # pnpm test runs AFTER the full-abi build: the raw-layer unit tests
       # instantiate dist/full-abi artifacts (M3). Dev machines have no build
       # (zero-build discipline) and skip without them — but CI must run the
       # full suite, so fail loudly if the artifact is missing here rather
@@ -258,7 +265,7 @@ jobs:
       - name: Test
         run: |
           test -f dist/full-abi/leptonica.wasm
-          npm test
+          pnpm test
 
       # Mutation smoke (M2 review F5): prove the golden suite catches a
       # broken parameter mapping — mutate threshold's level (+1), require
@@ -280,23 +287,19 @@ jobs:
         run: |
           node scripts/gen-types.mjs
           cd tests/consumer
-          npm install --no-fund --no-audit
-          npm run check
+          pnpm install --frozen-lockfile
+          pnpm run check
 
       # Bundler matrix (M5): the shared fixture entry must build/load
       # from every consumption style — vite/webpack5/esbuild bundles plus
       # plain Node ESM. The fixtures are pnpm-managed (npm's file:
       # symlink handling mangles nested layouts; see
-      # scripts/check-bundler-matrix.mjs). pnpm itself is pinned here,
-      # independent of the repo's npm packageManager pin (M0 F11 —
-      # fixtures only; the main package stays npm).
-      # pnpm 10.34.5 (latest 10.x, npm registry 2026-09-05): Node
-      # >=18.12 — the repo's CI Node is 20. pnpm 11 needs Node >=22.13
-      # (node:sqlite) and crashes on Node 20 (run 33939367655).
+      # scripts/check-bundler-matrix.mjs). The whole repo is pnpm now
+      # (2026-09-05, user direction) - the fixtures workspace pins
+      # the same pnpm 10.34.5 via its packageManager field.
       - name: Bundler matrix
-        run: |
-          npm install -g pnpm@10.34.5
-          node scripts/check-bundler-matrix.mjs
+        run: node scripts/check-bundler-matrix.mjs
+
 
       - name: Determinism check (same runner)
         # Relink from the same .a files and compare all four artifacts —

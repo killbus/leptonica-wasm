@@ -7,7 +7,7 @@
   "engines": {
     "node": ">=20"
   },
-  "packageManager": "npm@11.13.0",
+  "packageManager": "pnpm@10.34.5",
   "sideEffects": [
     "dist/worker.mjs",
     "dist/types/worker/worker.mjs",
@@ -63,7 +63,7 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
-    "prepublishOnly": "npm run typecheck && npm test && node scripts/build.mjs"
+    "prepublishOnly": "pnpm run typecheck && pnpm test && node scripts/build.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.4.0",
