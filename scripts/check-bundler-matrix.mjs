@@ -15,8 +15,8 @@
  * governs fixtures.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -61,5 +61,53 @@ for (const name of fixtures) {
     process.exit(1);
   }
   console.log(`${name}: ok`);
+}
+
+// Layout assertion (review M5 B2): build-only fixtures cannot execute
+// a browser bundle in Node, but the runtime wasm dependency is still
+// statically verifiable — the emscripten loader keeps
+// new URL("leptonica.wasm", import.meta.url) as a literal inside the
+// worker chunk. Two shapes survive bundling, depending on the tool:
+//  - untouched literal: new URL("leptonica.wasm", import.meta.url) —
+//    the wasm is a sibling of the emitted file (esbuild, webpack)
+//  - rewritten asset URL: new URL("<hashed>.wasm", self.location.href)
+//    or import.meta.url — vite rewrites to its /assets/ output
+// Assert the file each emitted URL points at actually exists: this is
+// what caught the esbuild fixture shipping without the wasm binary
+// (a false green at build level).
+const layoutDirs = [
+  ["vite", join(matrixDir, "vite", "dist")],
+  ["webpack5", join(matrixDir, "webpack5", "dist")],
+  ["esbuild", join(matrixDir, "esbuild", "dist")],
+];
+for (const [name, dir] of layoutDirs) {
+  const files = readdirSync(dir, { recursive: true })
+    .map((f) => join(dir, String(f)))
+    .filter((f) => /worker|main/.test(basename(f)) && /\.(mjs|js)$/.test(f));
+  let asserted = false;
+  for (const file of files) {
+    const src = readFileSync(file, "utf8");
+    const matches = [
+      ...src.matchAll(/new URL\("([^"\s]*\.wasm)",\s*import\.meta\.url\)/g),
+      ...src.matchAll(/new URL\("([^"\s]*\.wasm)",\s*self\.location\.href\)/g),
+    ];
+    for (const m of matches) {
+      // import.meta.url shapes resolve against the emitting file's
+      // directory; self.location.href shapes are absolute from the
+      // server root (vite /assets/ output).
+      const url = m[1];
+      const target = url.startsWith("/") ? join(matrixDir, name, "dist", url.slice(1)) : join(dirname(file), url);
+      if (!existsSync(target)) {
+        console.error(`bundler-matrix layout: ${name} emits ${file} referencing ${m[1]}, but ${target} is missing`);
+        process.exit(1);
+      }
+      asserted = true;
+    }
+  }
+  if (!asserted) {
+    console.error(`bundler-matrix layout: ${name} emitted no wasm URL pattern in any artifact — assertion cannot run`);
+    process.exit(1);
+  }
+  console.log(`${name}: wasm layout ok`);
 }
 console.log("bundler-matrix: all fixtures green");

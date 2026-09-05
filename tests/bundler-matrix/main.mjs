@@ -5,9 +5,13 @@
  * programs work (design §5.3: bundler worker+wasm resolution is the
  * historical minefield, tesseract.js precedent).
  *
- * The check is deliberately end-to-end: createSession → load → chain →
- * extract. A bundler that emits a broken worker chunk or loses the wasm
- * binary fails at runtime here, not at build time.
+ * The entry is deliberately end-to-end: createSession → load → chain →
+ * extract. node-esm executes it directly, so a broken worker entry or
+ * a lost wasm binary fails at runtime there; the bundler fixtures
+ * (vite/webpack5/esbuild) are build-level — they assert the bundler
+ * resolved the worker entry and wasm into a correct output layout
+ * (the historical minefield), with browser runtime coverage deferred
+ * to the M6 Playwright E2E.
  */
 import { createSession } from "leptonica-wasm/worker";
 

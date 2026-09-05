@@ -8,6 +8,7 @@
 // documented esbuild answer for workers; the library's bundler-neutral
 // URL pattern is what makes the layout predictable.
 import { build } from "esbuild";
+import { copyFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const workerEntry = fileURLToPath(new URL(import.meta.resolve("leptonica-wasm/worker/worker.mjs")));
@@ -34,8 +35,19 @@ await build({
   // dead at runtime.
   external: ["node:*"],
 });
+
+// esbuild leaves new URL("leptonica.wasm", import.meta.url) inside the
+// emscripten loader untouched (it does not rewrite asset URLs) — the
+// runtime fetches the wasm as a sibling of worker.mjs. Copy it there,
+// or the worker 404s at init (the exact minefield this matrix guards).
+const wasmPath = fileURLToPath(new URL(import.meta.resolve("leptonica-wasm/leptonica.wasm")));
+copyFileSync(wasmPath, "dist/leptonica.wasm");
+
 console.log("esbuild: bundled");
 // The bundle targets the browser (DOM Worker path). Node cannot run
-// that bundle; the CI browser matrix job loads it in a real browser.
-// Here we only assert the build resolved every import (worker chunk
-// included) — the runtime smoke for esbuild runs in the browser job.
+// that bundle, so this fixture is build-level: it asserts the build
+// resolved every import (both entry points, worker chunk included)
+// and emitted the sibling layout the client's relative URL expects.
+// Browser runtime coverage for the bundled output lands with the M6
+// Playwright E2E (implement.md M6); node-esm covers the runtime path
+// here.
