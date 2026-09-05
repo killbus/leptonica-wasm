@@ -20,7 +20,7 @@ semantics. Prefer the curated layer unless you need it.
 
 ## Quick start — worker session (recommended)
 
-\`\`\`js
+```js
 import { createSession } from "leptonica-wasm/worker";
 
 const session = await createSession();
@@ -36,7 +36,7 @@ try {
 } finally {
   await session.close();    // releases every live Pix, poisons the session
 }
-\`\`\`
+```
 
 The same createSession works in Node — the "node" export condition
 swaps in a worker_threads adapter; no code changes.
@@ -47,7 +47,7 @@ request rejects.
 
 ## Quick start — synchronous core
 
-\`\`\`js
+```js
 import { load } from "leptonica-wasm";
 
 const lp = await load();
@@ -59,11 +59,11 @@ const out = lp.chain(src)
   .run();
 const pngBytes = out.toPNG();
 src[Symbol.dispose](); out[Symbol.dispose]();   // explicit ownership (decision ④)
-\`\`\`
+```
 
 ## Quick start — raw escape hatch
 
-\`\`\`js
+```js
 import { loadRaw } from "leptonica-wasm/raw";
 import { readFile } from "node:fs/promises";
 
@@ -75,7 +75,7 @@ const pix = raw._pixCreate(64, 64, 1);   // every C symbol, loose types
 const slot = raw._malloc(4);              // pixDestroy takes PIX**, not PIX*:
 new Int32Array(memory.buffer, slot, 1)[0] = pix;
 raw._pixDestroy(slot);                    // ownership is yours
-\`\`\`
+```
 
 The raw layer ships the full ABI decode surface — that's the point.
 You own every pointer; nothing is validated; upgrades can move symbols.
