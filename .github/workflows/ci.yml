@@ -343,6 +343,15 @@ jobs:
           console.log("all four artifacts reproducible (wasm, mjs, d.ts, symbols)");
           NODE
 
+      # dist sha256 manifest (M0 review F7 / M6): generated after all
+      # builds and relinks so it covers the final dist/ tree (default
+      # + full-abi), then uploaded with ci-dist. The compare job below
+      # proves ci-dist and repro-dist byte-identical across runners, so
+      # the manifest that ships with ci-dist is proven to describe the
+      # independently compiled tree too.
+      - name: Generate dist sha256 manifest
+        run: pnpm run hash-manifest
+
       # v7.0.1 (2026-04-10): https://github.com/actions/upload-artifact/releases/tag/v7.0.1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
