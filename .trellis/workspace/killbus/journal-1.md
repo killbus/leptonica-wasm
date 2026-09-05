@@ -270,3 +270,23 @@
   for tag-only workflows, an invalid file announces itself as
   zero-job failure runs on ordinary branch pushes, not as a silent
   skip. Watch for that signature.
+
+## 2026-09-05 v0.1.0 released (GitHub Release)
+
+- Branch protection landed (main protected:true). PR #4 merged
+  (0edbed3) with all checks green; main CI green (33949334034).
+- First v0.1.0 tag push: release run 33949512439 FAILED at Pack
+  review with a false negative — tar | grep -qx under
+  set -euo pipefail kills tar with SIGPIPE when grep exits on
+  first match; pipefail then marks the pipeline failed even though
+  the file IS in the tarball. Verified by local reproduction.
+  Fix (PR #5, c7960c9): read the full listing into a variable,
+  then grep the variable — no pipe, no SIGPIPE.
+- Re-tagged v0.1.0 on c7960c9: release run 33949945440 GREEN.
+  GitHub Release v0.1.0 is live with leptonica-wasm-0.1.0.tgz
+  (1.26 MB) attached; artifact downloaded and verified — full-abi
+  six files + dist/sha256.json + LICENSE + README all present.
+- The npm-publish-disabled posture had its first real end-to-end
+  execution: cold verified toolchain, build, test, pack review,
+  GitHub Release creation. M6 review W3 (release-tail zero
+  execution history) is closed with a green production run.
