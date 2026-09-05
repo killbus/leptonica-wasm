@@ -96,16 +96,22 @@
 ## M6 E2E 与发布 ★评审门 3
 
 - [ ] **发布前置（M2 评审 F1）**：分支保护必须已落地（Settings → Branches：main 加 Require PR + Block force pushes）——白名单 TOFU 信任根的承重墙，未落地前不得执行 release workflow；当前 token 实测 403 无权设置，需用户在 GitHub 设置页操作或授权
-- [ ] Playwright E2E：浏览器 vite 页 → `createSession` → 链执行 → PNG 字节 vs Node 输出**逐字节比对**（环境一致性；语义正确性已在 M4 oracle 锚定）
-- [ ] README：三段式快速开始（Worker 主入口 / 同步核心 / raw 逃生舱）+ API 表
-- [ ] release workflow（tag 触发）：build → test → `npm publish --provenance`——CI 是发布产物唯一来源，本地构建不发布（design §3）
-- [ ] npm publish `--dry-run` + `npm pack` 内容审查（发布前预检）——**显式排除 full-abi 产物**（M2 评审 F2：ci-dist artifact 含 dist/full-abi 全部解码面产物，发布打包若照搬 dist/** 会破坏「无解码路径」承诺；npm pack 审查必须确认包内容不含 full-abi）
-- [ ] LICENSE 文件（BSD-2-Clause + Leptonica 版权归并，M0 评审 F13）
-- [ ] wasm 产物 sha256 清单随包发布；CI 复现构建 digest 比对（npm integrity 不证明 wasm↔C 源码对应——M0 评审 F7）
+- [x] Playwright E2E：浏览器 vite 页 → createSession → 链执行 → PNG 字节 vs Node 输出逐字节比对（环境一致性；语义正确性已在 M4 oracle 锚定）——172c44b；CI 两轮红教训：包名导入 TS2307（无 self-link）→ dist 导入在 pre-build typecheck 阶段不存在 → src 导入（与 worker.test.ts 同模式）；CI E2E 步骤显式列 chromium + chromium-headless-shell（本地实测后者需单独装）
+- [x] README：三段式快速开始（Worker 主入口 / 同步核心 / raw 逃生舱）+ API 表——172c44b + cf04e5f（raw 例子 PIX 双指针 staging 修正，与 M3 B2 对齐）
+- [x] release workflow（tag 触发）：build → test → pnpm publish --provenance——CI 是发布产物唯一来源，本地构建不发布（design §3）——03f0a68 + a2258a9（corepack 步骤恢复）；cold verified 工具链（无缓存层）、concurrency 按 tag、NPM_TOKEN fail-loud；publish 命令走 pnpm（用户 2026-09-05 指示）
+- [x] npm pack 内容审查（发布前预检）——按 M3 再裁决（reviews/M3.md：无解码承诺是 default 产物承诺，非包范围承诺）：pack 断言 full-abi 六文件 + sha256.json + LICENSE + README 必须在包内（bd7b018；初始实现误按 M2 F2 字面排除 full-abi，评审第一层纠正）
+- [x] LICENSE 文件（BSD-2-Clause + Leptonica 版权归并，M0 评审 F13）——172c44b
+- [x] wasm 产物 sha256 清单随包发布；CI 复现构建 digest 比对（npm integrity 不证明 wasm 与 C 源码对应——M0 评审 F7）——90835fb + 2d270a9 + 14e9647；scripts/gen-hash-manifest.mjs（39 条目含 full-abi 六文件，M2 F9 一并清偿）；ci job 在 determinism relink 后生成、compare job 上传（ci-dist 与 repro-dist 字节全等即 manifest 双树适用性证明）
 - [ ] 已知债务清偿（M2 评审 F3，择机）：cmakeTool 进 deps 缓存键与 doneKey（单独 bump cmakeTool 现只轮换 emsdk 层，deps 层命中旧 .a——fail-loud 非 silent，compare 必红；修复需改 build.mjs 必然轮换缓存键触发冷编译，推迟到下次必然的 build.mjs 变更一并携带）；full-abi 复现性断言扩展（F9：确定性现只证 default 模式，manifest 若收录 full-abi 则 compare 需扩面）
-- 验证：`playwright test` 绿；`npm publish --dry-run` 无 error；dist 内容与 exports 映射一致
+- 验证：playwright test 绿（本地 1 passed + CI E2E 步骤绿，run 33944836717）；pnpm pack 内容审查 0 缺失（61 文件）；dist 内容与 exports 映射一致（consumer fixture + attw 持续在 CI 验证）
 - 评审门：发布前最终确认（用户执行实际 publish 或授权执行）
 - 回滚点：发布前一切可撤（dry-run 为门）；发布后 deprecate / next tag
+
+## M6 评审与门状态
+
+- 评审记录：reviews/M6.md（第一层 trellis-check B1 修复 + 三视角 chatroom；5 findings 全处置）
+- 最终态：a2258a9 = CI run 33944836717 全绿（分支 m5-worker-session，PR #4）
+- 门 3 状态：技术侧达成，用户确认待定——发布前置（分支保护 + NPM_TOKEN）是用户侧操作，见 reviews/M6.md 结论段
 
 ## PRD 验收对照
 
