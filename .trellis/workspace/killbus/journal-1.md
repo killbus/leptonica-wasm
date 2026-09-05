@@ -208,3 +208,38 @@
   (3) pnpm refuses non-TTY node_modules purges without CI=true.
   Local + CI verification: 95/95, typecheck, consumer check, bundler
   matrix, runs 33942042722 and 33942410612 green.
+
+## 2026-09-05 M6: E2E + release, two-layer review
+
+- M6 landed on m5-worker-session (PR #4): Playwright E2E (browser vs
+  Node byte-identical PNG through the same session API), LICENSE
+  (BSD-2-Clause, dual copyright), README (three quick-starts + API
+  tables), dist sha256 manifest (39 entries incl. full-abi), and a
+  tag-triggered release workflow publishing via pnpm (user direction
+  2026-09-05).
+- Four CI red rounds, all closed: package-name import in the E2E spec
+  (no self-link in-repo), dist-relative import failing pre-build
+  typecheck (fixed with src import - the worker.test.ts pattern), a
+  fat-fingered upload-artifact pin, and a manifest generation step I
+  wired into release.yml but forgot in ci.yml. Lesson pair: E2E specs
+  that typecheck in the repo's own tsconfig cannot import the package
+  name (no self-dependency) nor dist (built after typecheck); and any
+  script referenced by two workflows must be wired into both.
+- The big catch of the review layer: a reordering commit dropped the
+  corepack/pnpm install step from release.yml entirely - invisible to
+  CI because release.yml only triggers on tags, and no tag can exist
+  before branch protection lands. Layer-1 trellis-check caught it.
+  Lesson: workflow files not exercised by push-triggered CI need a
+  structural review pass (step inventory vs requirements) regardless
+  of green runs elsewhere.
+- Adjudication trap worth remembering: M2 F2 said "pack excludes
+  full-abi" but M3 had RE-ADJUDICATED it (no-decode is a
+  default-artifact promise, not a package-scope promise - full-abi IS
+  the shipped escape hatch, PRD decision 7). I implemented the stale
+  M2 reading and had to correct it (bd7b018). When implementing an
+  older finding, always check for later re-adjudications in the
+  review chain first.
+- Review record: reviews/M6.md. Gate 3 technically met at cb510a7
+  (CI 33944836717); user-side preconditions pending: branch
+  protection (M2 F1), NPM_TOKEN secret, then merge PR #4 and tag
+  v0.1.0 for the first real publish.
