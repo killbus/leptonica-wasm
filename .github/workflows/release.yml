@@ -1,0 +1,105 @@
+name: release
+
+# npm release workflow (M6, design §3): CI is the ONLY source of published
+# artifacts — local builds never publish. Tag push (v*) triggers: install →
+# build (default profile) → test → generate the dist sha256 manifest → pack
+# review (full-abi must NOT ship, M2 review F2) → publish with provenance.
+#
+# Preconditions (M2 review F1): branch protection on main (Require PR +
+# Block force pushes) is the trust root of the toolchain hash whitelist.
+# A v* tag cannot be created on this repo while that is unset without
+# bypassing review — do not weaken this by pushing tags directly.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      # v7.0.1 (2026-07-20): https://github.com/actions/checkout/releases/tag/v7.0.1
+      # Same pin+research trail as ci.yml.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      # v7.0.0 (2026-07-14): https://github.com/actions/setup-node/releases/tag/v7.0.0
+      # Same pin+research trail as ci.yml.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org/
+
+      # Toolchain pins are read from vendor/versions.json (single source of
+      # truth — M1 review build-eng W2: no yml-side dual-write of pins).
+      - name: Resolve toolchain pins
+        id: pins
+        run: |
+          node --input-type=module -e '
+          import { appendFileSync, readFileSync } from "node:fs";
+          const v = JSON.parse(readFileSync("vendor/versions.json", "utf8"));
+          const out = (name, value) => appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
+          out("emsdk_commit", v.emsdk.commit);
+          out("sdk_version", v.emsdk.sdkVersion);
+          out("cmake_tool", v.emsdk.cmakeTool);
+          out("ninja_tool", v.emsdk.ninjaTool);
+          '
+
+      # Release builds do not use the build cache: a release artifact must
+      # derive from a compile this run performed on toolchain bytes the
+      # whitelist verified at cold-install time (supply W1/N3 posture).
+      # The archive whitelist is also what makes this run trust-worthy:
+      # branch protection (M2 review F1) is its trust root.
+      - name: Install pinned emsdk (cold, verified)
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git tmp/emsdk
+          git -C tmp/emsdk fetch --depth 1 origin ${{ steps.pins.outputs.emsdk_commit }}
+          git -C tmp/emsdk checkout ${{ steps.pins.outputs.emsdk_commit }}
+          # Same EMSDK_KEEP_DOWNLOADS=1 posture as ci.yml cold installs: keep
+          # the archives so verify-toolchain.mjs can hash them (supply W1).
+          EMSDK_KEEP_DOWNLOADS=1 ./tmp/emsdk/emsdk install ${{ steps.pins.outputs.sdk_version }} ${{ steps.pins.outputs.cmake_tool }} ${{ steps.pins.outputs.ninja_tool }}
+          ./tmp/emsdk/emsdk activate ${{ steps.pins.outputs.sdk_version }} ${{ steps.pins.outputs.cmake_tool }} ${{ steps.pins.outputs.ninja_tool }}
+          node scripts/verify-toolchain.mjs
+
+      - name: Install dependencies
+        # Same --ignore-scripts posture as ci.yml (M0 F14 / M1 supply N1).
+        run: |
+          corepack enable pnpm
+          pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build (default profile)
+        run: |
+          . ./tmp/emsdk/emsdk_env.sh
+          node scripts/build.mjs
+
+      - name: Generate dist sha256 manifest
+        run: pnpm run hash-manifest
+
+      - name: Test
+        run: pnpm test
+
+      - name: Pack review (full-abi must not ship)
+        # M2 review F2: ci-dist includes dist/full-abi (the full decode
+        # surface) for test purposes — the published package must not
+        # carry it. This guard fails the release if pack picks it up.
+        run: |
+          set -euo pipefail
+          pnpm pack --pack-destination tmp
+          if tar -tzf tmp/leptonica-wasm-*.tgz | grep -q "dist/full-abi"; then
+            echo "ERROR: dist/full-abi leaked into the package (M2 review F2)"
+            exit 1
+          fi
+          tar -tzf tmp/leptonica-wasm-*.tgz | sort
+
+      - name: Publish
+        # pnpm publish (user direction 2026-09-05: pnpm instead of npm).
+        # --provenance satisfies design decision ⑪; NODE_AUTH_TOKEN is set
+        # by setup-node from secrets.NPM_TOKEN. No --no-git-checks: publish
+        # from a tag must have a clean tree and an up-to-date tag.
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: pnpm publish --provenance --access public
