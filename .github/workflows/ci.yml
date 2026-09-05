@@ -215,6 +215,11 @@ jobs:
       - name: Check exports (default)
         run: node scripts/check-exports.mjs dist
 
+      # M4 review W11: the hand-pinned CuratedModule interface vs the live
+      # embind module — catches bindings-side renames the d.ts never sees.
+      - name: Check curated methods (default)
+        run: node scripts/check-exports.mjs --curated-methods dist
+
       - name: Smoke test (default)
         run: node scripts/smoke.mjs dist
 
@@ -268,6 +273,9 @@ jobs:
       # arethetypeswrong then checks the export map resolves for every
       # consumption style (node10 resolution is expected to fail for an
       # ESM-only package; that failure is in the allowlist).
+      # M4 review B2: the check also RUNS main.ts — the runtime import
+      # path (dist/types/*.js) was once broken while everything above
+      # stayed green.
       - name: Consumer fixture
         run: |
           node scripts/gen-types.mjs

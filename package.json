@@ -17,11 +17,11 @@
   "exports": {
     ".": {
       "types": "./dist/types/index.d.ts",
-      "import": "./src/index.ts"
+      "import": "./dist/types/index.js"
     },
     "./raw": {
       "types": "./dist/types/raw/index.d.ts",
-      "import": "./src/raw/index.ts"
+      "import": "./dist/types/raw/index.js"
     },
     "./full-abi/leptonica.mjs": {
       "types": "./dist/full-abi/leptonica-raw.d.ts",

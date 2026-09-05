@@ -1,4 +1,4 @@
-// TS type emission for the published package (M4, review F16).
+// TS type + JS emission for the published package (M4, reviews F16/B2).
 //
 // The source tree ships .ts sources whose import specifiers end in ".ts"
 // and rely on the repo's tsconfig.base.json (allowImportingTsExtensions,
@@ -6,8 +6,16 @@
 // tsconfig — none of those flags — and skipLibCheck:false pulls every
 // source into their program (TS5097/TS2614/TS2584, exactly what the
 // consumer fixture caught). The fix: emit declarations from the package's
-// own controlled tsconfig and point "exports" at the output. Runtime code
-// keeps the raw .ts sources; types are emitted separately.
+// own controlled tsconfig and point "exports" at the output.
+//
+// M4 review B2: the package's "import" conditions pointed at those same
+// .ts sources. Node strips types only OUTSIDE node_modules — an installed
+// package importing .ts fails on every Node version (ERR_UNSUPPORTED_
+// NODE_MODULES_TYPE_STRIPPING; verified on a real node_modules layout,
+// node v24). So this script now emits JS as well: the runtime entries in
+// "exports" point at dist/index.js and dist/raw/index.js, and the .ts
+// rewrite tsc performs on import specifiers (.ts -> .js) is exactly what
+// the emitted JS needs.
 //
 // Usage: node gen-types.mjs [--out <dir>] [--root-name <name>]
 
@@ -50,7 +58,8 @@ writeFileSync(
   JSON.stringify(
     {
       compilerOptions: {
-        emitDeclarationOnly: true,
+        emitDeclarationOnly: false,
+        stripInternal: true,
         declaration: true,
         outDir,
         rootDir: join(repoRoot, "src"),
@@ -62,6 +71,10 @@ writeFileSync(
         noUncheckedIndexedAccess: true,
         exactOptionalPropertyTypes: true,
         allowImportingTsExtensions: true,
+        // M4 review B2: JS emit requires this so tsc rewrites the .ts
+        // import specifiers in the emitted JS to .js (allowImportingTsExtensions
+        // alone forbids emit; this is the supported emit path).
+        rewriteRelativeImportExtensions: true,
         noEmit: false,
         types: [],
         // Resolve the package-internal subpath through the hand-pinned

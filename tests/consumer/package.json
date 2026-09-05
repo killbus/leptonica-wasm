@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "tsc --noEmit && attw --pack ../.. --entrypoints . --profile esm-only"
+    "check": "tsc --noEmit && attw --pack ../.. --entrypoints . --profile esm-only && node main.ts"
   },
   "dependencies": {
     "leptonica-wasm": "file:../.."

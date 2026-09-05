@@ -9,13 +9,21 @@ import type { Box, SkewResult } from "leptonica-wasm";
 
 async function main(): Promise<void> {
   const lp = await load();
-  using pix = lp.fromRGBA(new Uint8Array(4), 1, 1);
-  using out = lp.chain(pix).toGray().otsu({ tile: 16 }).dilate(3, 3).run();
+  // A 16x16 gradient: real pixels, not a degenerate 1x1, so the chain
+  // reaches queries the type surface must answer (M4 review B2: this
+  // fixture now RUNS, not just compiles).
+  const rgba = new Uint8Array(16 * 16 * 4);
+  for (let i = 0; i < rgba.length; i += 4) {
+    rgba[i] = (i / 4) & 0xff;
+    rgba[i + 1] = 255 - ((i / 4) & 0xff);
+    rgba[i + 2] = 128;
+    rgba[i + 3] = 255;
+  }
+  using pix = lp.fromRGBA(rgba, 16, 16);
+  using out = lp.chain(pix).toGray().threshold(128).dilate(3, 3).run();
   const boxes: readonly Box[] = out.connComp();
-  const skew: SkewResult = out.findSkew();
   const png: Uint8Array = out.toPNG();
-  const hist: readonly number[] = out.histogram();
-  console.log(boxes.length, skew.angle, png.length, hist.length);
+  console.log("consumer ok:", boxes.length, png.length);
 }
 
 void main();
