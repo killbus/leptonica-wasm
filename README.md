@@ -131,9 +131,10 @@ wasm work happens.
 
 Every published wasm is built by GitHub Actions from the pinned
 toolchain in vendor/versions.json (emsdk commit, dependency tags,
-hashes) — never on a local machine. The release artifact carries a
-sha256 manifest so a wasm can be matched to the exact source pins even
-after npm integrity stops caring.
+hashes) — never on a local machine. Distribution is via this repo's
+GitHub Releases (npm publishing is disabled by design); each release
+carries the package tarball, and the sha256 manifest inside it lets a
+wasm be matched to the exact source pins.
 
 ## License
 
