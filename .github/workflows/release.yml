@@ -13,6 +13,12 @@ on:
   push:
     tags: ["v*"]
 
+concurrency:
+  # One release per tag: a re-pushed tag (deleted + recreated) cancels the
+  # superseded run instead of racing two publishes of the same version.
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -29,6 +35,8 @@ jobs:
 
       # v7.0.0 (2026-07-14): https://github.com/actions/setup-node/releases/tag/v7.0.0
       # Same pin+research trail as ci.yml.
+      # registry-url sets up the .npmrc + NODE_AUTH_TOKEN env so pnpm
+      # publishes to registry.npmjs.org without repo config.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 20
@@ -64,12 +72,6 @@ jobs:
           EMSDK_KEEP_DOWNLOADS=1 ./tmp/emsdk/emsdk install ${{ steps.pins.outputs.sdk_version }} ${{ steps.pins.outputs.cmake_tool }} ${{ steps.pins.outputs.ninja_tool }}
           ./tmp/emsdk/emsdk activate ${{ steps.pins.outputs.sdk_version }} ${{ steps.pins.outputs.cmake_tool }} ${{ steps.pins.outputs.ninja_tool }}
           node scripts/verify-toolchain.mjs
-
-      - name: Install dependencies
-        # Same --ignore-scripts posture as ci.yml (M0 F14 / M1 supply N1).
-        run: |
-          corepack enable pnpm
-          pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Build (default profile)
         run: |
