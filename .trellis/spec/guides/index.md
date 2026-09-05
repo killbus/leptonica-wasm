@@ -39,6 +39,14 @@ These guides help you **ask the right questions before coding**.
 
 → Read [Cross-Layer Thinking Guide](./cross-layer-thinking-guide.md)
 
+### When Implementing an Older Review Finding
+
+- [ ] The finding is from an earlier milestone (M1/M2/...) — check later milestones' review records for re-adjudications of the SAME finding BEFORE implementing
+- [ ] The review chain (reviews/M*.md) may have overturned or narrowed the original reading (e.g. M2 F2 "pack excludes full-abi" was re-adjudicated in M3: full-abi IS the shipped escape hatch, PRD decision 7)
+- [ ] PRD decisions supersede review findings when they conflict
+
+**Rule**: Never implement a finding from milestone N without scanning milestones N+1..latest for re-adjudication. Stale readings cause rework (bd7b018 was the fix for exactly this).
+
 ### When to Think About Code Reuse
 
 - [ ] You're writing similar code to something that exists
