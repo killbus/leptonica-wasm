@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { generateRgba } from '../../scripts/generate-rgba.mjs'
+import { generateRgba, generateSlantRgba } from '../../scripts/generate-rgba.mjs'
 import type { Op, Query } from '../../src/protocol.ts'
 
 /*
@@ -25,6 +25,18 @@ const goldenDir = resolve('tests/golden/goldens')
 const goldensPresent = existsSync(goldenDir)
 const distPresent = existsSync(resolve('dist/leptonica.wasm'))
 
+// M4 review B3: the slant chains' goldens are produced by the CI
+// native-oracle job; a dev machine can hold a stale goldens artifact
+// that predates them. Restrict this suite to the chains whose goldens
+// actually exist rather than failing ENOENT on chains the fixture dir
+// never carried (CI's guard step pins the full set).
+const allChains: { name: string; width: number; height: number; input?: string; ops: Op[]; queries: Query[] }[] = JSON.parse(
+  readFileSync(join('tests/golden/chains.json'), 'utf8'),
+)
+const chains = allChains.filter(
+  (c) => existsSync(join(goldenDir, c.name + '.png')) && existsSync(join(goldenDir, c.name + '.json')),
+)
+
 /** Minimal chain state — mirrors oracle.c's Chain struct. */
 interface ChainResult {
   png: Uint8Array
@@ -36,7 +48,7 @@ interface ChainResult {
   averageValue: number
 }
 
-const SKEW_TOL = 1e-3 // radians — wasm/native float paths can differ in ulps
+const SKEW_TOL = 1e-3 // degrees — wasm/native float paths can differ in ulps
 const CONF_TOL = 1e-3
 
 /**
@@ -45,13 +57,14 @@ const CONF_TOL = 1e-3
  * Returns the final PNG plus query results so both comparison surfaces
  * (bytes + scalars) come from one replay.
  */
-async function playChain(w: number, h: number, ops: readonly Op[], queries: readonly Query[]): Promise<ChainResult> {
+async function playChain(w: number, h: number, ops: readonly Op[], queries: readonly Query[], input?: string): Promise<ChainResult> {
   const jsPath = resolve('dist/leptonica.mjs')
   const wasmPath = resolve('dist/leptonica.wasm')
   const factory = (await import(pathToFileURL(jsPath).href)).default
   const L = await factory({ wasmBinary: readFileSync(wasmPath) })
 
-  let pix: unknown = L.fromRGBA(generateRgba(w, h), w, h)
+  const gen = input === 'slant' ? generateSlantRgba : generateRgba
+  let pix: unknown = L.fromRGBA(gen(w, h), w, h)
   if (pix === null) throw new Error('fromRGBA returned null')
 
   const mustPix = (next: unknown, op: string): void => {
@@ -122,51 +135,52 @@ async function playChain(w: number, h: number, ops: readonly Op[], queries: read
 }
 
 describe.skipIf(!goldensPresent || !distPresent)('golden chains (oracle comparison)', () => {
-  const chains: { name: string; width: number; height: number; ops: Op[]; queries: Query[] }[] = JSON.parse(
-    readFileSync(join('tests/golden/chains.json'), 'utf8'),
-  )
-
-  it('every chain matches the oracle goldens (PNG bytes + scalars)', async () => {
-    expect(chains.length).toBeGreaterThan(0)
-    for (const chain of chains) {
-      const goldenPng = readFileSync(join(goldenDir, chain.name + '.png'))
-      const goldenJson = JSON.parse(readFileSync(join(goldenDir, chain.name + '.json'), 'utf8')) as {
-        skewAngle: number
-        skewConf: number
-        pixelCount: number
-        connCompCount: number
-        histogram: number[]
-        average: number
-      }
-      const got = await playChain(chain.width, chain.height, chain.ops, chain.queries)
-      // PNG: byte-identical. Both sides use the same zlib/libpng pins and
-      // deterministic encoders; if this ever fails on a filter-chunk
-      // boundary (stream vs memory write path), the fallback is
-      // pixel-level comparison — recorded as a design adjudication, not
-      // silently loosened here.
-      expect(
-        Buffer.compare(Buffer.from(got.png), goldenPng),
-        `PNG bytes differ for chain '${chain.name}'`,
-      ).toBe(0)
-      // Scalars: floats within tolerance, counts exact.
-      expect(Math.abs(got.skewAngle - goldenJson.skewAngle)).toBeLessThanOrEqual(SKEW_TOL)
-      expect(Math.abs(got.skewConf - goldenJson.skewConf)).toBeLessThanOrEqual(CONF_TOL)
-      expect(got.pixelCount).toBe(goldenJson.pixelCount)
-      expect(got.connCompCount).toBe(goldenJson.connCompCount)
-      // Query-scoped assertions: the oracle JSON always carries all scalar
-      // fields (zero-initialized), but the wasm side only populates the
-      // fields a chain's queries select. Compare only what the chain asked
-      // for — a chain without the histogram query has [] here, not the
-      // oracle's 256 zeros.
-      const queryKinds = new Set(chain.queries.map((q) => q.query))
-      // Full-bin equality: every one of the 256 bins must match exactly —
-      // a summed-only check would pass with compensating bin errors.
-      if (queryKinds.has('histogram')) {
-        expect(got.histogram).toEqual(goldenJson.histogram)
-      }
-      if (queryKinds.has('average')) {
-        expect(Math.abs(got.averageValue - goldenJson.average)).toBeLessThanOrEqual(CONF_TOL)
-      }
+  // M4 review W5: it.each so the first failure does not short-circuit the
+  // remaining chains — a red run reports every failing chain at once.
+  it.each(chains)('$name', async (chain) => {
+    const goldenPng = readFileSync(join(goldenDir, chain.name + '.png'))
+    const goldenJson = JSON.parse(readFileSync(join(goldenDir, chain.name + '.json'), 'utf8')) as {
+      skewAngle: number
+      skewConf: number
+      pixelCount: number
+      connCompCount: number
+      histogram: number[]
+      average: number
     }
+    const got = await playChain(chain.width, chain.height, chain.ops, chain.queries, chain.input)
+    // PNG: byte-identical. Both sides use the same zlib/libpng pins and
+    // deterministic encoders; if this ever fails on a filter-chunk
+    // boundary (stream vs memory write path), the fallback is
+    // pixel-level comparison — recorded as a design adjudication, not
+    // silently loosened here.
+    expect(
+      Buffer.compare(Buffer.from(got.png), goldenPng),
+      `PNG bytes differ for chain '${chain.name}'`,
+    ).toBe(0)
+    // Scalars: floats within tolerance, counts exact.
+    expect(Math.abs(got.skewAngle - goldenJson.skewAngle)).toBeLessThanOrEqual(SKEW_TOL)
+    expect(Math.abs(got.skewConf - goldenJson.skewConf)).toBeLessThanOrEqual(CONF_TOL)
+    expect(got.pixelCount).toBe(goldenJson.pixelCount)
+    expect(got.connCompCount).toBe(goldenJson.connCompCount)
+    // Query-scoped assertions: the oracle JSON always carries all scalar
+    // fields (zero-initialized), but the wasm side only populates the
+    // fields a chain's queries select. Compare only what the chain asked
+    // for — a chain without the histogram query has [] here, not the
+    // oracle's 256 zeros.
+    const queryKinds = new Set(chain.queries.map((q) => q.query))
+    // Full-bin equality: every one of the 256 bins must match exactly —
+    // a summed-only check would pass with compensating bin errors.
+    if (queryKinds.has('histogram')) {
+      expect(got.histogram).toEqual(goldenJson.histogram)
+    }
+    if (queryKinds.has('average')) {
+      expect(Math.abs(got.averageValue - goldenJson.average)).toBeLessThanOrEqual(CONF_TOL)
+    }
+  })
+
+  // Vacuous-skip guard (in-suite copy of the CI step): an empty
+  // chains.json would otherwise produce zero passing it.each cases.
+  it('chains.json is non-empty', () => {
+    expect(chains.length).toBeGreaterThan(0)
   })
 })

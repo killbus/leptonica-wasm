@@ -29,7 +29,7 @@ export class ChainBuilder {
   }
 
   /** Record and validate one op; returns the builder (fluent). */
-  #record(op: Op, produces: Depth | undefined): this {
+  #record(op: Op): this {
     const rule = OP_DEPTH_RULES[op.op];
     if (rule.requires !== null && !rule.requires.includes(this.#depth)) {
       throw new TypeError(
@@ -40,19 +40,26 @@ export class ChainBuilder {
     if (rule.produces !== undefined) {
       this.#depth = typeof rule.produces === "function" ? rule.produces(this.#depth) : rule.produces;
     }
-    void produces;
     return this;
   }
 
   toGray(weights?: readonly [number, number, number]): this {
+    if (weights !== undefined) {
+      const [r, g, b] = weights;
+      if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) {
+        throw new RangeError(`toGray: weights must be finite, got [${r}, ${g}, ${b}]`);
+      }
+    }
     return this.#record(
       weights ? { op: "toGray", weights: [...weights] } : { op: "toGray" },
-      8,
     );
   }
 
   threshold(level: number): this {
-    return this.#record({ op: "threshold", level }, 1);
+    if (!Number.isFinite(level)) {
+      throw new RangeError(`threshold: level must be finite, got ${level}`);
+    }
+    return this.#record({ op: "threshold", level });
   }
 
   otsu(opts: { tile?: number; factor?: number } = {}): this {
@@ -64,7 +71,6 @@ export class ChainBuilder {
     }
     return this.#record(
       { op: "otsu", ...(opts.tile !== undefined ? { tile: opts.tile } : {}), ...(opts.factor !== undefined ? { factor: opts.factor } : {}) },
-      1,
     );
   }
 
@@ -77,16 +83,21 @@ export class ChainBuilder {
     }
     return this.#record(
       { op: "sauvola", whsize, ...(factor !== undefined ? { factor } : {}) },
-      1,
     );
   }
 
   deskew(reduction: 1 | 2 | 4 = 2): this {
-    return this.#record({ op: "deskew", reduction }, undefined);
+    if (reduction !== 1 && reduction !== 2 && reduction !== 4) {
+      throw new RangeError(`deskew: reduction must be 1, 2, or 4, got ${reduction}`);
+    }
+    return this.#record({ op: "deskew", reduction });
   }
 
   rotate(angle: number, quality: "area" | "shear" = "area"): this {
-    return this.#record({ op: "rotate", angle, quality }, undefined);
+    if (!Number.isFinite(angle)) {
+      throw new RangeError(`rotate: angle must be finite (radians), got ${angle}`);
+    }
+    return this.#record({ op: "rotate", angle, quality });
   }
 
   scale(fx: number, fy?: number): this {
@@ -96,22 +107,25 @@ export class ChainBuilder {
     if (fy !== undefined && (!Number.isFinite(fy) || fy <= 0)) {
       throw new RangeError(`scale: fy must be > 0, got ${fy}`);
     }
-    return this.#record({ op: "scale", fx, ...(fy !== undefined ? { fy } : {}) }, undefined);
+    return this.#record({ op: "scale", fx, ...(fy !== undefined ? { fy } : {}) });
   }
 
   shear(direction: "h" | "v", angle: number): this {
-    return this.#record({ op: "shear", direction, angle }, undefined);
+    if (!Number.isFinite(angle)) {
+      throw new RangeError(`shear: angle must be finite (radians), got ${angle}`);
+    }
+    return this.#record({ op: "shear", direction, angle });
   }
 
   clip(x: number, y: number, w: number, h: number): this {
     if (!Number.isInteger(w) || w <= 0 || !Number.isInteger(h) || h <= 0) {
       throw new RangeError(`clip: w and h must be positive integers, got ${w}x${h}`);
     }
-    return this.#record({ op: "clip", x, y, w, h }, undefined);
+    return this.#record({ op: "clip", x, y, w, h });
   }
 
   translate(dx: number, dy: number): this {
-    return this.#record({ op: "translate", dx, dy }, undefined);
+    return this.#record({ op: "translate", dx, dy });
   }
 
   dilate(w: number, h: number): this {
@@ -134,7 +148,7 @@ export class ChainBuilder {
     if (!Number.isInteger(w) || w <= 0 || !Number.isInteger(h) || h <= 0) {
       throw new RangeError(`${kind}: sel dimensions must be positive integers, got ${w}x${h}`);
     }
-    return this.#record({ op: kind, w, h }, 1);
+    return this.#record({ op: kind, w, h });
   }
 
   or(other: Pix): this {
@@ -155,7 +169,9 @@ export class ChainBuilder {
     if (other.depth !== 1) {
       throw new TypeError(`${name}: other Pix must be 1bpp, got ${other.depth}bpp`);
     }
-    return this.#record(op, 1);
+    // M4 review B1: record the real operand id so the executor (and the
+    // M5 wire path) resolves the user's Pix, not the chain's current image.
+    return this.#record({ ...op, other: this.#lp.registerOperand(other) });
   }
 
   blend(other: Pix, frac: number): this {
@@ -167,22 +183,29 @@ export class ChainBuilder {
     if (other.depth !== 32) {
       throw new TypeError(`blend: other Pix must be 32bpp, got ${other.depth}bpp`);
     }
-    return this.#record({ op: "blend", other: 0, frac } satisfies BlendOp, 32);
+    // Same as #bitwise: blend's second operand must survive into the executor.
+    return this.#record({ op: "blend", other: this.#lp.registerOperand(other), frac } satisfies BlendOp);
   }
 
   addBorder(t: number, val = 0): this {
     if (!Number.isInteger(t) || t < 0) {
       throw new RangeError(`addBorder: t must be a non-negative integer, got ${t}`);
     }
-    return this.#record({ op: "addBorder", t, val }, undefined);
+    return this.#record({ op: "addBorder", t, val });
   }
 
   sobel(orientation: "all" | "h" | "v" = "all"): this {
-    return this.#record({ op: "sobel", orientation }, 8);
+    return this.#record({ op: "sobel", orientation });
   }
 
   /** Execute the recorded chain. Returns the final Pix (a new handle). */
   run(): Pix {
+    // M4 review W7: the source was validated at record time; re-check at
+    // run time — a dispose between chain(src) and run() is a use-after-free,
+    // and the poisoning contract promises a ReferenceError, not silence.
+    if (this.#src.isPoisoned()) {
+      throw new ReferenceError("run: source Pix was disposed before run()");
+    }
     return runChain(this.#lp, this.#src, this.#ops);
   }
 
@@ -209,7 +232,7 @@ export function runChain(lp: Leptonica, src: Pix, ops: readonly Op[]): Pix {
   };
   try {
     for (const op of ops) {
-      const handle = applyOp(M, current, op);
+      const handle = applyOp(lp, M, current, op);
       const next = lp.adopt(handle);
       track(next);
       current = next;
@@ -226,7 +249,7 @@ export function runChain(lp: Leptonica, src: Pix, ops: readonly Op[]): Pix {
   }
 }
 
-function applyOp(M: import("./types.ts").Leptonica["module"], src: Pix, op: Op): PixHandle {
+function applyOp(lp: import("./types.ts").Leptonica, M: import("./types.ts").Leptonica["module"], src: Pix, op: Op): PixHandle {
   const h = src.handle;
   const must = (next: unknown, name: string): PixHandle => {
     if (next === null || next === undefined) {
@@ -250,10 +273,22 @@ function applyOp(M: import("./types.ts").Leptonica["module"], src: Pix, op: Op):
     case "erode": return must(M.morphErode(h, op.w, op.h), "erode");
     case "open": return must(M.morphOpen(h, op.w, op.h), "open");
     case "close": return must(M.morphClose(h, op.w, op.h), "close");
-    case "or": return must(M.bitwiseOr(h, h), "or");
-    case "and": return must(M.bitwiseAnd(h, h), "and");
-    case "xor": return must(M.bitwiseXor(h, h), "xor");
-    case "blend": return must(M.blend(h, h, op.frac), "blend");
+    case "or": {
+      const other = lp.resolveOperand(op.other, "or");
+      return must(M.bitwiseOr(h, other.handle), "or");
+    }
+    case "and": {
+      const other = lp.resolveOperand(op.other, "and");
+      return must(M.bitwiseAnd(h, other.handle), "and");
+    }
+    case "xor": {
+      const other = lp.resolveOperand(op.other, "xor");
+      return must(M.bitwiseXor(h, other.handle), "xor");
+    }
+    case "blend": {
+      const other = lp.resolveOperand(op.other, "blend");
+      return must(M.blend(h, other.handle, op.frac), "blend");
+    }
     case "addBorder": return must(M.addBorder(h, op.t, op.val ?? 0), "addBorder");
     case "sobel": return must(M.sobel(h, op.orientation ?? "all"), "sobel");
   }

@@ -16,7 +16,9 @@ export interface Box {
 
 /** Result of a findSkew query. */
 export interface SkewResult {
+  /** Estimated deskew angle in DEGREES (pixFindSkew returns degrees; pixRotate takes radians — convert with deg * Math.PI / 180 before rotating). */
   readonly angle: number;
+  /** Confidence score; pixDeskew ignores angles with confidence < 3.0. */
   readonly confidence: number;
 }
 
@@ -142,7 +144,6 @@ export class Pix {
   }
 
   /** @internal — poison without destroying (owner is closing everything). */
-  /** @internal **/
   poisonForClose(): void {
     this.#poisoned = true;
   }
@@ -171,16 +172,26 @@ export class Leptonica {
   readonly module: CuratedModule;
   /** @internal — live wrappers, for close() and leak warnings. */
   readonly #live = new Set<Pix>();
-  readonly #registry: FinalizationRegistry<Pix> | null;
+  readonly #registry: FinalizationRegistry<{ pix: Pix }> | null;
+  /** @internal — binary-op operand table (M4 review B1): op.other ids. */
+  readonly #operands = new Map<number, Pix>();
+  #nextOperandId = 1;
+  /** @internal — closed flag: close() poisons the arena permanently. */
+  #closed = false;
 
   constructor(module: CuratedModule) {
     this.module = module;
     // Decision ④: FinalizationRegistry only WARNS (dev mode); explicit
     // dispose is the contract. typeof process guard keeps browsers clean.
+    // M4 review N3: register() requires target !== holdings — a Pix used
+    // as both throws synchronously in dev mode, which is exactly when the
+    // registry exists. The Set already holds the wrapper strongly, so a
+    // unique object as holdings costs nothing and keeps the held value
+    // meaningful for the leak warning.
     this.#registry =
       Pix.isDev()
-        ? new FinalizationRegistry((held) => {
-            if (this.#live.has(held)) {
+        ? new FinalizationRegistry<{ pix: Pix }>((holder) => {
+            if (this.#live.has(holder.pix)) {
               console.warn("leptonica-wasm: Pix was garbage-collected without dispose()");
             }
           })
@@ -192,6 +203,7 @@ export class Leptonica {
    * heap; the input is not retained.
    */
   fromRGBA(data: Uint8Array | ArrayBufferView, w: number, h: number): Pix {
+    this.#assertOpen("fromRGBA");
     if (!Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0) {
       throw new RangeError(`fromRGBA: bad dimensions ${w}x${h}`);
     }
@@ -206,25 +218,29 @@ export class Leptonica {
 
   /** Start a chain on a source Pix. The source is not consumed by run(). */
   chain(src: Pix): ChainBuilder {
+    this.#assertOpen("chain");
     this.assertOwns(src, "chain");
     if (src.isPoisoned()) throw new ReferenceError("chain: source Pix is disposed");
     return new ChainBuilder(this, src);
   }
 
-  /** Destroy every live Pix and drop the registry. Instance is unusable after. */
+  /** Destroy every live Pix and poison the arena. Instance is unusable after. */
   close(): void {
+    this.#closed = true;
     for (const pix of this.#live) {
       pix.poisonForClose();
       this.module.destroyPix(pix.handle);
     }
     this.#live.clear();
+    this.#operands.clear();
   }
 
   /** @internal */
   adopt(handle: PixHandle): Pix {
+    this.#assertOpen("adopt");
     const pix = new Pix(handle, this);
     this.#live.add(pix);
-    this.#registry?.register(pix, pix, pix);
+    this.#registry?.register(pix, { pix }, pix);
     return pix;
   }
 
@@ -234,10 +250,35 @@ export class Leptonica {
     this.#registry?.unregister(pix);
   }
 
+  /** @internal — register a binary-op operand; returns its wire id. */
+  registerOperand(pix: Pix): number {
+    const id = this.#nextOperandId++;
+    this.#operands.set(id, pix);
+    return id;
+  }
+
+  /** @internal — resolve a binary-op operand id (recorded in an Op). */
+  resolveOperand(id: number, what: string): Pix {
+    const pix = this.#operands.get(id);
+    if (pix === undefined) {
+      throw new ReferenceError(`${what}: operand ${id} is not registered on this instance`);
+    }
+    if (pix.isPoisoned()) {
+      throw new ReferenceError(`${what}: operand Pix was disposed before run()`);
+    }
+    return pix;
+  }
+
   /** @internal */
   assertOwns(pix: Pix, what: string): void {
     if (pix.lp !== this) {
       throw new TypeError(`${what}: Pix belongs to a different Leptonica instance`);
+    }
+  }
+
+  #assertOpen(what: string): void {
+    if (this.#closed) {
+      throw new ReferenceError(`Leptonica instance is closed (call: ${what})`);
     }
   }
 }

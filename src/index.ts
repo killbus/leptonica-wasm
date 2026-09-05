@@ -8,4 +8,4 @@
 export { load } from "./core/load.ts";
 export { Leptonica, Pix } from "./core/types.ts";
 export type { Box, SkewResult } from "./core/types.ts";
-export { ChainBuilder } from "./core/chain.ts";
+export type { ChainBuilder } from "./core/chain.ts";
