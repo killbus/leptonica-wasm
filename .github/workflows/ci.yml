@@ -300,6 +300,19 @@ jobs:
       - name: Bundler matrix
         run: node scripts/check-bundler-matrix.mjs
 
+      # Playwright E2E (M6): the browser worker session must produce
+      # byte-identical PNG output to the Node worker session — the same
+      # session API, same chain, different platform stack. Chromium is
+      # installed per-run (no cache layer for browser binaries — the
+      # download is ~2min and keeps the runner stateless).
+      - name: E2E (browser vs Node, byte-identical)
+        run: |
+          # chromium-headless-shell listed explicitly: 1.63's headless mode
+          # uses the separate headless-shell binary; "chromium" alone did
+          # not pull it in local testing, leaving the suite to fail on a
+          # missing browser.
+          pnpm exec playwright install --with-deps chromium chromium-headless-shell
+          pnpm exec playwright test
 
       - name: Determinism check (same runner)
         # Relink from the same .a files and compare all four artifacts —

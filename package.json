@@ -16,6 +16,7 @@
   "files": [
     "src",
     "dist",
+    "!dist/full-abi",
     "vendor/versions.json"
   ],
   "exports": {
@@ -63,11 +64,14 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "hash-manifest": "node scripts/gen-hash-manifest.mjs",
     "prepublishOnly": "pnpm run typecheck && pnpm test && node scripts/build.mjs"
   },
   "devDependencies": {
+    "@playwright/test": "1.63.0",
     "@types/node": "^26.4.0",
     "typescript": "^7.0.2",
+    "vite": "7.2.0",
     "vitest": "^4.1.11"
   }
 }
