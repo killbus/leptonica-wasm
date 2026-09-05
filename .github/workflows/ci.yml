@@ -444,3 +444,14 @@ jobs:
           }
           console.log(`cross-runner determinism OK (${files.length} artifacts byte-identical)`);
           NODE
+
+      # v7.0.1 (2026-04-10): https://github.com/actions/upload-artifact/releases/tag/v7.0.1
+      # dist sha256 manifest (M0 review F7 / M6): same pins, two
+      # independently compiled trees — if the manifest is generated from
+      # both and the two artifacts are byte-identical (asserted above),
+      # the published manifest is proven to describe the other tree too.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae8e656e7c1c64a875d1fc6a0
+        with:
+          name: dist-sha256-manifest
+          path: artifacts/ci-dist/sha256.json
+          if-no-files-found: error
