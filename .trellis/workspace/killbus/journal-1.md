@@ -243,3 +243,30 @@
   (CI 33944836717); user-side preconditions pending: branch
   protection (M2 F1), NPM_TOKEN secret, then merge PR #4 and tag
   v0.1.0 for the first real publish.
+
+## 2026-09-05 M6 release-channel change + workflow syntax red
+
+- User direction: npm publishing DISABLED, GitHub Release is the only
+  distribution channel. Rewrote the release workflow tail: pnpm
+  publish + NPM_TOKEN fail-loud removed, replaced with
+  softprops/action-gh-release (v3.0.3, commit-pin efb3536, research
+  trail in the workflow comments) attaching the pack-reviewed tarball
+  as the release asset; permissions contents:read → contents:write;
+  registry-url dropped from setup-node. NPM_TOKEN prerequisite is
+  void — the release preconditions drop from three to two (branch
+  protection remains). README provenance + implement.md + reviews/M6
+  adjudication record updated (2f3d856).
+- Red round I caused myself: the first version of the rewrite wrote
+  the new step as "- name:" followed by "- uses:" at a deeper indent —
+  a malformed step block. GitHub could not parse the file: it created
+  a zero-job failure run on every BRANCH push (33947511782, invalid
+  file = trigger filter unevaluable = runs on all pushes). Fix
+  9da8e12 (single well-formed step). Proof of recovery: the fix push
+  produced NO release.yml run on the branch push (tag filter now
+  readable), while the same push's ci + secret-scan went green
+  (33947729263 / 33947729178). Lesson: this repo has NO local YAML
+  parser (no yaml pkg, no ruby/python-yaml) — a hand-rolled
+  indentation check of step items caught it only after the red run;
+  for tag-only workflows, an invalid file announces itself as
+  zero-job failure runs on ordinary branch pushes, not as a silent
+  skip. Watch for that signature.
