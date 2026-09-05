@@ -72,7 +72,9 @@ const wasmBinary = await readFile(
 );
 const { raw, memory } = await loadRaw({ wasmBinary });
 const pix = raw._pixCreate(64, 64, 1);   // every C symbol, loose types
-raw._pixDestroy(pix);                    // ownership is yours
+const slot = raw._malloc(4);              // pixDestroy takes PIX**, not PIX*:
+new Int32Array(memory.buffer, slot, 1)[0] = pix;
+raw._pixDestroy(slot);                    // ownership is yours
 \`\`\`
 
 The raw layer ships the full ABI decode surface — that's the point.
