@@ -71,7 +71,15 @@ const depConfigs = [
   },
   {
     name: "libjpeg-turbo",
-    extra: ["-DWITH_SIMD=OFF", "-DENABLE_SHARED=OFF"],
+    // libjpeg-turbo defaults BUILD to string(TIMESTAMP %Y%m%d) at configure
+    // time and embeds it in jpeg_version ("... (build 20260905)" in
+    // jcmaster.c). A wall-clock input breaks cross-runner determinism when
+    // the ci job's cached .a files and the reproducibility job's cold
+    // compile land on different UTC dates (run 33934231026: one byte
+    // differed, "20260904" vs "20260905"). The pin tag is deterministic and
+    // rotates with the pin itself — the .done marker and the deps cache key
+    // both already invalidate on this flag change.
+    extra: ["-DWITH_SIMD=OFF", "-DENABLE_SHARED=OFF", `-DBUILD=${versions["libjpeg-turbo"].tag}`],
   },
   {
     name: "leptonica",
