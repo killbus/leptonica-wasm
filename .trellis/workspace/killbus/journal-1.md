@@ -152,3 +152,29 @@
   findings verified fixed, no scope creep, regression sweep clean.
   CI evidence to be appended after push; M4 gate awaits user go-ahead
   for M5.
+
+## 2026-09-05 M4 fix round: two CI red rounds closed
+
+- Red round 1 (run 33933970780, 88fd3a7): consumer fixture died on
+  `ERR_UNKNOWN_FILE_EXTENSION` — `node main.ts` only works where the
+  runtime strips TS types (local Node 24 does; CI Node 20 does not).
+  The fixture exists precisely to catch "typecheck green ≠ runtime entry
+  green", and local verification missed it because of the local Node 24
+  trap. Fix: compile main.ts to dist/ (same strict flags as tsconfig,
+  --ignoreConfig to dodge the noEmit/include conflict) then run
+  node dist/main.js. Lesson: verifying a .ts entry by direct node run
+  proves nothing about CI's runtime — compile the way CI does.
+- Red round 2 (run 33934231026, 19b2d62): compare job failed on ONE
+  byte in 630955 — libjpeg-turbo's BUILD string defaults to the
+  configure date (CMake string(TIMESTAMP %Y%m%d), embedded in
+  jcmaster.c's jpeg_version). ci job linked cached .a files configured
+  Sep 4 UTC; reproducibility job cold-compiled fresh .a on Sep 5 UTC;
+  the midnight boundary put "20260904" vs "20260905" into otherwise
+  byte-identical wasms. Fix: pass -DBUILD=<pin tag> (3.2.0) so the
+  string derives from the pin; deps cache key and .done marker both
+  invalidate on the flag change. Run 33934560265 green across all four
+  jobs, compare reports 4 artifacts byte-identical, artifact carries
+  "build 3.2.0". Lesson: wall-clock inputs hide in dependency configure
+  scripts — the compare job is what makes them visible; one-byte diffs
+  with same file size smell like embedded version/date strings, and
+  cmp -l pinpoints them in seconds.
