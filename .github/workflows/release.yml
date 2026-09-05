@@ -73,6 +73,13 @@ jobs:
           ./tmp/emsdk/emsdk activate ${{ steps.pins.outputs.sdk_version }} ${{ steps.pins.outputs.cmake_tool }} ${{ steps.pins.outputs.ninja_tool }}
           node scripts/verify-toolchain.mjs
 
+      - name: Install dependencies
+        # Same corepack + --ignore-scripts posture as ci.yml (M0 F14 /
+        # M1 supply N1). Must precede any pnpm run/test/pack step.
+        run: |
+          corepack enable pnpm
+          pnpm install --frozen-lockfile --ignore-scripts
+
       - name: Build (default profile)
         run: |
           . ./tmp/emsdk/emsdk_env.sh
