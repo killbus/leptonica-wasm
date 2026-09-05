@@ -10,6 +10,20 @@
 using emscripten::val;
 using emscripten::typed_memory_view;
 
+/* Copy a C heap buffer into a freshly-allocated JS Uint8Array, then free
+ * the C allocation. The TS layer used to wrap these buffers in
+ * typed_memory_view and copy on the JS side — but the view only ALIASES
+ * the wasm heap, so the C-side allocation (pixWriteMemPng/Jpeg lept_malloc,
+ * toRGBA lept_calloc) leaked on every successful call. M4 review B4:
+ * measured +68MB RSS after 60 extractions of a 512x512 image; long-lived
+ * sync instances accumulate the same way M5 worker sessions will. */
+static val copyToJs(uint8_t *data, size_t size) {
+  val out = val::global("Uint8Array").new_(val(size));
+  out.call<void>("set", val(typed_memory_view<unsigned char>(size, data)));
+  lept_free(data);
+  return out;
+}
+
 /* ------------------------------------------------------------------ */
 /* Chain operators (M4, design §4.2). Call shapes mirror cpp/oracle.c
  * 1:1 — the golden comparison is only meaningful if both sides make the
@@ -34,6 +48,33 @@ PIX *fromRGBA(val data, int w, int h) {
     return nullptr;
   }
   return pix;
+}
+
+/* Curated-layer lifetime helpers (M4 core). The chain builder owns Pix
+ * handles; these expose the three facts it needs from C:
+ *   - destroyPix: pixDestroy(&p) semantics (NULLs the caller's slot).
+ *     Embind's class_<PIX> has no destructor registration, so without
+ *     this the TS layer would have no way to free a Pix at all.
+ *   - pixWidth/pixHeight/pixDepth: read-only geometry for getters and
+ *     the chain-build depth cursor. All three are O(1) field reads in
+ *     pix1.c; validating before every op would be redundant with the
+ *     curated layer's own checks, so they stay plain accessors.
+ *     (dimensions live in the PIX struct; there is no "invalid" Pix to
+ *     detect here — null is the only failure mode.) */
+void destroyPix(PIX *pix) {
+  pixDestroy(&pix);
+}
+
+int pixWidth(PIX *pix) {
+  return pix ? pixGetWidth(pix) : -1;
+}
+
+int pixHeight(PIX *pix) {
+  return pix ? pixGetHeight(pix) : -1;
+}
+
+int pixDepth(PIX *pix) {
+  return pix ? pixGetDepth(pix) : -1;
 }
 
 PIX *toGray(PIX *pix) {
@@ -156,24 +197,22 @@ PIX *morphClose(PIX *pix, int w, int h) {
 }
 
 PIX *bitwiseOr(PIX *pix, PIX *other) {
-  PIX *out = pixCopy(nullptr, pix);
-  if (!out) return nullptr;
-  if (pixOr(out, pix, other) != 0) { pixDestroy(&out); return nullptr; }
-  return out;
+  if (!pix || !other) return nullptr;
+  /* pixOr returns pixd (PIX*), NOT a status code — the previous form
+   * compared the returned pointer against 0 and destroyed a valid
+   * result on every success. Case (a): pixd=NULL lets pixOr allocate
+   * and copy internally. */
+  return pixOr(nullptr, pix, other);
 }
 
 PIX *bitwiseAnd(PIX *pix, PIX *other) {
-  PIX *out = pixCopy(nullptr, pix);
-  if (!out) return nullptr;
-  if (pixAnd(out, pix, other) != 0) { pixDestroy(&out); return nullptr; }
-  return out;
+  if (!pix || !other) return nullptr;
+  return pixAnd(nullptr, pix, other);
 }
 
 PIX *bitwiseXor(PIX *pix, PIX *other) {
-  PIX *out = pixCopy(nullptr, pix);
-  if (!out) return nullptr;
-  if (pixXor(out, pix, other) != 0) { pixDestroy(&out); return nullptr; }
-  return out;
+  if (!pix || !other) return nullptr;
+  return pixXor(nullptr, pix, other);
 }
 
 PIX *blend(PIX *pix, PIX *other, float frac) {
@@ -265,7 +304,7 @@ val toPNG(PIX *pix) {
     if (data) lept_free(data);
     return val::null();
   }
-  return val(typed_memory_view<unsigned char>(size, data));
+  return copyToJs(data, size);
 }
 
 val toJPEG(PIX *pix, int quality) {
@@ -275,7 +314,7 @@ val toJPEG(PIX *pix, int quality) {
     if (data) lept_free(data);
     return val::null();
   }
-  return val(typed_memory_view<unsigned char>(size, data));
+  return copyToJs(data, size);
 }
 
 val toRGBA(PIX *pix) {
@@ -291,11 +330,15 @@ val toRGBA(PIX *pix) {
     out[i * 4 + 2] = (unsigned char)((pixel >> 8) & 0xff);
     out[i * 4 + 3] = (unsigned char)(pixel & 0xff);
   }
-  return val(typed_memory_view<unsigned char>(n * 4, out));
+  return copyToJs(out, n * 4);
 }
 
 EMSCRIPTEN_BINDINGS(leptonica_wasm) {
   emscripten::class_<PIX>("Pix");
+  emscripten::function("destroyPix", &destroyPix, emscripten::allow_raw_pointers());
+  emscripten::function("pixWidth", &pixWidth, emscripten::allow_raw_pointers());
+  emscripten::function("pixHeight", &pixHeight, emscripten::allow_raw_pointers());
+  emscripten::function("pixDepth", &pixDepth, emscripten::allow_raw_pointers());
   emscripten::function("fromRGBA", &fromRGBA, emscripten::allow_raw_pointers());
   emscripten::function("toGray", &toGray, emscripten::allow_raw_pointers());
   emscripten::function("toGrayWeighted", &toGrayWeighted, emscripten::allow_raw_pointers());

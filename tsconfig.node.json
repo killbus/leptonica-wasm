@@ -1,8 +1,9 @@
 {
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
-    "lib": ["ES2022", "WebWorker"],
+    "lib": ["ESNext", "WebWorker"],
     "types": ["node"]
   },
-  "include": ["src", "tests", "vitest.config.ts"]
+  "include": ["src", "tests", "vitest.config.ts", "playwright.config.ts"],
+  "exclude": ["tests/consumer"]
 }

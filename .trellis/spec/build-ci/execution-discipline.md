@@ -10,7 +10,7 @@
 
 ### 契约
 
-- 本机允许：文件编辑、文本/头文件解析（如 gen-exports.mjs 扫 `allheaders.h`）、`npm test` / `npx tsc --noEmit` 级验证、git/gh 操作、workflow YAML 编写、`node --check` 语法验证。
+- 本机允许：文件编辑、文本/头文件解析（如 gen-exports.mjs 扫 `allheaders.h`）、`pnpm test` / `tsc --noEmit` 级验证（包管理器 2026-09-05 迁移为 pnpm，用户指示）、git/gh 操作、workflow YAML 编写、`node --check` 语法验证。
 - 本机禁止：安装 emsdk / cmake / ninja / 编译器套件（含「先装了试试」的探索性安装）、执行任何编译/链接、跑冷全量构建。
 - 一切编译与构建在 GitHub Actions workflow 内执行，含开发迭代验证——本仓库不存在「本地开发构建」层。
 - 逃生阀：确需本机重构建（如 CI 不可复现问题调试）→ 必须先获用户明确批准；工具链与构建树限 `tmp/`，事后清理。
@@ -63,7 +63,7 @@ git add .github/workflows/size-spike.yml && git commit && git push
 ### Good / Base / Bad
 
 - Good：`actions/checkout` → 查 latest release tag → README 确认 `with:` 用法 → 注释 `# researched 2026-09-03: <url>, latest release <tag>`。
-- Base：`run:` 直跑 npm/node 的步骤无需研究——纪律只约束 `uses:`。
+- Base：`run:` 直跑 pnpm/node 的步骤无需研究——纪律只约束 `uses:`。
 - Bad：抄旧项目 YAML 不查证；`uses: actions/setup-node@main`。
 
 ## 规则 3：临时内容路径纪律

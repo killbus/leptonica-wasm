@@ -111,8 +111,15 @@ jobs:
           # with a hasInstallScript is fsevents (darwin-only, skipped on
           # Linux); vitest's toolchain uses prebuilt rolldown napi bindings,
           # no postinstall required.
-          npm ci --ignore-scripts
-          npm run typecheck
+          # pnpm migration (2026-09-05, user direction): the repo moved
+          # from npm to pnpm — packageManager pin + pnpm-lock.yaml.
+          # Corepack reads the pin; pnpm 10.34.5 is the latest 10.x
+          # (npm registry, 2026-09-05) with Node >=18.12 engines —
+          # pnpm 11 needs Node >=22.13 (node:sqlite) and crashes on
+          # the Node 20 CI runner (run 33939367655).
+          corepack enable pnpm
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm run typecheck
 
       # Toolchain pins are read from vendor/versions.json (single source of
       # truth — M1 review build-eng W2: size-spike.yml hardcoded the emsdk
@@ -215,6 +222,11 @@ jobs:
       - name: Check exports (default)
         run: node scripts/check-exports.mjs dist
 
+      # M4 review W11: the hand-pinned CuratedModule interface vs the live
+      # embind module — catches bindings-side renames the d.ts never sees.
+      - name: Check curated methods (default)
+        run: node scripts/check-exports.mjs --curated-methods dist
+
       - name: Smoke test (default)
         run: node scripts/smoke.mjs dist
 
@@ -245,7 +257,7 @@ jobs:
       - name: Goldens present
         run: test -f tests/golden/goldens/queries-findSkew-countPixels.json
 
-      # npm test runs AFTER the full-abi build: the raw-layer unit tests
+      # pnpm test runs AFTER the full-abi build: the raw-layer unit tests
       # instantiate dist/full-abi artifacts (M3). Dev machines have no build
       # (zero-build discipline) and skip without them — but CI must run the
       # full suite, so fail loudly if the artifact is missing here rather
@@ -253,7 +265,54 @@ jobs:
       - name: Test
         run: |
           test -f dist/full-abi/leptonica.wasm
-          npm test
+          pnpm test
+
+      # Mutation smoke (M2 review F5): prove the golden suite catches a
+      # broken parameter mapping — mutate threshold's level (+1), require
+      # the suite to go red, restore, require green. Runs after the main
+      # Test step with the same goldens/ dir still in place.
+      - name: Mutation smoke
+        run: node scripts/mutation-smoke.mjs
+
+      # Consumer fixture (M0 review F16): compile the package's types
+      # from a consuming project with skipLibCheck:false — the posture
+      # the package's own typecheck (skipLibCheck:true) cannot prove.
+      # arethetypeswrong then checks the export map resolves for every
+      # consumption style (node10 resolution is expected to fail for an
+      # ESM-only package; that failure is in the allowlist).
+      # M4 review B2: the check also RUNS main.ts — the runtime import
+      # path (dist/types/*.js) was once broken while everything above
+      # stayed green.
+      - name: Consumer fixture
+        run: |
+          node scripts/gen-types.mjs
+          cd tests/consumer
+          pnpm install --frozen-lockfile
+          pnpm run check
+
+      # Bundler matrix (M5): the shared fixture entry must build/load
+      # from every consumption style — vite/webpack5/esbuild bundles plus
+      # plain Node ESM. The fixtures are pnpm-managed (npm's file:
+      # symlink handling mangles nested layouts; see
+      # scripts/check-bundler-matrix.mjs). The whole repo is pnpm now
+      # (2026-09-05, user direction) - the fixtures workspace pins
+      # the same pnpm 10.34.5 via its packageManager field.
+      - name: Bundler matrix
+        run: node scripts/check-bundler-matrix.mjs
+
+      # Playwright E2E (M6): the browser worker session must produce
+      # byte-identical PNG output to the Node worker session — the same
+      # session API, same chain, different platform stack. Chromium is
+      # installed per-run (no cache layer for browser binaries — the
+      # download is ~2min and keeps the runner stateless).
+      - name: E2E (browser vs Node, byte-identical)
+        run: |
+          # chromium-headless-shell listed explicitly: 1.63's headless mode
+          # uses the separate headless-shell binary; "chromium" alone did
+          # not pull it in local testing, leaving the suite to fail on a
+          # missing browser.
+          pnpm exec playwright install --with-deps chromium chromium-headless-shell
+          pnpm exec playwright test
 
       - name: Determinism check (same runner)
         # Relink from the same .a files and compare all four artifacts —
@@ -283,6 +342,15 @@ jobs:
           }
           console.log("all four artifacts reproducible (wasm, mjs, d.ts, symbols)");
           NODE
+
+      # dist sha256 manifest (M0 review F7 / M6): generated after all
+      # builds and relinks so it covers the final dist/ tree (default
+      # + full-abi), then uploaded with ci-dist. The compare job below
+      # proves ci-dist and repro-dist byte-identical across runners, so
+      # the manifest that ships with ci-dist is proven to describe the
+      # independently compiled tree too.
+      - name: Generate dist sha256 manifest
+        run: pnpm run hash-manifest
 
       # v7.0.1 (2026-04-10): https://github.com/actions/upload-artifact/releases/tag/v7.0.1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -385,3 +453,14 @@ jobs:
           }
           console.log(`cross-runner determinism OK (${files.length} artifacts byte-identical)`);
           NODE
+
+      # v7.0.1 (2026-04-10): https://github.com/actions/upload-artifact/releases/tag/v7.0.1
+      # dist sha256 manifest (M0 review F7 / M6): same pins, two
+      # independently compiled trees — if the manifest is generated from
+      # both and the two artifacts are byte-identical (asserted above),
+      # the published manifest is proven to describe the other tree too.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: dist-sha256-manifest
+          path: artifacts/ci-dist/sha256.json
+          if-no-files-found: error

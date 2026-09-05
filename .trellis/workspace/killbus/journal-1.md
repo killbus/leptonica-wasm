@@ -72,3 +72,201 @@
 ### Next Steps
 
 - None - task complete
+
+## 2026-09-04 M4 native oracle harness (mid-flight check closed)
+
+- src/protocol.ts Op tagged union + OP_DEPTH_RULES landed (shear.direction /
+  rotate.quality / sobel.orientation strings + toGray.weights array — the
+  field-name parsing in oracle.c mirrors this schema).
+- cpp/oracle.c: parses the same op JSON, runs chains on native leptonica
+  (same pins), emits golden PNG + scalar JSON. m4-check findings F1-F14 all
+  cleared: 8/8/4-param fixes (otsu/sauvola/DWA), applyOp by-field parsing
+  with per-op defaults, pixRotate (1bpp-capable) for rotate, center shears,
+  L_BRING_IN_WHITE, ci comment accuracy, native deps cache layer, stale
+  source rmSync parity.
+- scripts/build-native.mjs + ci.yml native-oracle job (builds + uploads
+  oracle binary artifact). First run caught a real compile error (pixBlend
+  dest-arg misuse — pin signature is 5 params, no dest); fixed and amended.
+- CI run 33917740452 all four jobs green (ci / reproducibility /
+  native-oracle / compare) @ 9f3be74. oracle.c compile now CI-verified.
+- Binary-op golden strategy (F5): same-image idempotence — harness runs
+  both operands on the chain image; other handle id is read but unused.
+  Recorded in code comments.
+
+## 2026-09-04 M4 core layer CI red rounds closed (dc49240)
+
+- Red round 1 (fe214b5): runChain wrapped raw PixHandle intermediates as
+  Pix via lp.adopt(); core parity binary-op operands fixed (or/and/xor
+  replayPrefix to 1bpp, blend passes 32bpp src) + idempotence invariant
+  tests added; mutation-smoke anchor re-anchored to no-semicolon form.
+  CI: only Consumer fixture step red.
+- Root cause of red round 2: package.json exports pointed types at .ts
+  sources — consumer tsc with skipLibCheck:false compiled package sources
+  in the consumer program (TS5097 .ts imports, TS2614 ambient module
+  outside program, TS2584 missing DOM). This was exactly the M3 review B1
+  waiver condition: F16 consumer fixture turning hard gate.
+- Fix (dc49240): scripts/gen-types.mjs three-step d.ts emission to
+  dist/types (tsc emitDeclarationOnly via paths shim → specifier rewrite
+  to relative form → plain-module twin of the ambient glue +
+  emscripten-glue-shape.d.ts copy). exports types → dist/types/*.d.ts,
+  import stays ./src/*.ts (source-direct runtime model). Caught pre-commit:
+  import conditions had wrongly pointed at dist artifacts (leptonica.mjs
+  is the Emscripten factory without named exports — runtime import would
+  break); corrected to src before commit.
+- CI run 33928265707 all five checks green (ci / compare / gitleaks /
+  native-oracle / reproducibility). Consumer fixture step now runs
+  gen-types then tsc + attw (esm-only profile; node10/CJS waived per
+  ADR 1). M4 implement.md checklist fully checked.
+
+## 2026-09-05 M4 review fix round closed (uncommitted at write time)
+
+- M4 two-layer review verdict was hold: 2 blocker (binary-op other silently
+  dropped; Node entry import pointed at .ts) + judge-escalated warnings
+  (extraction leak, degenerate deskew anchors). Fix round landed all
+  three batches in one working-tree change set (cpp / TS / entry).
+- cpp batch: copyToJs() frees the C-side toPNG/toJPEG/toRGBA buffers
+  (was +68MB/60 extractions); slant fixture (−0.04 rad) + two golden
+  chains so deskew actually rotates (conf 3.486, residual −0.22°);
+  mutation-smoke rotates 3 sites (threshold/otsu/rotate).
+- TS batch: operand table gives or/and/xor/blend their real second
+  operand; close() poisons the arena; run() re-checks source; finite
+  param validation; it.each parity; degrees documented; depth-rule
+  matrix; the N3 FinalizationRegistry test found a REAL dev-mode bug
+  (register(pix, pix, pix) throws when target===holdings) — fixed with
+  { pix } holdings objects.
+- entry batch: gen-types emits JS now; exports import points at
+  dist/types/*.js; consumer check RUNS main.ts (16×16 real chain);
+  check-exports --curated-methods guards the hand-pinned interface
+  (34 methods), wired as a CI step.
+- W13 waived in writing with corrected reasoning: the otsu mirror is
+  deliberate (real wrapper drags the decode cluster past the
+  check-exports gate); upstream drift protection comes from the
+  exact-commit pin, NOT from the goldens (both sides carry the same
+  mirror — recorded after the trellis-check re-review corrected my
+  first draft of the rationale).
+- Local verification: typecheck both domains, 84/84 tests, 3-site
+  mutation smoke, curated-methods check, consumer check incl. node run.
+  Stale local goldens (missing the 2 slant chains) are filtered to
+  chains-with-goldens; CI regenerates all and pins the count.
+- trellis-check re-review (m4-refix-check channel): all fixable
+  findings verified fixed, no scope creep, regression sweep clean.
+  CI evidence to be appended after push; M4 gate awaits user go-ahead
+  for M5.
+
+## 2026-09-05 M4 fix round: two CI red rounds closed
+
+- Red round 1 (run 33933970780, 88fd3a7): consumer fixture died on
+  `ERR_UNKNOWN_FILE_EXTENSION` — `node main.ts` only works where the
+  runtime strips TS types (local Node 24 does; CI Node 20 does not).
+  The fixture exists precisely to catch "typecheck green ≠ runtime entry
+  green", and local verification missed it because of the local Node 24
+  trap. Fix: compile main.ts to dist/ (same strict flags as tsconfig,
+  --ignoreConfig to dodge the noEmit/include conflict) then run
+  node dist/main.js. Lesson: verifying a .ts entry by direct node run
+  proves nothing about CI's runtime — compile the way CI does.
+- Red round 2 (run 33934231026, 19b2d62): compare job failed on ONE
+  byte in 630955 — libjpeg-turbo's BUILD string defaults to the
+  configure date (CMake string(TIMESTAMP %Y%m%d), embedded in
+  jcmaster.c's jpeg_version). ci job linked cached .a files configured
+  Sep 4 UTC; reproducibility job cold-compiled fresh .a on Sep 5 UTC;
+  the midnight boundary put "20260904" vs "20260905" into otherwise
+  byte-identical wasms. Fix: pass -DBUILD=<pin tag> (3.2.0) so the
+  string derives from the pin; deps cache key and .done marker both
+  invalidate on the flag change. Run 33934560265 green across all four
+  jobs, compare reports 4 artifacts byte-identical, artifact carries
+  "build 3.2.0". Lesson: wall-clock inputs hide in dependency configure
+  scripts — the compare job is what makes them visible; one-byte diffs
+  with same file size smell like embedded version/date strings, and
+  cmp -l pinpoints them in seconds.
+
+## 2026-09-05 M5 fix round + pnpm migration
+
+- M5 review (reviews/M5.md) found two blockers, both confirmed with
+  zero false positives: B1 design promised session.terminate() but
+  only @internal markTerminated() existed; B2 the esbuild fixture
+  shipped a bundle whose worker would 404 the wasm at runtime
+  (build-only false green — exactly the minefield the matrix exists
+  to catch). Fix round ac7ab20 + d848790: public terminate(),
+  uniform async poisoning (five query methods), worker default
+  branch + single-shot init gate, esbuild wasm copy + output-layout
+  assertion in check-bundler-matrix (negative-validated: removing
+  the wasm turns the assertion red).
+- Layout assertion negative validation had a trap: the full check
+  re-runs the esbuild fixture which re-copies the wasm, so the
+  "delete then check" probe must assert ONLY the layout logic against
+  the moved-wasm state. Lesson: when a fixture's check step repairs
+  the state under test, negative validation needs the assertion in
+  isolation.
+- pnpm migration (490bef7, user direction "pnpm instead of npm"):
+  supersedes M0 F11 "main package stays npm". packageManager pin
+  pnpm@10.34.5 — pnpm 11 needs Node >=22.13 (node:sqlite) and dies on
+  the Node 20 CI runner. Traps hit: (1) corepack resolves the pin
+  from the NEAREST package.json — the fixtures workspace and consumer
+  fixture each need their own packageManager pin or a stray pnpm 11
+  runs there; (2) a pnpm 11 run rewrote pnpm-workspace.yaml with an
+  invalid allowBuilds placeholder that pnpm 10 then treated as fatal;
+  (3) pnpm refuses non-TTY node_modules purges without CI=true.
+  Local + CI verification: 95/95, typecheck, consumer check, bundler
+  matrix, runs 33942042722 and 33942410612 green.
+
+## 2026-09-05 M6: E2E + release, two-layer review
+
+- M6 landed on m5-worker-session (PR #4): Playwright E2E (browser vs
+  Node byte-identical PNG through the same session API), LICENSE
+  (BSD-2-Clause, dual copyright), README (three quick-starts + API
+  tables), dist sha256 manifest (39 entries incl. full-abi), and a
+  tag-triggered release workflow publishing via pnpm (user direction
+  2026-09-05).
+- Four CI red rounds, all closed: package-name import in the E2E spec
+  (no self-link in-repo), dist-relative import failing pre-build
+  typecheck (fixed with src import - the worker.test.ts pattern), a
+  fat-fingered upload-artifact pin, and a manifest generation step I
+  wired into release.yml but forgot in ci.yml. Lesson pair: E2E specs
+  that typecheck in the repo's own tsconfig cannot import the package
+  name (no self-dependency) nor dist (built after typecheck); and any
+  script referenced by two workflows must be wired into both.
+- The big catch of the review layer: a reordering commit dropped the
+  corepack/pnpm install step from release.yml entirely - invisible to
+  CI because release.yml only triggers on tags, and no tag can exist
+  before branch protection lands. Layer-1 trellis-check caught it.
+  Lesson: workflow files not exercised by push-triggered CI need a
+  structural review pass (step inventory vs requirements) regardless
+  of green runs elsewhere.
+- Adjudication trap worth remembering: M2 F2 said "pack excludes
+  full-abi" but M3 had RE-ADJUDICATED it (no-decode is a
+  default-artifact promise, not a package-scope promise - full-abi IS
+  the shipped escape hatch, PRD decision 7). I implemented the stale
+  M2 reading and had to correct it (bd7b018). When implementing an
+  older finding, always check for later re-adjudications in the
+  review chain first.
+- Review record: reviews/M6.md. Gate 3 technically met at cb510a7
+  (CI 33944836717); user-side preconditions pending: branch
+  protection (M2 F1), NPM_TOKEN secret, then merge PR #4 and tag
+  v0.1.0 for the first real publish.
+
+## 2026-09-05 M6 release-channel change + workflow syntax red
+
+- User direction: npm publishing DISABLED, GitHub Release is the only
+  distribution channel. Rewrote the release workflow tail: pnpm
+  publish + NPM_TOKEN fail-loud removed, replaced with
+  softprops/action-gh-release (v3.0.3, commit-pin efb3536, research
+  trail in the workflow comments) attaching the pack-reviewed tarball
+  as the release asset; permissions contents:read → contents:write;
+  registry-url dropped from setup-node. NPM_TOKEN prerequisite is
+  void — the release preconditions drop from three to two (branch
+  protection remains). README provenance + implement.md + reviews/M6
+  adjudication record updated (2f3d856).
+- Red round I caused myself: the first version of the rewrite wrote
+  the new step as "- name:" followed by "- uses:" at a deeper indent —
+  a malformed step block. GitHub could not parse the file: it created
+  a zero-job failure run on every BRANCH push (33947511782, invalid
+  file = trigger filter unevaluable = runs on all pushes). Fix
+  9da8e12 (single well-formed step). Proof of recovery: the fix push
+  produced NO release.yml run on the branch push (tag filter now
+  readable), while the same push's ci + secret-scan went green
+  (33947729263 / 33947729178). Lesson: this repo has NO local YAML
+  parser (no yaml pkg, no ruby/python-yaml) — a hand-rolled
+  indentation check of step items caught it only after the red run;
+  for tag-only workflows, an invalid file announces itself as
+  zero-job failure runs on ordinary branch pushes, not as a silent
+  skip. Watch for that signature.

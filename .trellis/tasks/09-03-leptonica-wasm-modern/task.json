@@ -12,7 +12,7 @@
   "assignee": "killbus",
   "createdAt": "2026-09-03",
   "completedAt": null,
-  "branch": null,
+  "branch": "m4-core-layer",
   "base_branch": "main",
   "worktree_path": null,
   "commit": null,

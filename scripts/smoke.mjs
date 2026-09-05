@@ -76,29 +76,21 @@ function decodeGrayPNG(png) {
   return { w, h, rows };
 }
 
-// Independent re-implementation of the pinned leptonica toGray arithmetic
-// (commit 13275a27, pixconv.c pixConvertRGBToGray with default weights —
-// pix.h perceptual 0.3f/0.5f/0.2f, NOT BT.601). C semantics of
-//   val = (l_int32)(rwt*a + gwt*b + bwt*c + 0.5);
-// where rwt/gwt/bwt are l_float32 and a/b/c are ints: each product is
-// float32, the additions are float32, and only the final + 0.5 is double
-// (0.5 is a double literal; float + double promotes to double), then
-// truncation — round-half-up on the non-negative result. Mirrored with
-// Math.fround at exactly the C-promotion boundaries.
-// Anchor discrimination, measured (f32 / naive-double / BT.601 / no-+0.5):
-//   (0,255,0):   128 / 128 / 150 / 127  — catches wrong weights (BT.601)
-//                                      and missing rounding
+// toGray anchor discrimination (M2 review F4 backfill): the expected
+// values below were verified ONCE against the pinned leptonica arithmetic
+// (commit 13275a27, pixconv.c pixConvertRGBToGray — pix.h perceptual
+// weights 0.3f/0.5f/0.2f, NOT BT.601; f32 products with a final double
+// +0.5 and truncation). The runtime re-implementation that used to live
+// here (grayAnchor, Math.fround at the C-promotion boundaries) was
+// removed: the golden chains now anchor toGray pixels against the native
+// oracle (a genuinely independent observation), and a runtime JS
+// re-implementation agreeing with the wasm output is a second
+// implementation agreeing with itself — not independent evidence.
+// Discrimination table (f32 / naive-double / BT.601 / no-+0.5):
+//   (0,255,0):   128 / 128 / 150 / 127  — catches wrong weights + rounding
 //   (255,0,0):    77 /  77 /  76 /  76  — same, other direction
 //   (0,0,255):    51 /  51 /  29 /  51  — strongest wrong-weight signal
-//   (200,100,50): 120 / 120 / 124 / 120  — mixed channel; no tie here (the
-//                                      naive double and f32 agree — the
-//                                      load-bearing anchors are the pure
-//                                      channels above)
-function grayAnchor(r, g, b) {
-  const f32sum =
-    Math.fround(Math.fround(Math.fround(0.3 * r) + Math.fround(0.5 * g)) + Math.fround(0.2 * b));
-  return Math.trunc(f32sum + 0.5);
-}
+//   (200,100,50): 120 / 120 / 124 / 120  — mixed channel; no tie
 
 const args = process.argv.slice(2);
 let fullAbi = false;
@@ -167,9 +159,9 @@ check(grayPng[25] === 0, `gray PNG color type mismatch: ${grayPng[25]}`);
 // 2×2 anchors pin the three weights (0.3/0.5/0.2 perceptual, NOT BT.601 —
 // verified against the pinned source at 13275a27) and the +0.5 rounding:
 // BT.601 would give green 150 / blue 29 vs the real 128 / 51, and a missing
-// +0.5 gives green 127 / red 76. See grayAnchor's discrimination table.
-// Expected values are computed by the independent grayAnchor()
-// re-implementation of the pinned C arithmetic.
+// +0.5 gives green 127 / red 76. See the discrimination table above the
+// anchor block — the values are hard-coded, verified once against the
+// pinned source arithmetic.
 {
   const W2 = 2;
   const H2 = 2;
@@ -199,10 +191,10 @@ check(grayPng[25] === 0, `gray PNG color type mismatch: ${grayPng[25]}`);
       const [r, g, b] = anchors[y * W2 + x];
       // Hard-coded expected values (M2 review F4): the anchors above are
       // exactly the discrimination table's four rows, in order — computing
-      // them at runtime via grayAnchor() would make this a second
-      // implementation agreeing with itself, not an independent
-      // observation. Values verified once against the pinned source
-      // arithmetic (see grayAnchor's table + the notes above).
+      // them at runtime would make this a second implementation
+      // agreeing with itself, not an independent observation. Values
+      // verified once against the pinned source arithmetic (see the
+      // discrimination table above).
       const expected = [120, 128, 77, 51][y * W2 + x];
       const want = expected;
       check(got === want, `toGray pixel (${x},${y}) rgb(${r},${g},${b}): got ${got}, want ${want} (weights 0.3/0.5/0.2, f32 round-half-up)`);

@@ -1,0 +1,152 @@
+name: release
+
+# GitHub Release workflow (M6, design §3): CI is the ONLY source of published
+# artifacts — local builds never publish. Tag push (v*) triggers: install →
+# build (default profile) → test → generate the dist sha256 manifest → pack
+# review → create a GitHub Release with the package tarball attached.
+# npm publishing is DISABLED by design (user direction 2026-09-05): the
+# tarball asset on the GitHub Release is the distribution artifact, and
+# remains installable via the release URL.
+#
+# Preconditions (M2 review F1): branch protection on main (Require PR +
+# Block force pushes) is the trust root of the toolchain hash whitelist.
+# A v* tag cannot be created on this repo while that is unset without
+# bypassing review — do not weaken this by pushing tags directly.
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  # One release per tag: a re-pushed tag (deleted + recreated) cancels the
+  # superseded run instead of racing two release creations of the same version.
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  # contents:write is required to create the GitHub Release; the npm
+  # publish path (which needed no repo token beyond NODE_AUTH_TOKEN) is gone.
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      # v7.0.1 (2026-07-20): https://github.com/actions/checkout/releases/tag/v7.0.1
+      # Same pin+research trail as ci.yml.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      # v7.0.0 (2026-07-14): https://github.com/actions/setup-node/releases/tag/v7.0.0
+      # Same pin+research trail as ci.yml.
+      # No registry-url: npm publishing is disabled (user direction
+      # 2026-09-05); this step only provides Node itself.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 20
+
+      # Toolchain pins are read from vendor/versions.json (single source of
+      # truth — M1 review build-eng W2: no yml-side dual-write of pins).
+      - name: Resolve toolchain pins
+        id: pins
+        run: |
+          node --input-type=module -e '
+          import { appendFileSync, readFileSync } from "node:fs";
+          const v = JSON.parse(readFileSync("vendor/versions.json", "utf8"));
+          const out = (name, value) => appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
+          out("emsdk_commit", v.emsdk.commit);
+          out("sdk_version", v.emsdk.sdkVersion);
+          out("cmake_tool", v.emsdk.cmakeTool);
+          out("ninja_tool", v.emsdk.ninjaTool);
+          '
+
+      # Release builds do not use the build cache: a release artifact must
+      # derive from a compile this run performed on toolchain bytes the
+      # whitelist verified at cold-install time (supply W1/N3 posture).
+      # The archive whitelist is also what makes this run trust-worthy:
+      # branch protection (M2 review F1) is its trust root.
+      - name: Install pinned emsdk (cold, verified)
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git tmp/emsdk
+          git -C tmp/emsdk fetch --depth 1 origin ${{ steps.pins.outputs.emsdk_commit }}
+          git -C tmp/emsdk checkout ${{ steps.pins.outputs.emsdk_commit }}
+          # Same EMSDK_KEEP_DOWNLOADS=1 posture as ci.yml cold installs: keep
+          # the archives so verify-toolchain.mjs can hash them (supply W1).
+          EMSDK_KEEP_DOWNLOADS=1 ./tmp/emsdk/emsdk install ${{ steps.pins.outputs.sdk_version }} ${{ steps.pins.outputs.cmake_tool }} ${{ steps.pins.outputs.ninja_tool }}
+          ./tmp/emsdk/emsdk activate ${{ steps.pins.outputs.sdk_version }} ${{ steps.pins.outputs.cmake_tool }} ${{ steps.pins.outputs.ninja_tool }}
+          node scripts/verify-toolchain.mjs
+
+      - name: Install dependencies
+        # Same corepack + --ignore-scripts posture as ci.yml (M0 F14 /
+        # M1 supply N1). Must precede any pnpm run/test/pack step.
+        run: |
+          corepack enable pnpm
+          pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build (default profile)
+        run: |
+          . ./tmp/emsdk/emsdk_env.sh
+          node scripts/build.mjs
+
+      - name: Generate dist sha256 manifest
+        run: pnpm run hash-manifest
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build (full ABI)
+        # The raw escape hatch ships in the package (M3 re-adjudication
+        # of M2 F2: the no-decode promise applies to the DEFAULT dist/
+        # artifacts, not the package scope — dist/full-abi/ is the escape
+        # hatch, design §4.3 / PRD decision ⑦). Built from the same
+        # verified toolchain; its export surface is asserted below.
+        run: |
+          . ./tmp/emsdk/emsdk_env.sh
+          node scripts/build.mjs --full-abi
+
+      - name: Check exports (full ABI)
+        run: node scripts/check-exports.mjs --full-abi dist/full-abi
+
+      - name: Smoke test (full ABI)
+        run: node scripts/smoke.mjs --full-abi dist/full-abi
+
+      - name: Pack review
+        # M2 F2, as re-adjudicated by M3: pack MUST include the full-abi
+        # escape hatch (leptonica.mjs + leptonica.wasm + loose d.ts) and
+        # the dist sha256 manifest. A missing any of these fails the
+        # release — an incomplete raw layer is worse than none.
+        run: |
+          set -euo pipefail
+          pnpm pack --pack-destination tmp
+          for required in \
+            package/dist/full-abi/leptonica.mjs \
+            package/dist/full-abi/leptonica.wasm \
+            package/dist/full-abi/leptonica-raw.d.ts \
+            package/dist/sha256.json \
+            package/LICENSE \
+            package/README.md; do
+            if ! tar -tzf tmp/leptonica-wasm-*.tgz | grep -qx "$required"; then
+              echo "ERROR: $required missing from the package"
+              exit 1
+            fi
+          done
+          if [ "$(tar -tzf tmp/leptonica-wasm-*.tgz | grep -c "package/dist/full-abi/" || true)" -lt 3 ]; then
+            echo "ERROR: full-abi escape hatch incomplete in the package"
+            exit 1
+          fi
+          tar -tzf tmp/leptonica-wasm-*.tgz | sort
+
+      # npm publishing disabled (user direction 2026-09-05): distribution
+      # is the release tarball asset, installable from the release URL.
+      # GitHub's own attestation/signing replaces npm provenance here;
+      # the sha256 manifest inside the tarball remains the content
+      # anchor from CI-built bytes.
+      # v3.0.3 (2026-08-30): https://github.com/softprops/action-gh-release/releases/tag/v3.0.3
+      # (commit pin resolved via the tag object: efb35369e0ad2afab669f228072c1b0d510eae64)
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64
+        with:
+          files: tmp/leptonica-wasm-*.tgz
+          generate_release_notes: true
+          fail_on_unmatched_files: true

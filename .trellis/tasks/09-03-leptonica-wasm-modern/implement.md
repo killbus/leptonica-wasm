@@ -73,39 +73,45 @@
 
 ## M4 精选层同步核心 ★评审门 2
 
-- [ ] native oracle harness（C 程序）：解析与 `protocol.ts` 同构的 Op JSON + 输入图 → 跑同一批算子链 → 产出金样（PNG/标量）；CI 原生构建复用 versions.json 全部 pin
-- [ ] **测试先行**：每算子先写含 oracle 金样断言的测试并确认失败（红）→ 再写 `cpp/bindings.cpp` embind 实现（按 design §4.2 映射表逐函数对 `allheaders.h` 核实选型，含 `pixGetRGBAPixels` 存在性、translate 组合方案）→ 变绿；红→绿提交历史可查
-- [ ] `src/protocol.ts`：`Op` tagged union 完整版（harness 与 TS 端共用 schema）
-- [ ] `src/core/`：TS 包装（Pix `Symbol.dispose` + 毒化 + FinalizationRegistry 报警、chain builder、查询、提取、depth 校验规则）
-- [ ] 补充不变量单测：deskew 角度恢复、otsu 双峰、dilate 单调、**1bpp depth 保持**、类型规则 throw、毒化行为
-- [ ] M2 评审回填：oracle harness 吸收 toGray 金样时期望值改硬编码字面量 + 判别矩阵注释（F4——grayAnchor 运行时计算是第二实现非独立观测）；变异冒烟升级为 warning 级验收项 + 持久化脚本（F5——M2 四路变异是纸面证据，不可复跑）
-- [ ] d.ts 消费者视角验证（M0 评审 F16）：consumer fixture 以 skipLibCheck:false 编译 + arethetypeswrong
+- [x] native oracle harness（C 程序）：解析与 `protocol.ts` 同构的 Op JSON + 输入图 → 跑同一批算子链 → 产出金样（PNG/标量）；CI 原生构建复用 versions.json 全部 pin
+- [x] **测试先行**：每算子先写含 oracle 金样断言的测试并确认失败（红）→ 再写 `cpp/bindings.cpp` embind 实现（按 design §4.2 映射表逐函数对 `allheaders.h` 核实选型，含 `pixGetRGBAPixels` 存在性、translate 组合方案）→ 变绿；红→绿提交历史可查
+- [x] `src/protocol.ts`：`Op` tagged union 完整版（harness 与 TS 端共用 schema）
+- [x] `src/core/`：TS 包装（Pix `Symbol.dispose` + 毒化 + FinalizationRegistry 报警、chain builder、查询、提取、depth 校验规则）
+- [x] 补充不变量单测：deskew 角度恢复、otsu 双峰、dilate 单调、**1bpp depth 保持**、类型规则 throw、毒化行为
+- [x] M2 评审回填：oracle harness 吸收 toGray 金样时期望值改硬编码字面量 + 判别矩阵注释（F4——grayAnchor 运行时计算是第二实现非独立观测）；变异冒烟升级为 warning 级验收项 + 持久化脚本（F5——M2 四路变异是纸面证据，不可复跑）
+- [x] d.ts 消费者视角验证（M0 评审 F16）：consumer fixture 以 skipLibCheck:false 编译 + arethetypeswrong
 - 验证：vitest 全绿 + oracle 比对全绿（PNG 逐字节、标量容差）；**变异冒烟**——故意破坏一个参数映射 → 测试必须红，恢复 → 绿；`--emit-tsd` 生成 d.ts 且 check-exports 通过
 - 评审门：API 面走查（对照 PRD 8 类算子清单逐项确认）+ 抽查红→绿提交历史，用户确认后进 M5
 - 回滚点：逐算子独立提交，revert 单算子不动全局
 
 ## M5 Worker 会话客户端
 
-- [ ] `src/worker/`：会话客户端（句柄代理、chain 录制）、worker 入口（wasm 定位 + `wasmPath` 覆盖）、Node `worker_threads` 适配、`close()` 毒化 + `terminate()`
-- [ ] Worker 单测（Node worker_threads）：协议往返、transfer、close 毒化、terminate 无残留、run() 失败路径中间 Pix 清理
-- [ ] 跨 bundler 冒烟：vite / webpack5 / esbuild / Node ESM 构建最小示例并加载 worker（CI matrix）
-- [ ] `prepublishOnly`（typecheck + test + build 串行，M0 评审 F9）
-- 验证：vitest worker 套件全绿；四 bundler 冒烟通过
+- [x] `src/worker/`：会话客户端（句柄代理、chain 录制）、worker 入口（wasm 定位 + `wasmPath` 覆盖）、Node `worker_threads` 适配、`close()` 毒化 + `terminate()`（M5 评审 B1：terminate 公开化，ac7ab20）
+- [x] Worker 单测（Node worker_threads）：协议往返、transfer、close 毒化、terminate 无残留、run() 失败路径中间 Pix 清理（M5 评审 W3/W4：in-flight terminate + 毒化 rejection 形状统一，95/95）
+- [x] 跨 bundler 冒烟：vite / webpack5 / esbuild / Node ESM 构建最小示例并加载 worker（CI matrix）（M5 评审 B2：esbuild 补拷 wasm + 产物布局断言——负向验证过：删 wasm 断言即红；三 fixture "wasm layout ok"，node-esm 运行时绿）
+- [x] `prepublishOnly`（typecheck + test + build 串行，M0 评审 F9）
+- 验证：vitest worker 套件全绿；四 bundler 冒烟通过（本地 95/95 + typecheck 双域 + check-bundler-matrix 全绿；CI run 33942042722 + 33942410612 全绿）
 - 回滚点：会话层独立于核心——最坏降级为仅同步层发布（包 `exports` 移除 `./worker`）
 
 ## M6 E2E 与发布 ★评审门 3
 
 - [ ] **发布前置（M2 评审 F1）**：分支保护必须已落地（Settings → Branches：main 加 Require PR + Block force pushes）——白名单 TOFU 信任根的承重墙，未落地前不得执行 release workflow；当前 token 实测 403 无权设置，需用户在 GitHub 设置页操作或授权
-- [ ] Playwright E2E：浏览器 vite 页 → `createSession` → 链执行 → PNG 字节 vs Node 输出**逐字节比对**（环境一致性；语义正确性已在 M4 oracle 锚定）
-- [ ] README：三段式快速开始（Worker 主入口 / 同步核心 / raw 逃生舱）+ API 表
-- [ ] release workflow（tag 触发）：build → test → `npm publish --provenance`——CI 是发布产物唯一来源，本地构建不发布（design §3）
-- [ ] npm publish `--dry-run` + `npm pack` 内容审查（发布前预检）——**显式排除 full-abi 产物**（M2 评审 F2：ci-dist artifact 含 dist/full-abi 全部解码面产物，发布打包若照搬 dist/** 会破坏「无解码路径」承诺；npm pack 审查必须确认包内容不含 full-abi）
-- [ ] LICENSE 文件（BSD-2-Clause + Leptonica 版权归并，M0 评审 F13）
-- [ ] wasm 产物 sha256 清单随包发布；CI 复现构建 digest 比对（npm integrity 不证明 wasm↔C 源码对应——M0 评审 F7）
+- [x] Playwright E2E：浏览器 vite 页 → createSession → 链执行 → PNG 字节 vs Node 输出逐字节比对（环境一致性；语义正确性已在 M4 oracle 锚定）——172c44b；CI 两轮红教训：包名导入 TS2307（无 self-link）→ dist 导入在 pre-build typecheck 阶段不存在 → src 导入（与 worker.test.ts 同模式）；CI E2E 步骤显式列 chromium + chromium-headless-shell（本地实测后者需单独装）
+- [x] README：三段式快速开始（Worker 主入口 / 同步核心 / raw 逃生舱）+ API 表——172c44b + cf04e5f（raw 例子 PIX 双指针 staging 修正，与 M3 B2 对齐）
+- [x] release workflow（tag 触发）：build → test → GitHub Release——CI 是发布产物唯一来源，本地构建不发布（design §3）——03f0a68 + a2258a9（corepack 步骤恢复）+ 2026-09-05 渠道裁决（用户指示「禁用 npm 发包，只需发布到 github」）：pnpm publish 步骤整体移除，替换为 softprops/action-gh-release（v3.0.3 commit-pin efb3536）创建 Release + tarball asset；NPM_TOKEN 不再需要；cold verified 工具链（无缓存层）、concurrency 按 tag 保留
+- [x] npm pack 内容审查（发布前预检）——按 M3 再裁决（reviews/M3.md：无解码承诺是 default 产物承诺，非包范围承诺）：pack 断言 full-abi 六文件 + sha256.json + LICENSE + README 必须在包内（bd7b018；初始实现误按 M2 F2 字面排除 full-abi，评审第一层纠正）
+- [x] LICENSE 文件（BSD-2-Clause + Leptonica 版权归并，M0 评审 F13）——172c44b
+- [x] wasm 产物 sha256 清单随包发布；CI 复现构建 digest 比对（npm integrity 不证明 wasm 与 C 源码对应——M0 评审 F7）——90835fb + 2d270a9 + 14e9647；scripts/gen-hash-manifest.mjs（39 条目含 full-abi 六文件，M2 F9 一并清偿）；ci job 在 determinism relink 后生成、compare job 上传（ci-dist 与 repro-dist 字节全等即 manifest 双树适用性证明）
 - [ ] 已知债务清偿（M2 评审 F3，择机）：cmakeTool 进 deps 缓存键与 doneKey（单独 bump cmakeTool 现只轮换 emsdk 层，deps 层命中旧 .a——fail-loud 非 silent，compare 必红；修复需改 build.mjs 必然轮换缓存键触发冷编译，推迟到下次必然的 build.mjs 变更一并携带）；full-abi 复现性断言扩展（F9：确定性现只证 default 模式，manifest 若收录 full-abi 则 compare 需扩面）
-- 验证：`playwright test` 绿；`npm publish --dry-run` 无 error；dist 内容与 exports 映射一致
-- 评审门：发布前最终确认（用户执行实际 publish 或授权执行）
-- 回滚点：发布前一切可撤（dry-run 为门）；发布后 deprecate / next tag
+- 验证：playwright test 绿（本地 1 passed + CI E2E 步骤绿，run 33944836717）；pnpm pack 内容审查 0 缺失（61 文件）；dist 内容与 exports 映射一致（consumer fixture + attw 持续在 CI 验证）
+- 评审门：发布前最终确认（用户执行实际 release 或授权执行）
+- 回滚点：发布前一切可撤（dry-run 为门）；发布后删 Release / 删 tag 重推
+
+## M6 评审与门状态
+
+- 评审记录：reviews/M6.md（第一层 trellis-check B1 修复 + 三视角 chatroom；5 findings 全处置）
+- 最终态：a2258a9 = CI run 33944836717 全绿（分支 m5-worker-session，PR #4）
+- 门 3 状态：技术侧达成，用户确认待定——发布前置（分支保护）是用户侧操作（NPM_TOKEN 已因 2026-09-05 渠道裁决作废），见 reviews/M6.md 结论段
 
 ## PRD 验收对照
 

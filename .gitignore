@@ -12,3 +12,7 @@ third_party/*
 
 # M4 golden oracle outputs (regenerated in CI every run; never a repo fixture)
 tests/golden/goldens/
+
+# Playwright transient output (test-results on failure, report on debug)
+test-results/
+playwright-report/

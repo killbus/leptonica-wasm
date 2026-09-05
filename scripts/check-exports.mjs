@@ -17,9 +17,11 @@
 //      the smoke script instead, which instantiates the module.
 //
 // Usage: node check-exports.mjs [--full-abi] <distDir>
+//        node check-exports.mjs --curated-methods <distDir>
 
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 function usage() {
   console.error("usage: node check-exports.mjs [--full-abi] <distDir>");
@@ -34,12 +36,38 @@ function check(cond, msg) {
   if (!cond) fail(msg);
 }
 
+async function checkCuratedMethods(distDir) {
+  const glueShapePath = join(resolve("."), "src", "core", "emscripten-glue-shape.d.ts");
+  check(existsSync(glueShapePath), "missing " + glueShapePath);
+  const shape = readFileSync(glueShapePath, "utf8");
+  const body = /interface CuratedModule \{([\s\S]*?)\n\}/.exec(shape);
+  check(body !== null, "emscripten-glue-shape.d.ts has no CuratedModule interface");
+  const declared = new Set();
+  for (const line of body[1].split(/\r?\n/)) {
+    const match = /^\s+([A-Za-z_][A-Za-z0-9_]*)\(/.exec(line);
+    if (match) declared.add(match[1]);
+  }
+  check(declared.size > 0, "CuratedModule interface declares no methods");
+  const mjsPath = join(distDir, "leptonica.mjs");
+  check(existsSync(mjsPath), "missing " + mjsPath);
+  const factory = (await import(pathToFileURL(mjsPath).href)).default;
+  const module = await factory({ wasmBinary: readFileSync(join(distDir, "leptonica.wasm")) });
+  const missing = [...declared].filter((name) => typeof module[name] !== "function");
+  if (missing.length > 0) {
+    fail("CuratedModule declares methods absent from the embind module (" + missing.length + "): " + missing.join(", "));
+  }
+  console.log("check-exports OK (curated methods): " + declared.size + " declared, all present on the live module");
+}
+
 const args = process.argv.slice(2);
 let fullAbi = false;
+let curatedMethods = false;
 const positional = [];
 for (const arg of args) {
   if (arg === "--full-abi") {
     fullAbi = true;
+  } else if (arg === "--curated-methods") {
+    curatedMethods = true;
   } else if (arg.startsWith("--")) {
     usage();
     process.exit(2);
@@ -52,6 +80,17 @@ if (positional.length !== 1) {
   process.exit(2);
 }
 const distDir = resolve(positional[0]);
+
+// Curated methods (M4 review W11, default mode): the hand-pinned
+// CuratedModule interface must stay a subset of the embind module's
+// actual methods. The interface is written by hand next to
+// cpp/bindings.cpp's EMSCRIPTEN_BINDINGS block; this catches a
+// bindings-side rename or removal the d.ts never noticed. Runs against
+// a LIVE module instance (embind registers methods at instantiation).
+if (curatedMethods) {
+  await checkCuratedMethods(distDir);
+  process.exit(0);
+}
 
 // ── Layer 1 (default mode only): decode symbols absent from symbol map ──
 //
