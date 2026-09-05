@@ -135,6 +135,49 @@
     "queries": []
   },
   {
+    "name": "slant-deskew",
+    "width": 256,
+    "height": 256,
+    "input": "slant",
+    "ops": [
+      {
+        "op": "toGray"
+      },
+      {
+        "op": "threshold",
+        "level": 128
+      },
+      {
+        "op": "deskew"
+      }
+    ],
+    "queries": [
+      {
+        "query": "findSkew"
+      }
+    ]
+  },
+  {
+    "name": "slant-findSkew",
+    "width": 256,
+    "height": 256,
+    "input": "slant",
+    "ops": [
+      {
+        "op": "toGray"
+      },
+      {
+        "op": "threshold",
+        "level": 128
+      }
+    ],
+    "queries": [
+      {
+        "query": "findSkew"
+      }
+    ]
+  },
+  {
     "name": "toGray-deskew-gray",
     "width": 48,
     "height": 48,

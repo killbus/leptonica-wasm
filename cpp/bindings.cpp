@@ -10,6 +10,20 @@
 using emscripten::val;
 using emscripten::typed_memory_view;
 
+/* Copy a C heap buffer into a freshly-allocated JS Uint8Array, then free
+ * the C allocation. The TS layer used to wrap these buffers in
+ * typed_memory_view and copy on the JS side — but the view only ALIASES
+ * the wasm heap, so the C-side allocation (pixWriteMemPng/Jpeg lept_malloc,
+ * toRGBA lept_calloc) leaked on every successful call. M4 review B4:
+ * measured +68MB RSS after 60 extractions of a 512x512 image; long-lived
+ * sync instances accumulate the same way M5 worker sessions will. */
+static val copyToJs(uint8_t *data, size_t size) {
+  val out = val::global("Uint8Array").new_(val(size));
+  out.call<void>("set", val(typed_memory_view<unsigned char>(size, data)));
+  lept_free(data);
+  return out;
+}
+
 /* ------------------------------------------------------------------ */
 /* Chain operators (M4, design §4.2). Call shapes mirror cpp/oracle.c
  * 1:1 — the golden comparison is only meaningful if both sides make the
@@ -290,7 +304,7 @@ val toPNG(PIX *pix) {
     if (data) lept_free(data);
     return val::null();
   }
-  return val(typed_memory_view<unsigned char>(size, data));
+  return copyToJs(data, size);
 }
 
 val toJPEG(PIX *pix, int quality) {
@@ -300,7 +314,7 @@ val toJPEG(PIX *pix, int quality) {
     if (data) lept_free(data);
     return val::null();
   }
-  return val(typed_memory_view<unsigned char>(size, data));
+  return copyToJs(data, size);
 }
 
 val toRGBA(PIX *pix) {
@@ -316,7 +330,7 @@ val toRGBA(PIX *pix) {
     out[i * 4 + 2] = (unsigned char)((pixel >> 8) & 0xff);
     out[i * 4 + 3] = (unsigned char)(pixel & 0xff);
   }
-  return val(typed_memory_view<unsigned char>(n * 4, out));
+  return copyToJs(out, n * 4);
 }
 
 EMSCRIPTEN_BINDINGS(leptonica_wasm) {

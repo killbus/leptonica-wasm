@@ -5,3 +5,11 @@
  * @returns width*height*4 bytes, same input → same output (no RNG)
  */
 export declare function generateRgba(width: number, height: number): Uint8Array
+
+/**
+ * Text-line-like horizontal bands slanted by a small angle (deskew coverage).
+ * @param width image width in pixels
+ * @param height image height in pixels
+ * @returns width*height*4 bytes, same input → same output (no RNG)
+ */
+export declare function generateSlantRgba(width: number, height: number): Uint8Array
