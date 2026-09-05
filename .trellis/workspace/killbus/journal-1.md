@@ -290,3 +290,24 @@
   execution: cold verified toolchain, build, test, pack review,
   GitHub Release creation. M6 review W3 (release-tail zero
   execution history) is closed with a green production run.
+
+## 2026-09-05 v0.1.1 (README fix reaches the tarball)
+
+- User caught it: the README's three code blocks were fenced with
+  literal escaped backticks (backslash-backtick x3) — GitHub
+  rendered zero code highlighting; the raw escape sequences showed
+  as plain text. Root cause: shell-escaping accident when the
+  README was first written (172c44b); every render check since had
+  been on the SOURCE, not the RENDERED output. Fixed all six fence
+  lines (PR #7, 2b6db4b).
+- The v0.1.0 tarball predates the fix — its bundled README was
+  still broken. Version-bumped to 0.1.1 (PR #8), tagged v0.1.1 on
+  the merge commit (ec65629), release run 33950744417 green.
+- Verified the published artifact: downloaded the v0.1.1 tarball,
+  extracted package/README.md — 6 proper fence lines, zero escaped
+  backticks, version field 0.1.1. v0.1.1 is the Latest release.
+- Lesson: README fences written via shell heredoc/echo must be
+  byte-checked (od -c) not just visually catted — the escaped form
+  looks almost right in terminal output. And a docs fix that lands
+  after a tag does not reach that tag's tarball: bump + re-tag is
+  the only way the shipped artifact gets it.
