@@ -10,7 +10,7 @@
  * claims to catch.
  */
 import { expect, test } from "@playwright/test";
-import { createSession } from "leptonica-wasm/worker";
+import { createSession } from "../../dist/types/worker/node.js";
 
 function gradient(w: number, h: number): Uint8Array {
   const rgba = new Uint8Array(w * h * 4);
