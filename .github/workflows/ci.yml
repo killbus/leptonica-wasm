@@ -290,9 +290,12 @@ jobs:
       # scripts/check-bundler-matrix.mjs). pnpm itself is pinned here,
       # independent of the repo's npm packageManager pin (M0 F11 —
       # fixtures only; the main package stays npm).
+      # pnpm 10.34.5 (latest 10.x, npm registry 2026-09-05): Node
+      # >=18.12 — the repo's CI Node is 20. pnpm 11 needs Node >=22.13
+      # (node:sqlite) and crashes on Node 20 (run 33939367655).
       - name: Bundler matrix
         run: |
-          npm install -g pnpm@11.21.0
+          npm install -g pnpm@10.34.5
           node scripts/check-bundler-matrix.mjs
 
       - name: Determinism check (same runner)

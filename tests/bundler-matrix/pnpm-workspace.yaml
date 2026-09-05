@@ -2,11 +2,11 @@
 # `pnpm install` from this directory prepares every fixture.
 # esbuild's postinstall (a version check) is intentionally not allowed
 # to run — the platform binary ships via optionalDependencies.
+# (onlyBuiltDependencies: pnpm 10 syntax, still read by pnpm 11.)
 packages:
   - "."
   - "node-esm"
   - "vite"
   - "webpack5"
   - "esbuild"
-allowBuilds:
-  esbuild: false
+onlyBuiltDependencies: []
