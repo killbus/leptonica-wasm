@@ -119,6 +119,11 @@ jobs:
         run: |
           set -euo pipefail
           pnpm pack --pack-destination tmp
+          # Read the full listing into a variable first: piping tar into
+          # grep -qx makes grep exit on first match, tar dies with SIGPIPE,
+          # and pipefail turns that into a false "missing" failure
+          # (first seen in run 33949512439).
+          listing="$(tar -tzf tmp/leptonica-wasm-*.tgz)"
           for required in \
             package/dist/full-abi/leptonica.mjs \
             package/dist/full-abi/leptonica.wasm \
@@ -126,16 +131,16 @@ jobs:
             package/dist/sha256.json \
             package/LICENSE \
             package/README.md; do
-            if ! tar -tzf tmp/leptonica-wasm-*.tgz | grep -qx "$required"; then
+            if ! grep -qx "$required" <<< "$listing"; then
               echo "ERROR: $required missing from the package"
               exit 1
             fi
           done
-          if [ "$(tar -tzf tmp/leptonica-wasm-*.tgz | grep -c "package/dist/full-abi/" || true)" -lt 3 ]; then
+          if [ "$(grep -cx "package/dist/full-abi/"'.*' <<< "$listing" || true)" -lt 3 ]; then
             echo "ERROR: full-abi escape hatch incomplete in the package"
             exit 1
           fi
-          tar -tzf tmp/leptonica-wasm-*.tgz | sort
+          sort <<< "$listing"
 
       # npm publishing disabled (user direction 2026-09-05): distribution
       # is the release tarball asset, installable from the release URL.
