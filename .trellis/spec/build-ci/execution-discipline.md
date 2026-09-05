@@ -131,6 +131,40 @@ trellis channel wait … --kind done,error --all --timeout 29m
 trellis channel messages <ch> --raw --last 10     # 核实真实状态再行动
 ```
 
+## 规则 5：PR 合并纪律（2026-09-05 用户指示）
+
+### Scope / Trigger
+
+用 `gh pr merge` 合并任何 PR 到 main（或长期分支）时。
+
+### 契约
+
+- 单 commit 或少量 commit 的小 PR：一律 `gh pr merge --squash`——单 commit 进 main，无 merge 节点，subject 不会重复。
+- 禁止 `--merge` 真合并（two-parent merge commit）+ 手写 subject：会产生与 branch commit 同名的 merge 节点，`git log` 读起来像同一改动做了两遍（PR #6/#7/#8/#9 实际发生，2026-09-05 被用户指出）。
+- 多 commit 且各自有独立价值的 PR：可选 `--rebase` 保留分支 commit 原样进 main，或先在分支内 fixup/rebase 整理后再 squash。
+- subject 规则：squash 时由 gh 默认合成（PR 标题 + (#N)），不要手工写死与 branch commit 相同的 subject。
+- 历史卫生：一旦 commit 已合并进 main 且打了 tag / 已发布 GitHub Release，禁止回头 fixup/rebase——tag 锚定 + 分支保护禁 force push（M2 F1 信任根）会阻断，且对已发布物无收益。
+
+### Validation & Error Matrix
+
+| 条件 | 处置 |
+| --- | --- |
+| 计划用 `gh pr merge --merge` 合并小 PR | 阻断：改用 `--squash` |
+| squash 时手写与 branch commit 相同 subject | 删除手写 subject，用默认合成或写明 PR 编号 |
+| main 已 tag/发布，想 fixup 历史观感 | 阻断：历史已公开且被分支保护锁定，向前看 |
+
+### Wrong vs Correct
+
+```text
+# Wrong：真合并 + 手写与 branch commit 同名 subject（PR #7 实际发生）
+gh pr merge 7 --merge --subject 'docs(readme): repair code fence syntax'
+# 结果：main 出现 2b6db4b（branch）+ 3be5c79（merge）两条同名记录
+
+# Correct：小 PR 一律 squash，subject 默认合成
+gh pr merge 7 --squash
+# 结果：main 只有一条 commit，subject 为 PR 标题 + (#7)
+```
+
 ## Common Mistakes
 
 ### 本机装工具链「图省事」
@@ -154,6 +188,13 @@ trellis channel messages <ch> --raw --last 10     # 核实真实状态再行动
 - **Fix**：任何 Monitor/通知事件（尤其终态与失败态）到达后立即读取并处置，处置前不产出"仍在等待"性质的汇报。
 - **Prevention**：规则 4 的"监即读"条目；每轮输出前核对未消费事件。
 
+### 真合并 + 同名 subject，历史读起来像重复改动
+
+- **Symptom**：`git log` 出现成对的同名 commit（branch commit + merge commit），如 `2b6db4b` / `3be5c79`，用户质疑"同一改动做了两遍"。
+- **Cause**：`gh pr merge --merge --subject <与 branch commit 相同>`——真合并产生 two-parent merge 节点，手写 subject 又与 branch commit 同名，`git show <merge>` 显示相对 first parent 的 diff 加剧"重复"观感。
+- **Fix**：确认树内容无重复应用（patch md5 一致即单次应用）；观感问题接受现状，已 tag/发布的链不重写。
+- **Prevention**：规则 5——小 PR 一律 `--squash`，subject 由默认合成，不手写。
+
 ## 一句话版
 
-> 开发机产出代码与 workflow；GitHub Actions 产出一切二进制；派出的一切执行体都在主会话的监督之下——监督意味着事件到达即消费，失败信号优先处置。
+> 开发机产出代码与 workflow；GitHub Actions 产出一切二进制；派出的一切执行体都在主会话的监督之下——监督意味着事件到达即消费，失败信号优先处置；小 PR 合并一律 squash，不产生同名 merge 节点。

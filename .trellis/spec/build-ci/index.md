@@ -4,4 +4,4 @@
 
 | 文档 | 主题 |
 | --- | --- |
-| [execution-discipline.md](./execution-discipline.md) | 本机零重任务 / GitHub Actions 先研究后使用 / 临时内容路径纪律 / 子代理与 worker 监督纪律（规则 4，2026-09-04） |
+| [execution-discipline.md](./execution-discipline.md) | 本机零重任务 / GitHub Actions 先研究后使用 / 临时内容路径纪律 / 子代理与 worker 监督纪律（规则 4，2026-09-04）/ PR 合并纪律（规则 5，2026-09-05） |
