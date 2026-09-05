@@ -1,6 +1,6 @@
 {
   "name": "leptonica-wasm",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Modern ESM/WASM build of Leptonica — curated image operators with a raw C-ABI escape hatch",
   "type": "module",
   "license": "BSD-2-Clause",
