@@ -72,7 +72,10 @@ describe.skipIf(!artifactsPresent)("worker session (Node worker_threads)", () =>
   });
 
   it("findSkew on the slant fixture reports a confident angle", async () => {
-    const src = await session.load(generateSlantRgba(192, 256), 192, 256);
+    // 256x256 parity with the sync core's deskew fixture: conf 3.486
+    // (see core.test.ts "deskew on a slanted fixture"). 192x256 gives
+    // 2.739 there — below MinAllowedConfidence, not a worker defect.
+    const src = await session.load(generateSlantRgba(256, 256), 256, 256);
     const out = await session.run(src, [{ op: "toGray" }, { op: "otsu", tile: 16 }]);
     const r = await out.findSkew();
     expect(r.confidence).toBeGreaterThan(3);

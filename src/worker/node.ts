@@ -10,38 +10,70 @@
  * message shapes onto the session's postMessage transport.
  */
 
+import { existsSync } from "node:fs";
 import { Worker } from "node:worker_threads";
-import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { WorkerRequest, WorkerResponse } from "./protocol.ts";
 import { WorkerSession } from "./session.ts";
 import type { SessionOptions } from "./session.ts";
 
+export { WorkerSession, RemotePix } from "./session.ts";
+export type { SessionOptions } from "./session.ts";
+
 /**
- * Locate the worker entry relative to this compiled file inside the
- * package (dist/types/worker/node.js → dist/worker.mjs).
+ * Locate the worker entry from this file's own location. Two layouts
+ * ship the same file:
+ *
+ *  - published package: dist/types/worker/node.js → sibling
+ *    dist/worker.mjs (found by probing upward)
+ *  - in-repo source (tests run against src/): src/worker/node.ts →
+ *    <repo>/dist/worker.mjs (found by probing into dist/ below a
+ *    package.json root)
+ *
+ * A fixed hop count cannot cover both, so probe upward instead.
  */
 function resolveEntry(): URL {
-  const here = dirname(new URL(import.meta.url).pathname);
-  const entry = join(here, "..", "..", "..", "worker.mjs");
-  return pathToFileURL(entry);
+  let dir = dirname(new URL(import.meta.url).pathname);
+  for (let i = 0; i < 5; i++) {
+    const candidate = join(dir, "worker.mjs");
+    if (existsSync(candidate)) return pathToFileURL(candidate);
+    const nested = join(dir, "dist", "worker.mjs");
+    if (existsSync(nested)) return pathToFileURL(nested);
+    const next = dirname(dir);
+    if (next === dir) break;
+    dir = next;
+  }
+  throw new Error(
+    "worker entry not found: dist/worker.mjs is missing — run the build first (npm run build outputs it into dist/)",
+  );
 }
 
 /** Create a session backed by a worker_threads Worker (Node ≥ 20). */
-export async function createSession(_opts?: SessionOptions): Promise<WorkerSession> {
+export async function createSession(opts: SessionOptions = {}): Promise<WorkerSession> {
   const entry = resolveEntry();
   // .mjs entry → ESM; worker_threads infers module type from the extension.
   const worker = new Worker(entry);
   const session = new WorkerSession(
     (msg: WorkerRequest, transfer?: Transferable[]) => {
-      worker.postMessage(msg, (transfer ?? []).map((t) => (t instanceof ArrayBuffer ? t : (t as unknown as import("node:worker_threads").MessagePort))));
+      worker.postMessage(msg, (transfer ?? []) as readonly ArrayBuffer[]);
     },
     (cb) => {
       worker.on("message", (r: WorkerResponse) => cb(r));
     },
+    // The arena release is the worker-side half of close(); this is the
+    // adapter half — a worker_threads Worker keeps the event loop alive
+    // until terminated, so a session whose close() resolved would hang
+    // the process without this.
+    () => void worker.terminate(),
   );
   worker.once("exit", () => session.markTerminated());
   worker.once("error", () => session.markTerminated());
+  try {
+    await session.init(opts.wasmPath);
+  } catch (err) {
+    await worker.terminate();
+    throw err;
+  }
   return session;
 }

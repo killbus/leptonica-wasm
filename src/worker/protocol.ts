@@ -14,6 +14,7 @@ export type HandleId = number;
 
 /** Client → worker requests. One request id per message. */
 export type WorkerRequest =
+  | { readonly id: number; readonly type: "init"; readonly wasmPath?: string }
   | { readonly id: number; readonly type: "load"; readonly buffer: ArrayBuffer; readonly w: number; readonly h: number }
   | { readonly id: number; readonly type: "run"; readonly source: HandleId; readonly ops: readonly Op[] }
   | { readonly id: number; readonly type: "extract"; readonly handle: HandleId; readonly format: "rgba" | "png" | "jpeg"; readonly quality?: number }
@@ -22,6 +23,7 @@ export type WorkerRequest =
 
 /** Worker → client responses. */
 export type WorkerResponse =
+  | { readonly id: number; readonly ok: true; readonly type: "init" }
   | { readonly id: number; readonly ok: true; readonly type: "load"; readonly handle: HandleId; readonly width: number; readonly height: number; readonly depth: number }
   | { readonly id: number; readonly ok: true; readonly type: "run"; readonly handle: HandleId; readonly width: number; readonly height: number; readonly depth: number }
   | { readonly id: number; readonly ok: true; readonly type: "extract"; readonly buffer: ArrayBuffer }

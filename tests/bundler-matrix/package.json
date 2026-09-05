@@ -1,0 +1,7 @@
+{
+  "name": "leptonica-wasm-bundler-matrix",
+  "private": true,
+  "dependencies": {
+    "leptonica-wasm": "file:../../"
+  }
+}

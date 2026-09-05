@@ -8,7 +8,10 @@
     "node": ">=20"
   },
   "packageManager": "npm@11.13.0",
-  "sideEffects": false,
+  "sideEffects": [
+    "**/worker.mjs",
+    "**/worker/worker.js"
+  ],
   "files": [
     "src",
     "dist",
@@ -22,6 +25,24 @@
     "./raw": {
       "types": "./dist/types/raw/index.d.ts",
       "import": "./dist/types/raw/index.js"
+    },
+    "./worker": {
+      "node": {
+        "types": "./dist/types/worker/node.d.ts",
+        "import": "./dist/types/worker/node.js"
+      },
+      "default": {
+        "types": "./dist/types/worker/index.d.ts",
+        "import": "./dist/types/worker/index.js"
+      }
+    },
+    "./worker/node": {
+      "types": "./dist/types/worker/node.d.ts",
+      "import": "./dist/types/worker/node.js"
+    },
+    "./worker/worker.mjs": {
+      "types": "./dist/types/worker/worker.d.ts",
+      "import": "./dist/types/worker/worker.mjs"
     },
     "./full-abi/leptonica.mjs": {
       "types": "./dist/full-abi/leptonica-raw.d.ts",
@@ -40,7 +61,8 @@
   },
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit"
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "prepublishOnly": "npm run typecheck && npm test && node scripts/build.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.4.0",

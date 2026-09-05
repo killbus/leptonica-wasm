@@ -66,19 +66,19 @@ export class RemotePix {
 
   /** Encode to PNG bytes; the buffer transfers back to this thread. */
   toPNG(): Promise<Uint8Array> {
-    this.assertAlive("toPNG");
+    // Liveness gates reject (not throw synchronously): these methods
+    // return promises, and a poisoned proxy surfacing as a rejection is
+    // the uniform failure shape across close()/terminate()/worker death.
     return this.#session.extract(this, "png");
   }
 
   /** Encode to JPEG bytes at quality 0-100. */
   toJPEG(quality: number): Promise<Uint8Array> {
-    this.assertAlive("toJPEG");
     return this.#session.extract(this, "jpeg", quality);
   }
 
   /** Extract RGBA bytes (32bpp only). */
   toRGBA(): Promise<Uint8Array> {
-    this.assertAlive("toRGBA");
     return this.#session.extract(this, "rgba");
   }
 
@@ -136,13 +136,22 @@ export class WorkerSession {
   readonly #live = new Set<RemotePix>();
   /** @internal — pending request resolvers. */
   readonly #pending = new Map<number, { resolve: (r: WorkerResponse) => void; reject: (e: Error) => void }>();
+  /** @internal — adapter teardown, fired at most once. */
+  readonly #teardown: (() => void) | undefined;
+  #tornDown = false;
   #nextRequestId = 1;
   #closed = false;
   #terminated = false;
 
   /** @internal — created by createSession(). */
-  constructor(post: (msg: WorkerRequest, transfer?: Transferable[]) => void, onMessage: (cb: (r: WorkerResponse) => void) => void) {
+  constructor(
+    post: (msg: WorkerRequest, transfer?: Transferable[]) => void,
+    onMessage: (cb: (r: WorkerResponse) => void) => void,
+    /** @internal — adapter hook: kill the platform worker once the session is dead. */
+    teardown?: () => void,
+  ) {
     this.#post = post;
+    this.#teardown = teardown;
     onMessage((response) => this.#onResponse(response));
   }
 
@@ -151,12 +160,36 @@ export class WorkerSession {
     return this.#closed || this.#terminated;
   }
 
+  /** @internal — run the adapter teardown exactly once. */
+  #runTeardown(): void {
+    if (this.#tornDown) return;
+    this.#tornDown = true;
+    this.#teardown?.();
+  }
+
+  /**
+   * @internal — handshake: let the worker load the wasm module (with an
+   * optional wasmPath override) before the first user request. The
+   * adapters call this right after wiring message handlers.
+   */
+  init(wasmPath?: string | URL): Promise<void> {
+    return this.#request({ id: this.#nextRequestId++, type: "init", ...(wasmPath !== undefined ? { wasmPath: String(wasmPath) } : {}) }).then((r) => {
+      if (!r.ok || r.type !== "init") throw new Error(`init: unexpected response ${JSON.stringify(r)}`);
+    });
+  }
+
   /**
    * Load RGBA bytes as a new 32bpp Pix in the worker's arena.
    * The buffer is transferred, not copied — the caller's view detaches.
    */
   load(data: Uint8Array | ArrayBufferView, w: number, h: number): Promise<RemotePix> {
-    this.#assertOpen("load");
+    // Async API: refusals surface as rejections, uniform with the
+    // poisoned-proxy path (see toPNG).
+    try {
+      this.#assertOpen("load");
+    } catch (err) {
+      return Promise.reject(err);
+    }
     if (!Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0) {
       throw new RangeError(`load: bad dimensions ${w}x${h}`);
     }
@@ -178,8 +211,12 @@ export class WorkerSession {
    * round trip, one await).
    */
   async run(source: RemotePix, ops: readonly import("../protocol.ts").Op[]): Promise<RemotePix> {
-    this.#assertOpen("run");
-    this.#assertOwns(source, "run");
+    try {
+      this.#assertOpen("run");
+      this.#assertOwns(source, "run");
+    } catch (err) {
+      return Promise.reject(err);
+    }
     if (source.isPoisoned()) throw new ReferenceError("run: source RemotePix is not usable");
     const r = await this.#request({ id: this.#nextRequestId++, type: "run", source: source.id, ops: [...ops] });
     if (!r.ok || r.type !== "run") throw new Error(`run: unexpected response ${JSON.stringify(r)}`);
@@ -191,13 +228,17 @@ export class WorkerSession {
   /** Every live Pix in the worker's arena is released; the session is poisoned. */
   async close(): Promise<void> {
     if (this.#closed) return;
-    this.#closed = true;
+    // Send the close request BEFORE flipping the flag — #request() gates
+    // on isClosed() and would reject our own farewell message.
+    const farewell = this.#request({ id: this.#nextRequestId++, type: "close" });
     for (const pix of this.#live) pix.poison();
     this.#live.clear();
     try {
-      await this.#request({ id: this.#nextRequestId++, type: "close" });
+      this.#closed = true;
+      await farewell;
     } finally {
       this.#rejectPending(new Error("session closed"));
+      this.#runTeardown();
     }
   }
 
@@ -207,6 +248,7 @@ export class WorkerSession {
     for (const pix of this.#live) pix.poison();
     this.#live.clear();
     this.#rejectPending(new Error("worker terminated"));
+    this.#runTeardown();
   }
 
   /** @internal — extract dispatch (RemotePix calls this; it checks liveness itself). */

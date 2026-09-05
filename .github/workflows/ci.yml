@@ -283,6 +283,18 @@ jobs:
           npm install --no-fund --no-audit
           npm run check
 
+      # Bundler matrix (M5): the shared fixture entry must build/load
+      # from every consumption style — vite/webpack5/esbuild bundles plus
+      # plain Node ESM. The fixtures are pnpm-managed (npm's file:
+      # symlink handling mangles nested layouts; see
+      # scripts/check-bundler-matrix.mjs). pnpm itself is pinned here,
+      # independent of the repo's npm packageManager pin (M0 F11 —
+      # fixtures only; the main package stays npm).
+      - name: Bundler matrix
+        run: |
+          npm install -g pnpm@11.21.0
+          node scripts/check-bundler-matrix.mjs
+
       - name: Determinism check (same runner)
         # Relink from the same .a files and compare all four artifacts —
         # the .mjs/.d.ts/.symbols companions are hashed too (M1 review
