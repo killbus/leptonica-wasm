@@ -33,12 +33,12 @@ if sys.platform.startswith("win"):
             try:
                 _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
             except Exception:
-                pass
+                pass  # Optional Windows stream setup; keep hook startup non-fatal.
         elif hasattr(_stream, "detach"):
             try:
                 setattr(sys, _stream_name, _io.TextIOWrapper(_stream.detach(), encoding="utf-8", errors="replace"))
             except Exception:
-                pass
+                pass  # Optional Windows stream setup; keep hook startup non-fatal.
 
 
 def _normalize_windows_shell_path(path_str: str) -> str:
@@ -92,9 +92,14 @@ def _normalize_windows_shell_path(path_str: str) -> str:
 warnings.filterwarnings("ignore")
 
 FIRST_REPLY_NOTICE = """<first-reply-notice>
-On the first visible assistant reply in this session, begin with exactly one short Chinese sentence:
-Trellis SessionStart context is ready: workflow, current task state, developer identity, Git status, active tasks, and spec indexes are loaded.
-Then continue directly with the user's request. This notice is one-shot: do not repeat it after the first assistant reply in the same session.
+On the first visible assistant reply in this session, briefly acknowledge that Trellis SessionStart context loaded.
+Choose the acknowledgment language in this order:
+1. Use the language of the user's current request (the user message that triggered this reply).
+2. If that request has no clear natural language, use an explicitly established project communication language.
+3. If neither provides a language, output the language-neutral fallback exactly: `Trellis SessionStart ✓`.
+Continue directly with the user's request after the acknowledgment.
+The acknowledgment must not alter the language used for the remainder of the response.
+This notice is one-shot: do not repeat it after the first visible assistant reply in this session.
 </first-reply-notice>"""
 
 def should_skip_injection() -> bool:
@@ -116,15 +121,16 @@ def configure_project_encoding(project_dir: Path) -> None:
 
         configure_encoding()
     except Exception:
-        pass
+        pass  # Optional encoding helper; host defaults are still usable.
 
 
 def _has_curated_jsonl_entry(jsonl_path: Path) -> bool:
     """Return True iff jsonl has at least one row with a ``file`` field.
 
-    A freshly seeded jsonl only contains a ``{"_example": ...}`` row (no
-    ``file`` key) — that is NOT "ready". Readiness requires at least one
-    curated entry. Matches the contract used by ``inject-subagent-context.py``.
+    A newly created jsonl is empty, and older tasks may still carry a
+    ``{"_example": ...}`` placeholder row (no ``file`` key) — neither is
+    "ready". Readiness requires at least one curated entry. Matches the
+    contract used by ``inject-subagent-context.py``.
     """
     try:
         for line in jsonl_path.read_text(encoding="utf-8").splitlines():
@@ -234,7 +240,7 @@ def _get_task_status(trellis_dir: Path, hook_input: dict) -> str:
     if active.stale or not task_dir.is_dir():
         return (
             f"Status: STALE POINTER\nTask: {task_ref}\n"
-            "Next: Task directory not found. Run: python ./.trellis/scripts/task.py finish"
+            "Next: Task directory not found. Run: python3 ./.trellis/scripts/task.py finish"
         )
 
     task_json_path = task_dir / "task.json"
@@ -243,7 +249,7 @@ def _get_task_status(trellis_dir: Path, hook_input: dict) -> str:
         try:
             task_data = json.loads(task_json_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, PermissionError):
-            pass
+            pass  # Optional task metadata; fall back to generic status.
 
     task_title = task_data.get("title", task_ref)
     task_status = task_data.get("status", "unknown")
@@ -251,7 +257,7 @@ def _get_task_status(trellis_dir: Path, hook_input: dict) -> str:
     if task_status == "completed":
         return (
             f"Status: COMPLETED\nTask: {task_title}\n"
-            f"Next: Archive with `python ./.trellis/scripts/task.py archive {task_dir.name}` "
+            f"Next: Archive with `python3 ./.trellis/scripts/task.py archive {task_dir.name}` "
             "or start a new task."
         )
 
@@ -386,7 +392,7 @@ def _build_compact_current_state(
                 if isinstance(data, dict):
                     status = str(data.get("status") or "unknown")
             except (json.JSONDecodeError, OSError):
-                pass
+                pass  # Optional task metadata; fall back to generic status.
         lines.append(f"Current task: {_repo_relative(repo_root, task_dir)}; status={status}.")
     else:
         lines.append("Current task: none.")
@@ -395,10 +401,10 @@ def _build_compact_current_state(
         try:
             task_count = sum(1 for _ in iter_active_tasks(get_tasks_dir(repo_root)))
             lines.append(
-                f"Active tasks: {task_count} total. Use `python ./.trellis/scripts/task.py list --mine` only if needed."
+                f"Active tasks: {task_count} total. Use `python3 ./.trellis/scripts/task.py list --mine` only if needed."
             )
         except Exception:
-            pass
+            pass  # Optional task summary; keep compact state available.
 
     if get_active_journal_file and count_lines:
         journal = get_active_journal_file(repo_root)
@@ -454,7 +460,7 @@ def _build_workflow_toc(workflow_path: Path) -> str:
 
     out_lines = [
         "# Development Workflow - Session Summary",
-        "Full guide: .trellis/workflow.md. Step detail: `python ./.trellis/scripts/get_context.py --mode phase --step <X.Y>`.",
+        "Full guide: .trellis/workflow.md. Step detail: `python3 ./.trellis/scripts/get_context.py --mode phase --step <X.Y>`.",
         "",
     ]
 
@@ -517,7 +523,7 @@ Trellis compact SessionStart context. Use it to orient the session; load details
 
     output.write(
         "Discover more via: "
-        "`python ./.trellis/scripts/get_context.py --mode packages`\n"
+        "`python3 ./.trellis/scripts/get_context.py --mode packages`\n"
     )
     output.write("</guidelines>\n\n")
 

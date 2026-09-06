@@ -44,9 +44,89 @@ At the beginning of a development session:
 
 If automatic task discovery is unavailable, use the task explicitly named by the user. Do not initialize or migrate unrelated Trellis state merely to recover automatic discovery.
 
-## Phase index
+## Agent dispatch protocol
+
+Before every agent dispatch, first initialize that agent through the platform's standard `set goal` mechanism. The goal must contain the business objective and this retry policy:
+
+> Treat `stream disconnected`, HTTP `429`, and transient `5xx` network or service errors as retryable. Automatically retry with backoff and continue retrying; do not terminate or ask for user intervention solely because of these errors.
+
+This is goal initialization, not a dispatch prompt, injected message, or inherited convention. Do not dispatch when the platform cannot provide the standard per-agent goal mechanism; continue in the main session instead.
+
+The main agent owns active supervision. Check early progress, planned checkpoints, raw status when progress is unclear, and terminal success or failure events. Recover or follow up when needed. A timeout or disconnected stream is not a completion result.
+
+## Phase Index
+
+```text
+Phase 1: Plan    -> define and review the task and its context
+Phase 2: Execute -> implement and review only after task activation
+Phase 3: Finish  -> verify, update durable rules, commit, and wrap up
+```
+
+[workflow-state:no_task]
+No active task. Classify the request and obtain user consent before creating a Trellis task.
+Use an existing task when the user identifies one. Do not create or activate unrelated task state merely to recover automatic discovery.
+[/workflow-state:no_task]
+
+[workflow-state:task_error]
+The active task record is unreadable. Repair its task.json without creating or activating a replacement task.
+Preserve existing fields and artifacts. Ask the user only when the correct state cannot be established from repository evidence.
+[/workflow-state:task_error]
 
 ### Phase 1: Plan
+
+- 1.0 Create or select a task `[required · once]`
+- 1.1 Clarify requirements `[required · repeatable]`
+- 1.2 Research `[optional · repeatable]`
+- 1.3 Configure context `[required · once]`
+- 1.4 Activate the task `[required · once]`
+- 1.5 Planning completion criteria
+
+[workflow-state:planning]
+Stay in planning. Read and maintain `prd.md`; complex tasks also require `design.md` and `implement.md`.
+Curate `implement.jsonl` and `check.jsonl`, review the artifacts with the user, then run `task.py start`.
+Do not implement before activation. Every agent dispatch remains subject to the standard `set goal` and retry protocol in this workflow.
+[/workflow-state:planning]
+
+[workflow-state:planning-inline]
+Stay in planning. Read and maintain `prd.md`; complex tasks also require `design.md` and `implement.md`.
+Inline mode loads applicable specifications directly. Review the artifacts with the user, then run `task.py start`.
+Do not implement before activation.
+[/workflow-state:planning-inline]
+
+### Phase 2: Execute
+
+- 2.1 Implement `[required · repeatable]`
+- 2.2 Quality check `[required · repeatable]`
+- 2.3 Rollback `[on demand]`
+
+[workflow-state:in_progress]
+Read context in this order: `implement.jsonl`, `prd.md`, `design.md`, `implement.md`, then applicable specifications.
+Flow: implement -> quality check -> specification update -> commit -> finish-work.
+Before every agent dispatch, first use the standard per-agent `set goal` mechanism. Include the business objective and this policy in that goal: Treat `stream disconnected`, HTTP `429`, and transient `5xx` network or service errors as retryable; automatically retry with backoff and continue retrying; do not terminate or ask for user intervention solely because of these errors.
+Do not dispatch through a prompt, message, or implicit inheritance in place of goal initialization. If compliant goal initialization is unavailable, continue inline. The main agent actively checks progress, status, and terminal events and performs recovery or follow-up actions.
+[/workflow-state:in_progress]
+
+[workflow-state:in_progress-inline]
+Read context in this order: `prd.md`, `design.md`, `implement.md`, then applicable specifications.
+Flow: implement inline -> quality check -> specification update -> commit -> finish-work.
+Do not dispatch implement or check agents in inline mode.
+[/workflow-state:in_progress-inline]
+
+### Phase 3: Finish
+
+- 3.1 Verification `[required · repeatable]`
+- 3.2 Retrospective `[on demand]`
+- 3.3 Update specifications `[required · once]`
+- 3.4 Commit `[required · once]`
+- 3.5 Wrap up
+
+[workflow-state:completed]
+Implementation and verification are complete. Ensure the work commit exists and the worktree is clean, then run `trellis-finish-work` for archive and journal bookkeeping.
+[/workflow-state:completed]
+
+Run required steps in order. Artifact presence may satisfy a `[once]` step. Return to planning when implementation reveals a requirements or design defect.
+
+## Phase 1: Plan
 
 #### 1.0 Create or select a task
 
@@ -80,7 +160,7 @@ Mark the task active through the available Trellis command or metadata workflow.
 
 Planning is complete when the PRD is testable, design decisions are explicit, milestones are ordered, context files resolve, and applicable specifications are known.
 
-### Phase 2: Execute
+## Phase 2: Execute
 
 #### 2.1 Implement
 
@@ -109,19 +189,11 @@ Reviews verify:
 
 Record findings by severity, disposition, evidence, and verification. A non-gate milestone continues when actionable findings are cleared. A review gate also requires the explicit gate decision defined in the task.
 
-#### 2.3 Agent dispatch
-
-Every dispatched agent must first be initialized through the platform's standard goal mechanism. The goal must include the business objective and this retry contract:
-
-> Treat stream disconnections, HTTP 429 responses, and transient HTTP 5xx network or service failures as retryable. Retry automatically with backoff and continue; do not terminate or request user intervention solely because of these errors.
-
-Do not add this contract as an afterthought or rely on implicit inheritance. The main agent actively monitors dispatched work, checks early failure signals and terminal events, and takes recovery or follow-up action. A timeout alone is not a completion result.
-
-#### 2.4 Rollback
+#### 2.3 Rollback
 
 Use reversible Git operations. Do not discard unrelated work. Destructive history or remote operations require explicit authorization and a verified target.
 
-### Phase 3: Finish
+## Phase 3: Finish
 
 #### 3.1 Verification
 

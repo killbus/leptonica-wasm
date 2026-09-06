@@ -76,9 +76,9 @@ If the platform cannot provide compliant goal initialization, continue in the ma
 ### Contract
 
 - A small pull request represents one logical change and is merged with squash semantics.
-- Use "gh pr merge --squash" when the CLI is used for a small pull request.
-- Let the pull-request title define the target-branch subject unless a reviewed custom subject is required.
-- While a branch is private, fold correction commits into the logical commit with fixup and rebase.
+- Prepare a private branch as coherent review history by folding correction commits with fixup and autosquash rebase.
+- Execute a squash merge only after the final target-branch subject and body are explicit and reviewed. When GitHub CLI performs the merge, provide that reviewed metadata explicitly.
+- Treat squash as the target-branch integration method, not as a substitute for correcting misleading or sensitive branch history while rewriting remains safe.
 - Preserve merge commits only when the branch structure itself carries useful reviewed history.
 - Before rewriting a published ref, create explicit local backup refs and use "--force-with-lease" against the verified remote state.
 
