@@ -1,0 +1,11 @@
+{
+  "name": "leptonica-wasm-bundler-node-esm",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node main.mjs"
+  },
+  "dependencies": {
+    "leptonica-wasm": "file:../../../"
+  }
+}

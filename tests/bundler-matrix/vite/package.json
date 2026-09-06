@@ -1,0 +1,14 @@
+{
+  "name": "leptonica-wasm-bundler-vite",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "vite build"
+  },
+  "dependencies": {
+    "leptonica-wasm": "file:../../../"
+  },
+  "devDependencies": {
+    "vite": "^7.2.0"
+  }
+}

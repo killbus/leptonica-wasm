@@ -1,0 +1,16 @@
+{
+  "name": "leptonica-wasm-consumer-fixture",
+  "private": true,
+  "packageManager": "pnpm@10.34.5",
+  "type": "module",
+  "scripts": {
+    "check": "tsc main.ts --ignoreConfig --target ES2022 --module NodeNext --moduleResolution NodeNext --lib ESNext,DOM --strict --skipLibCheck false --outDir dist && attw --pack ../.. --entrypoints . --profile esm-only && node dist/main.js"
+  },
+  "dependencies": {
+    "leptonica-wasm": "file:../.."
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.0",
+    "typescript": "^7.0.2"
+  }
+}

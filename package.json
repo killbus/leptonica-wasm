@@ -1,0 +1,78 @@
+{
+  "name": "leptonica-wasm",
+  "version": "0.1.1",
+  "description": "Modern ESM/WASM build of Leptonica — curated image operators with a raw C-ABI escape hatch",
+  "type": "module",
+  "license": "BSD-2-Clause",
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@10.34.5",
+  "sideEffects": [
+    "dist/worker.mjs",
+    "dist/types/worker/worker.mjs",
+    "dist/types/worker/worker.js"
+  ],
+  "files": [
+    "src",
+    "dist",
+    "README.md",
+    "LICENSE",
+    "vendor/versions.json"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/types/index.js"
+    },
+    "./raw": {
+      "types": "./dist/types/raw/index.d.ts",
+      "import": "./dist/types/raw/index.js"
+    },
+    "./worker": {
+      "node": {
+        "types": "./dist/types/worker/node.d.ts",
+        "import": "./dist/types/worker/node.js"
+      },
+      "default": {
+        "types": "./dist/types/worker/index.d.ts",
+        "import": "./dist/types/worker/index.js"
+      }
+    },
+    "./worker/node": {
+      "types": "./dist/types/worker/node.d.ts",
+      "import": "./dist/types/worker/node.js"
+    },
+    "./worker/worker.mjs": {
+      "types": "./dist/types/worker/worker.d.ts",
+      "import": "./dist/types/worker/worker.mjs"
+    },
+    "./full-abi/leptonica.mjs": {
+      "types": "./dist/full-abi/leptonica-raw.d.ts",
+      "import": "./dist/full-abi/leptonica.mjs"
+    },
+    "./full-abi/leptonica.wasm": {
+      "default": "./dist/full-abi/leptonica.wasm"
+    },
+    "./leptonica.mjs": {
+      "types": "./dist/leptonica.d.ts",
+      "import": "./dist/leptonica.mjs"
+    },
+    "./leptonica.wasm": {
+      "default": "./dist/leptonica.wasm"
+    }
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "hash-manifest": "node scripts/gen-hash-manifest.mjs",
+    "prepublishOnly": "pnpm run typecheck && pnpm test && node scripts/build.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@types/node": "^26.4.0",
+    "typescript": "^7.0.2",
+    "vite": "7.2.0",
+    "vitest": "^4.1.11"
+  }
+}
