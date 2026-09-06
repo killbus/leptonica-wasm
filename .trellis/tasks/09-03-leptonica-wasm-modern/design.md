@@ -91,10 +91,10 @@ leptonica-wasm/
 
 **构建分发策略：CI 是一切构建的唯一执行地**（2026-09-03 用户指示：本机零重任务，纪律详见 `.trellis/spec/build-ci/execution-discipline.md`）——开发机不安装/运行 emsdk 等工具链、不执行任何编译；冷全量构建是重任务（分钟到十分钟量级，emsdk 下载数百 MB；实测基线 M1 记录），全部在 GitHub Actions 内完成：
 
-- **本机 = 代码与 workflow**：文件编辑、头文件解析（gen-exports 扫 `allheaders.h`）、npm test/typecheck 级验证；确需本机重构建（如调试 CI 不可复现问题）须用户明确批准。
-- **CI 构建 = 产物唯一来源**：干净环境全量构建；PRD「可复现构建」验收由 CI 证明而非任何本地机器；release workflow（tag 触发）build → test → `npm publish --provenance`（决策 ⑪ 的 provenance 本就要求 CI 内发布）。
+- **Local = code and workflow only**: editing, header/text analysis, `pnpm test`, contract tests, and type-checking are allowed. Local compilation or heavy toolchain installation requires explicit user approval.
+- **CI build = the only artifact source**: clean builds prove reproducibility. The tag-triggered release workflow builds, tests, runs `pnpm pack`, and attaches the tarball to a GitHub Release. Registry publishing is disabled.
 - **CI 缓存分层**（迭代反馈压回分钟级）：emsdk 按精确版本键；deps 源码 + 静态库产物按 versions.json + 工具链哈希键；原生构建产物同键独立缓存。
-- **dist 不入 git**（M0 `.gitignore` 已列）：仓库提交产物有漂移与历史膨胀风险，产物以 workflow artifact / npm 包承载。
+- **`dist/` is not committed**: generated artifacts are carried by workflow artifacts and GitHub Release tarballs.
 
 ## 4. 双层 API
 
@@ -266,7 +266,7 @@ oracle 细则：
 - C harness 消费与 TS 端同构的 `Op` JSON——对 §5.1「描述即契约」本身也是测试。
 - 原生构建使用与 wasm 完全相同的 versions.json pin（zlib/libpng/libjpeg-turbo/leptonica），同 zlib 下 PNG 编码应逐字节一致；这是字节级强锚成立的前提。
 
-发布（决策 ⑪）：npm publish 带 provenance；PNG 字节比对为强锚点，浮点标量只比容差。
+Release policy: GitHub Release tarball only; registry publishing is disabled. PNG byte comparison remains the strong correctness anchor, while floating-point scalar comparisons use tolerances.
 
 评审规程：每里程碑落地执行双层评审（trellis-check 硬评审 + dbs-chatroom 多视角评审），findings 分级处置（blocker/warning/nit），SOP 详见 implement.md。
 
@@ -284,7 +284,7 @@ oracle 细则：
 ## 9. 兼容性与回滚
 
 - 新包首发 `0.1.0`；semver 只承诺精选层。
-- 回滚：npm deprecate / `next` tag 降级；构建永远可复现（versions.json 不动 → 旧产物可重建）。
+- Rollback: remove the GitHub Release and tag, then rebuild from unchanged `versions.json` pins when needed.
 - Worker 客户端可整体绕开（同步核心 + 用户自管 worker）——承诺层失败不阻塞逃生舱使用。
 - 运行时探测失败（如 SIMD 不可用）只降级能力标志，不拒载。
 

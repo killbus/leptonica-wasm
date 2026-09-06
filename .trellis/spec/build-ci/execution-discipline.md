@@ -78,9 +78,10 @@ git add .github/workflows/size-spike.yml && git commit && git push
 | 发布产物 | `dist/` | 不入 git（design §3） |
 | 参考仓库（只读对照） | `third_party/` | `manifest.json` tracked，内容本地排除 |
 | 依赖版本 pin | `vendor/versions.json` | tracked |
+| Source-owned release-contract tooling | `build/*.py` | tracked compatibility surface; source files only |
 
 - 新增临时目录 → 先同步 `.gitignore`，再写文件。
-- 禁止：`build/deps`（M1 旧路径，已废弃）、`./temp`；`build/` 一词不再用于本仓库路径。
+- 禁止：`build/deps`（M1 旧路径，已废弃）、`./temp`；除下述 tracked release-contract tooling 例外外，不得将 `build/` 用作生成态或运行期路径。
 
 ### Wrong vs Correct
 
@@ -90,6 +91,66 @@ Invoke-WebRequest … -OutFile build/deps/leptonica.tar.gz
 
 # Correct：
 Invoke-WebRequest … -OutFile tmp/deps/leptonica.tar.gz
+```
+
+### Tracked release-contract tooling exception
+
+#### 1. Scope / Trigger
+
+This exception applies only when the source repository owns a versioned release
+contract whose public command path is part of the source-to-builder interface.
+
+#### 2. Signatures
+
+```text
+python3 build/release_set.py manifest ...
+python3 build/release_set.py verify ...
+python3 build/release_set.py build ...
+```
+
+#### 3. Contracts
+
+- `build/*.py` may contain tracked, reviewable source code for the release
+  contract.
+- The directory must not contain fetched dependencies, compiler outputs, build
+  trees, archives, caches, generated includes, or release artifacts.
+- Runtime state remains under `tmp/`; publication output remains under `dist/`.
+- `build/__pycache__/` and other interpreter caches are local waste and must not
+  be committed.
+
+#### 4. Validation & Error Matrix
+
+| Condition | Required action |
+| --- | --- |
+| Tracked release-contract Python source under `build/` | Allowed |
+| Generated or downloaded content under `build/` | Move it to the matching `tmp/` path |
+| Release artifact under `build/` | Move it to `dist/` |
+| Interpreter cache under `build/` | Remove it and keep it untracked |
+
+#### 5. Good / Base / Bad Cases
+
+- Good: tracked `build/release_set.py` implements the documented public command.
+- Base: ordinary scripts remain under `scripts/`; this exception is not a reason
+  to migrate them.
+- Bad: `build/deps/`, `build/wasm/`, archives, object files, or generated headers.
+
+#### 6. Tests Required
+
+- Contract tests must invoke the documented `build/release_set.py` entry point.
+- Repository review must confirm that every tracked file under `build/` is source
+  code or a contract test and that no cache or generated artifact is present.
+
+#### 7. Wrong vs Correct
+
+```text
+# Wrong: generated state uses the compatibility namespace.
+build/deps/source.tar.gz
+build/wasm/module.wasm
+
+# Correct: only tracked release-contract tooling uses build/.
+build/release_set.py
+tmp/deps/source.tar.gz
+dist/module.wasm
 ```
 
 ## 规则 4：主会话对子代理/worker 的 monitor 职能（2026-09-04 用户指示）
@@ -105,7 +166,7 @@ Invoke-WebRequest … -OutFile tmp/deps/leptonica.tar.gz
 - **早失败检测**：spawn 后的最初 2 分钟是死亡高峰（spawn 失败、context 超限、provider 报错）。监督的第一职责是尽早发现"根本没跑起来"，而不是等超时。判据：worker 日志/事件流出现 `error` 类事件，或产出体积/事件数长时间为零且无 progress。
 - **timeout ≠ 完成判据**：`wait` 超时（exit 124）意味着"没等到"，必须回到事件流核实实际状态（done/error/仍活着），不得假定成功也不得静默重试。
 - **失败处置**：确认执行体死亡后——收集死因（worker 日志 `*.log`、channel 事件流 `--raw`）→ 修复或绕行 → 重派。绕行时要保留失败证据供事后归档（M1 先例：channel worker 因 pnpm shim 不被 trellis resolveProviderPath 支持 spawn ENOENT → 改用 Agent 工具直派，channel 事件流留档）。
-- **适用范围**：同一纪律适用于 Agent 工具的后台 subagent 与 4xx/5xx 网络错误的重试节奏（指数退避，不静默放弃）。
+- **适用范围**：同一监督纪律适用于 Agent 工具的后台 subagent；agent dispatch 的 goal 初始化与可重试错误分类遵循下述英文契约。
 
 ### Validation & Error Matrix
 
@@ -115,7 +176,7 @@ Invoke-WebRequest … -OutFile tmp/deps/leptonica.tar.gz
 | 通知/事件已到达但未读取 | 立即消费并处置；向用户汇报前先核对事件队列 |
 | `wait` 超时退出 | 核实事件流实际状态，禁止假定成功 |
 | worker 日志出现 error 事件 | 停止等待，诊断死因，决定修复/绕行 |
-| 子代理/worker 连续失败 | 按指数退避重试；仍失败换通道（如 channel → Agent 工具） |
+| 子代理/worker 连续失败 | 先区分可重试网络/服务错误与非重试型执行错误，再按下述契约处置 |
 
 ### Wrong vs Correct
 
@@ -129,6 +190,77 @@ trellis channel wait … --kind done --timeout 29m   # 只订阅 done，漏 erro
 trellis channel wait … --kind done,error --all --timeout 29m
 # 超时/可疑时：
 trellis channel messages <ch> --raw --last 10     # 核实真实状态再行动
+```
+
+### Agent dispatch goal and retry contract
+
+#### 1. Scope / Trigger
+
+This contract applies before and throughout every agent dispatch, regardless of
+the dispatch transport or agent role.
+
+#### 2. Signatures
+
+```text
+set goal(<business objective plus the mandatory retry policy>)
+dispatch agent(<goal-initialized agent>)
+monitor agent(<progress, completion, and failure signals>)
+```
+
+`set goal` means the platform's standard goal-mode mechanism. A prompt prefix,
+injected dispatch message, or presumed inherited instruction is not a substitute.
+
+#### 3. Contracts
+
+- Before dispatch, the main agent MUST initialize the dispatched agent through
+  the standard goal mechanism. Dispatch MUST NOT begin first.
+- The goal itself MUST explicitly state: treat `stream disconnected`, HTTP `429`,
+  and transient HTTP `5xx` network/service errors as retryable; retry them with
+  backoff and continue retrying; do not terminate or request user intervention
+  solely because of those errors.
+- Other HTTP `4xx` responses are not retryable by default. Classify them from the
+  concrete response instead of treating the entire `4xx` class as transient.
+- The main agent MUST actively monitor progress and failure signals, inspect
+  retry state, and take recovery or follow-up action. Passive waiting and
+  fire-and-forget dispatch are forbidden.
+
+#### 4. Validation & Error Matrix
+
+| Condition | Required action |
+| --- | --- |
+| Agent has no standard goal-mode initialization | Do not dispatch |
+| Retry policy exists only in the dispatch prompt/message | Do not dispatch; put it in the goal |
+| `stream disconnected`, HTTP `429`, or transient HTTP `5xx` | Retry automatically with backoff and keep monitoring |
+| Non-transient authentication, authorization, validation, or protocol error | Stop that execution path, preserve evidence, and diagnose |
+| Agent is running but silent | Inspect status/events and take an explicit follow-up action |
+
+#### 5. Good / Base / Bad Cases
+
+- Good: create the agent goal with both the business task and retry policy, then
+  dispatch and monitor its status/events until completion.
+- Base: when no compliant goal mechanism is available, continue with the main
+  agent instead of dispatching an improperly initialized worker.
+- Bad: dispatch first and send the retry policy afterward; add a standalone
+  "mandatory retry" prompt; stop on the first transient 429 or 5xx response.
+
+#### 6. Tests Required
+
+- Dispatch review must show a goal initialization event before every agent start.
+- The stored goal must contain the retryable error classes and continuation rule.
+- Monitoring evidence must include both success and failure/status consumption.
+
+#### 7. Wrong vs Correct
+
+```text
+# Wrong: separate prompt injection after or alongside dispatch.
+dispatch agent
+send "retry 429 and 5xx"
+
+# Correct: retry behavior is part of standard goal initialization.
+set goal "<business objective>; retry stream disconnected, HTTP 429, and
+transient 5xx with backoff and continue retrying"
+dispatch agent
+monitor progress, errors, retries, and completion
 ```
 
 ## 规则 5：PR 合并纪律（2026-09-05 用户指示）

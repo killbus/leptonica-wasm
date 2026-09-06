@@ -1,0 +1,7 @@
+{
+  "variant": "p2",
+  "domain": "xiaopdf.com",
+  "product_lock": 1,
+  "description": "Production build for xiaopdf.com",
+  "target_seed": "649ba04bd1fe7c5fa044d8d51d77475ef5de438d85284d0183f395f8c23ff427"
+}

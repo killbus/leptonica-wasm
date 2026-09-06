@@ -464,3 +464,115 @@ jobs:
           name: dist-sha256-manifest
           path: artifacts/ci-dist/sha256.json
           if-no-files-found: error
+
+  # Source-owned public release projection. The manifest is derived from the
+  # exact checked-out Git tree; private variant selectors and domains never
+  # become job outputs.
+  release-set:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      release_id: ${{ steps.manifest.outputs.release_id }}
+      manifest: ${{ steps.manifest.outputs.manifest }}
+    steps:
+      # v7.0.1 (2026-07-20): https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Validate release-set contract
+        run: |
+          python3 build/test_generate_xor.py
+          python3 build/test_release_set.py
+
+      - name: Resolve canonical public manifest
+        id: manifest
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          python3 build/release_set.py manifest \
+            --source-revision "$SOURCE_REVISION" \
+            --output release-set.json
+          release_id=$(jq -er '.release_id' release-set.json)
+          manifest=$(jq -c . release-set.json)
+          {
+            echo "release_id=$release_id"
+            echo "manifest=$manifest"
+          } >> "$GITHUB_OUTPUT"
+
+  dispatch-builder:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.LEPTONICA_BUILDER_REPOSITORY != ''
+    needs: [release-set, compare]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      BUILDER_REPOSITORY: ${{ vars.LEPTONICA_BUILDER_REPOSITORY }}
+      BUILDER_DISPATCH_TOKEN: ${{ secrets.LEPTONICA_BUILDER_DISPATCH_TOKEN }}
+      SOURCE_REVISION: ${{ github.sha }}
+      RELEASE_ID: ${{ needs.release-set.outputs.release_id }}
+      RELEASE_MANIFEST: ${{ needs.release-set.outputs.manifest }}
+    steps:
+      - name: Dispatch immutable release set
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$BUILDER_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
+            echo "::error::LEPTONICA_BUILDER_REPOSITORY must be owner/repository"
+            exit 1
+          }
+          [[ -n "$BUILDER_DISPATCH_TOKEN" ]] || {
+            echo "::error::LEPTONICA_BUILDER_DISPATCH_TOKEN is not configured"
+            exit 1
+          }
+
+          source_revision="$SOURCE_REVISION"
+          release_id="$RELEASE_ID"
+          manifest="$RELEASE_MANIFEST"
+          payload=$(jq -cn \
+            --arg source_revision "$source_revision" \
+            --arg release_id "$release_id" \
+            --argjson manifest "$manifest" \
+            '{
+              event_type: "source-release-set-v1",
+              client_payload: {
+                contract_version: 1,
+                source_revision: $source_revision,
+                release_id: $release_id,
+                manifest: $manifest
+              }
+            }')
+
+          attempt=0
+          delay=2
+          while true; do
+            attempt=$((attempt + 1))
+            set +e
+            status=$(curl --silent --show-error \
+              --connect-timeout 20 --max-time 60 \
+              --output dispatch-response.txt --write-out '%{http_code}' \
+              --request POST \
+              --header "Accept: application/vnd.github+json" \
+              --header "Authorization: Bearer $BUILDER_DISPATCH_TOKEN" \
+              --header "X-GitHub-Api-Version: 2022-11-28" \
+              --data "$payload" \
+              "https://api.github.com/repos/$BUILDER_REPOSITORY/dispatches")
+            curl_status=$?
+            set -e
+
+            if [[ $curl_status -eq 0 && "$status" =~ ^2[0-9][0-9]$ ]]; then
+              echo "Builder dispatch accepted on attempt $attempt"
+              break
+            fi
+
+            if [[ $curl_status -ne 0 || "$status" == "429" || "$status" =~ ^5[0-9][0-9]$ ]]; then
+              echo "::warning::Retryable builder dispatch failure (attempt $attempt, curl=$curl_status, HTTP=$status); retrying in ${delay}s"
+              sleep "$delay"
+              if ((delay < 60)); then delay=$((delay * 2)); fi
+              if ((delay > 60)); then delay=60; fi
+              continue
+            fi
+
+            echo "::error::Non-retryable builder dispatch failure (HTTP $status)"
+            sed -n '1,80p' dispatch-response.txt
+            exit 1
+          done

@@ -34,12 +34,12 @@
 - [x] `package.json`（ESM-only、`type: module`）+ `tsconfig.json` + vitest 配置
 - [x] npm 包名查重（`leptonica-wasm` 可用，无需回写 design.md §2）
 - 评审：双层评审 + 修复轮 + 复核 8/8 通过（reviews/M0.md）；首次 commit 含 Trellis/agent 配置目录（用户 2026-09-03 指示）
-- 验证：`npm test`（空测试）通过；`npx tsc --noEmit` 通过
+- Verification: `pnpm test` (empty suite at M0) and `pnpm exec tsc --noEmit` passed.
 - 回滚点：纯脚手架，删文件即回滚
 
 ## M1 体积 spike ★评审门 1
 
-执行纪律（2026-09-03 用户指示，详见 `.trellis/spec/build-ci/execution-discipline.md`）：本机零重任务——一切编译在 GitHub Actions 执行，依赖源码 fetch 落 `tmp/deps/`，本机仅编辑、头文件解析与 npm test/typecheck 级验证。
+Execution discipline (user direction, 2026-09-03; see `.trellis/spec/build-ci/execution-discipline.md`): no heavy local work. Compilation runs in GitHub Actions; dependency sources live under `tmp/deps/`; local verification is limited to editing, text/header analysis, `pnpm test`, contract tests, and type-checking.
 
 - [x] `scripts/build.mjs` 最小可跑：`vendor/versions.json` pin 四依赖（zlib/libpng/libjpeg-turbo/leptonica 精确 commit）→ fetch（`tmp/deps/`）→ emcmake → ninja → em++ 出 wasm（脚本在 CI 内执行，本机只验语法）——242 行，`node --check` 通过；default/full-abi 双模式 + build-report.json（wasm raw/gzip 体积、sha256、耗时）
 - [x] `cpp/bindings.cpp` 最小 embind：`fromRGBA` / `toGray` / `toPNG` / `toJPEG` / `toRGBA` 五函数跑通——79 行已写；冒烟脚本 `scripts/smoke.mjs`（132 行）在 CI 内验证运行时行为（PNG IHDR 断言 / JPEG SOI / toRGBA 字节往返 / 负向用例）
@@ -47,7 +47,7 @@
 - [x] 测量：产物体积（raw + gzip）、冷构建耗时基线（供 CI 缓存与超时配置）；导出表/符号表确认无解码入口（`pixRead*` 缺席验证）——CI run 33767637278 全绿：default 406KB/105KB gzip、full-abi 2.59MB/855KB gzip；双次构建 sha256 稳定；冷构建 93.8s；符号表 `pixRead*` 0 项、full-abi 无真实 `WebP*` 解码符号
 - [x] 对照构建：`gen-exports.mjs` 首版扫 `allheaders.h` → 全量 C ABI 导出再测体积——2745 函数（声明 ∩ 归档定义），full-abi 模式体积见上
 - [x] 产出 `research-size-spike.md`（原计划名 `research/size-spike.md`，随实际扁平落盘同步；design §8 四项裁决建议；CI 数据回填后收口）——结果/结论已回填：裁决"精选为默认、full-abi 逃生舱"（gzip 增量 ~750KB 远超 100KB 阈值）；含 7 次 CI 迭代的裁决记录（embind 完整类型、em++ 链接、-O3 内联与导出名压缩、WebP 错误桩）
-- 验证：CI workflow 内从零连续两次构建产物一致；Node 脚本 load wasm 跑通 fromRGBA→toGray→toPNG（本机仅静态验证，运行时验证由 CI 承担）；`npm test` + `npx tsc --noEmit` 保持绿
+- Verification: CI produces identical clean-build artifacts; the Node smoke path covers fromRGBA→toGray→toPNG; local checks use `pnpm test` and `pnpm run typecheck` only.
 - 评审门：体积数据回填 PRD 决策 ⑦（core/full 与 raw 层默认产物裁决），用户确认后进 M2
 - 回滚点：spike 结论不满足预期 → 回 design §3 重新裁决，不动后续里程碑
 
@@ -89,7 +89,7 @@
 - [x] `src/worker/`：会话客户端（句柄代理、chain 录制）、worker 入口（wasm 定位 + `wasmPath` 覆盖）、Node `worker_threads` 适配、`close()` 毒化 + `terminate()`（M5 评审 B1：terminate 公开化，ac7ab20）
 - [x] Worker 单测（Node worker_threads）：协议往返、transfer、close 毒化、terminate 无残留、run() 失败路径中间 Pix 清理（M5 评审 W3/W4：in-flight terminate + 毒化 rejection 形状统一，95/95）
 - [x] 跨 bundler 冒烟：vite / webpack5 / esbuild / Node ESM 构建最小示例并加载 worker（CI matrix）（M5 评审 B2：esbuild 补拷 wasm + 产物布局断言——负向验证过：删 wasm 断言即红；三 fixture "wasm layout ok"，node-esm 运行时绿）
-- [x] `prepublishOnly`（typecheck + test + build 串行，M0 评审 F9）
+- [x] `release:preflight` runs typecheck, tests, and release-contract tests without compiling locally. `private: true` prevents registry publication.
 - 验证：vitest worker 套件全绿；四 bundler 冒烟通过（本地 95/95 + typecheck 双域 + check-bundler-matrix 全绿；CI run 33942042722 + 33942410612 全绿）
 - 回滚点：会话层独立于核心——最坏降级为仅同步层发布（包 `exports` 移除 `./worker`）
 
@@ -99,7 +99,7 @@
 - [x] Playwright E2E：浏览器 vite 页 → createSession → 链执行 → PNG 字节 vs Node 输出逐字节比对（环境一致性；语义正确性已在 M4 oracle 锚定）——172c44b；CI 两轮红教训：包名导入 TS2307（无 self-link）→ dist 导入在 pre-build typecheck 阶段不存在 → src 导入（与 worker.test.ts 同模式）；CI E2E 步骤显式列 chromium + chromium-headless-shell（本地实测后者需单独装）
 - [x] README：三段式快速开始（Worker 主入口 / 同步核心 / raw 逃生舱）+ API 表——172c44b + cf04e5f（raw 例子 PIX 双指针 staging 修正，与 M3 B2 对齐）
 - [x] release workflow（tag 触发）：build → test → GitHub Release——CI 是发布产物唯一来源，本地构建不发布（design §3）——03f0a68 + a2258a9（corepack 步骤恢复）+ 2026-09-05 渠道裁决（用户指示「禁用 npm 发包，只需发布到 github」）：pnpm publish 步骤整体移除，替换为 softprops/action-gh-release（v3.0.3 commit-pin efb3536）创建 Release + tarball asset；NPM_TOKEN 不再需要；cold verified 工具链（无缓存层）、concurrency 按 tag 保留
-- [x] npm pack 内容审查（发布前预检）——按 M3 再裁决（reviews/M3.md：无解码承诺是 default 产物承诺，非包范围承诺）：pack 断言 full-abi 六文件 + sha256.json + LICENSE + README 必须在包内（bd7b018；初始实现误按 M2 F2 字面排除 full-abi，评审第一层纠正）
+- [x] `pnpm pack` content review before release: require the six full-ABI files, `sha256.json`, LICENSE, and README in the tarball.
 - [x] LICENSE 文件（BSD-2-Clause + Leptonica 版权归并，M0 评审 F13）——172c44b
 - [x] wasm 产物 sha256 清单随包发布；CI 复现构建 digest 比对（npm integrity 不证明 wasm 与 C 源码对应——M0 评审 F7）——90835fb + 2d270a9 + 14e9647；scripts/gen-hash-manifest.mjs（39 条目含 full-abi 六文件，M2 F9 一并清偿）；ci job 在 determinism relink 后生成、compare job 上传（ci-dist 与 repro-dist 字节全等即 manifest 双树适用性证明）
 - [ ] 已知债务清偿（M2 评审 F3，择机）：cmakeTool 进 deps 缓存键与 doneKey（单独 bump cmakeTool 现只轮换 emsdk 层，deps 层命中旧 .a——fail-loud 非 silent，compare 必红；修复需改 build.mjs 必然轮换缓存键触发冷编译，推迟到下次必然的 build.mjs 变更一并携带）；full-abi 复现性断言扩展（F9：确定性现只证 default 模式，manifest 若收录 full-abi 则 compare 需扩面）
@@ -124,4 +124,14 @@
 | session.close() 毒化 + terminate 无残留 | M5 单测 |
 | d.ts 与实际导出 CI diff | M2 |
 | 体积 spike 报告回填 core/full 裁决 | M1 |
-| npm dry-run + 双端 smoke | M6 |
+| `pnpm pack` dry-run + dual-runtime smoke | M6 |
+
+## M7 Source-Owned Release Variants
+
+- [x] Add private `variants/*.json` definitions and fail-closed validation/XOR generation.
+- [x] Add `--variant` to `scripts/build.mjs`; locked targets compile with `PRODUCT_LOCK`, while opaque target builds expose only public provenance.
+- [x] Gate locked browser initialization by hostname before registering the Embind surface; trusted Node and `worker_threads` contexts remain available for builder verification.
+- [x] Add the canonical `source-release-set-v1` manifest and opaque target resolver with Leptonica-specific identity domains and outputs.
+- [x] Dispatch the public manifest only after source CI reproducibility passes; retry transport failures, HTTP 429, and transient 5xx responses with backoff.
+- [x] Document source/builder variables and secrets in `docs/release-set-contract.md`; private routing remains outside the public contract.
+- Verification: `pnpm run test:release-contract`, `pnpm test`, and `pnpm run typecheck`; all compilation remains CI-only.

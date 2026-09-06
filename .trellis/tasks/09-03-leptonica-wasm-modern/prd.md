@@ -85,7 +85,7 @@
 - 单元测试（Node，同步核心直测）+ 浏览器 E2E smoke（Playwright：Worker 客户端加载 wasm → RGBA 输入 → 链执行 → PNG 字节输出）。
 - 正确性锚点独立于本库：同一 pin commit 的**原生 leptonica 构建**（C harness 跑同一批算子链）作为 oracle，wasm 输出与原生金样比对——防止「实现与测试同源」的自我闭环。
 - 测试先行：精选层算子先写含金样断言的失败测试（红），再写实现（绿），提交历史可查。
-- npm 发布管线（provenance 参考 liteparse）。
+- GitHub Release-only distribution. Registry publishing is disabled; CI produces and attaches the pnpm package tarball and its integrity manifest.
 - 季度重建流程文档化。
 
 ### R5 首个验证任务（体积 spike）
@@ -100,7 +100,7 @@
 - [ ] session.close() 后再调用任何会话方法抛错（毒化验证）；Worker terminate 后无残留（进程级验证）。
 - [ ] d.ts 导出的每个符号在 wasm 实际导出表中存在（CI diff 通过）；raw 层全量导出可被 import。
 - [x] 体积 spike 报告落盘（产物体积、解码路径裁剪验证、core/full 裁决建议）。——`research-size-spike.md` 全部收口：双模式体积 + 确定性 + `pixRead*` 缺席 + 裁决建议已回填（M1，2026-09-03）
-- [ ] npm 包 dry-run 可安装，Node 与浏览器双端 smoke 通过。
+- [ ] `pnpm pack` output is installable, and Node/browser smoke tests pass.
 
 ## Out of Scope（v0.2+ 候选）
 

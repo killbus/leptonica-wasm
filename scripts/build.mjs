@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
@@ -14,7 +14,7 @@ const installRoot = join(buildRoot, "install");
 const versions = JSON.parse(readFileSync(join(repoRoot, "vendor", "versions.json"), "utf8"));
 
 function usage() {
-  console.error("usage: node build.mjs [--full-abi] [--outdir <dir>] [--jobs <n>] [--opt <O0|O1|O2|O3|Os|Oz>]");
+  console.error("usage: node build.mjs [--full-abi] [--variant <pN>] [--outdir <dir>] [--jobs <n>] [--opt <O0|O1|O2|O3|Os|Oz>]");
 }
 
 function run(cmd, args, opts = {}) {
@@ -174,7 +174,7 @@ function writeFullAbiExports(outDir) {
   return exportsPath;
 }
 
-function linkOutputs({ exportsPath, outDir, fullAbi, optLevel }) {
+function linkOutputs({ exportsPath, generatedIncludeDir, outDir, fullAbi, optLevel, productLock }) {
   mkdirSync(outDir, { recursive: true });
   const emccArgs = [
     "cpp/bindings.cpp",
@@ -202,6 +202,9 @@ function linkOutputs({ exportsPath, outDir, fullAbi, optLevel }) {
     `-I${join(depsRoot, "leptonica", "src")}`,
     `-L${join(installRoot, "lib")}`,
   ];
+  if (productLock === 1) {
+    emccArgs.push("-DPRODUCT_LOCK", `-I${generatedIncludeDir}`);
+  }
   if (fullAbi) {
     emccArgs.push("-Wl,--whole-archive", "-lleptonica", "-Wl,--no-whole-archive", `-sEXPORTED_FUNCTIONS=@${resolve(exportsPath)}`);
   } else {
@@ -225,13 +228,21 @@ function linkOutputs({ exportsPath, outDir, fullAbi, optLevel }) {
 }
 
 function parseArgs(argv) {
-  const opts = { fullAbi: false, outDir: "dist", jobs: 0, optLevel: "O3" };
+  const opts = { fullAbi: false, outDir: "dist", jobs: 0, optLevel: "O3", variant: "p0" };
   let outDirGiven = false;
   let optGiven = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--full-abi") {
       opts.fullAbi = true;
+    } else if (arg === "--variant") {
+      const value = argv[i + 1] ?? "";
+      if (!/^p(?:0|[1-9][0-9]*)$/.test(value)) {
+        usage();
+        process.exit(2);
+      }
+      opts.variant = value;
+      i++;
     } else if (arg === "--outdir") {
       opts.outDir = argv[i + 1] ?? null;
       if (opts.outDir === null) {
@@ -278,42 +289,129 @@ function parseArgs(argv) {
   return opts;
 }
 
+function prepareVariant(variant) {
+  const variantFile = join(repoRoot, "variants", `${variant}.json`);
+  if (!existsSync(variantFile)) {
+    throw new Error(`variant config not found: variants/${variant}.json`);
+  }
+  mkdirSync(buildRoot, { recursive: true });
+  const generatedDir = mkdtempSync(join(buildRoot, "variant-"));
+  const generatedInclude = join(generatedDir, "generated_domain.inc");
+  const result = spawnSync(
+    "python3",
+    [join(repoRoot, "build", "generate_xor.py"), variantFile, generatedInclude, variant],
+    { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
+  );
+  if (result.error) {
+    rmSync(generatedDir, { recursive: true, force: true });
+    throw result.error;
+  }
+  if (result.status !== 0 || !/^[01]$/.test(result.stdout.trim())) {
+    rmSync(generatedDir, { recursive: true, force: true });
+    throw new Error(`variant generator failed for ${variant}`);
+  }
+  return { generatedDir, productLock: Number(result.stdout.trim()) };
+}
+
+function opaqueBuildInfo(productLock) {
+  const opaque = process.env.SOURCE_RELEASE_TARGET ?? "0";
+  if (opaque !== "0" && opaque !== "1") {
+    throw new Error("SOURCE_RELEASE_TARGET must be 0 or 1");
+  }
+  if (opaque === "0") return null;
+
+  for (const forbidden of ["BUILD_VARIANT", "PRODUCT_LOCK", "BUILD_TYPE"]) {
+    if (Object.hasOwn(process.env, forbidden)) {
+      throw new Error(`${forbidden} is not accepted for an opaque release target`);
+    }
+  }
+
+  const values = {
+    release_id: process.env.SOURCE_RELEASE_ID ?? "",
+    source_revision: process.env.SOURCE_REVISION ?? "",
+    target_id: process.env.SOURCE_TARGET_ID ?? "",
+    build_role: process.env.SOURCE_BUILD_ROLE ?? "",
+    transport_profile: process.env.SOURCE_TRANSPORT_PROFILE ?? "",
+  };
+  if (!/^release-v1-[0-9a-f]{64}$/.test(values.release_id) ||
+      !/^[0-9a-f]{40}$/.test(values.source_revision) ||
+      !/^target-v1-[0-9a-f]{64}$/.test(values.target_id) ||
+      !/^(dev|prod)$/.test(values.build_role) ||
+      values.transport_profile !== "envelope-v1") {
+    throw new Error("opaque release-target metadata is missing or malformed");
+  }
+  const expectedRole = productLock === 0 ? "dev" : "prod";
+  if (values.build_role !== expectedRole) {
+    throw new Error("opaque release-target build role does not match the private variant");
+  }
+  return { schema_version: 1, ...values };
+}
+
+function writeOpaqueBuildInfo(outDir, buildInfo) {
+  const output = join(outDir, "build-info.json");
+  const temporary = join(outDir, `.build-info.${process.pid}.tmp`);
+  try {
+    writeFileSync(temporary, JSON.stringify(buildInfo, null, 2) + "\n", { encoding: "ascii", mode: 0o644 });
+    renameSync(temporary, output);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+}
+
 const startedAt = Date.now();
 const opts = parseArgs(process.argv.slice(2));
-const fetchStartedAt = Date.now();
-for (const dep of depConfigs) {
-  ensureSource(dep.name, versions[dep.name]);
+const variantState = prepareVariant(opts.variant);
+try {
+  const buildInfo = opaqueBuildInfo(variantState.productLock);
+  // A normal developer build must not inherit provenance from an earlier
+  // opaque target that happened to use the same output directory.
+  if (buildInfo === null) rmSync(join(opts.outDir, "build-info.json"), { force: true });
+  const fetchStartedAt = Date.now();
+  for (const dep of depConfigs) {
+    ensureSource(dep.name, versions[dep.name]);
+  }
+  const fetchMs = Date.now() - fetchStartedAt;
+  for (const dep of depConfigs) {
+    buildDep(dep, opts.jobs, versions[dep.name]);
+  }
+  let exportsPath = null;
+  let exportedFunctions = null;
+  if (opts.fullAbi) {
+    exportsPath = writeFullAbiExports(opts.outDir);
+    exportedFunctions = readFileSync(exportsPath, "utf8").split("\n").filter((line) => line.length > 0).length;
+  }
+  const linkStartedAt = Date.now();
+  const sizes = linkOutputs({
+    exportsPath,
+    generatedIncludeDir: variantState.generatedDir,
+    outDir: opts.outDir,
+    fullAbi: opts.fullAbi,
+    optLevel: opts.optLevel,
+    productLock: variantState.productLock,
+  });
+  const report = {
+    mode: opts.fullAbi ? "full-abi" : "default",
+    // Provenance fields (M1 review, build-eng N4): the report must identify
+    // which inputs produced it — trend comparisons and the M6 manifest need
+    // pin + sdk + optimization level attached to every measurement. Private
+    // variant selectors are intentionally excluded from the public report.
+    provenance: {
+      sdkVersion: versions.emsdk?.sdkVersion ?? null,
+      dependencyPins: Object.fromEntries(depConfigs.map((dep) => [dep.name, versions[dep.name].commit])),
+      optimizationLevel: opts.fullAbi ? "-O2" : `-${opts.optLevel}`,
+    },
+    wasmBytes: sizes.wasmBytes,
+    wasmGzipBytes: sizes.wasmGzipBytes,
+    jsBytes: sizes.jsBytes,
+    jsGzipBytes: sizes.jsGzipBytes,
+    wasmSha256: sizes.wasmSha256,
+    exportedFunctions,
+    timingMs: { fetch: fetchMs, link: Date.now() - linkStartedAt },
+    wallMs: Date.now() - startedAt,
+  };
+  writeFileSync(join(opts.outDir, "build-report.json"), JSON.stringify(report, null, 2) + "\n");
+  if (buildInfo !== null) writeOpaqueBuildInfo(opts.outDir, buildInfo);
+  console.log(`build OK (${report.mode} mode): ${opts.outDir}`);
+} finally {
+  rmSync(variantState.generatedDir, { recursive: true, force: true });
 }
-const fetchMs = Date.now() - fetchStartedAt;
-for (const dep of depConfigs) {
-  buildDep(dep, opts.jobs, versions[dep.name]);
-}
-let exportsPath = null;
-let exportedFunctions = null;
-if (opts.fullAbi) {
-  exportsPath = writeFullAbiExports(opts.outDir);
-  exportedFunctions = readFileSync(exportsPath, "utf8").split("\n").filter((line) => line.length > 0).length;
-}
-const linkStartedAt = Date.now();
-const sizes = linkOutputs({ exportsPath, outDir: opts.outDir, fullAbi: opts.fullAbi, optLevel: opts.optLevel });
-const report = {
-  mode: opts.fullAbi ? "full-abi" : "default",
-  // Provenance fields (M1 review, build-eng N4): the report must identify
-  // which inputs produced it — trend comparisons and the M6 manifest need
-  // pin + sdk + optimization level attached to every measurement.
-  provenance: {
-    sdkVersion: versions.emsdk?.sdkVersion ?? null,
-    dependencyPins: Object.fromEntries(depConfigs.map((dep) => [dep.name, versions[dep.name].commit])),
-    optimizationLevel: opts.fullAbi ? "-O2" : `-${opts.optLevel}`,
-  },
-  wasmBytes: sizes.wasmBytes,
-  wasmGzipBytes: sizes.wasmGzipBytes,
-  jsBytes: sizes.jsBytes,
-  jsGzipBytes: sizes.jsGzipBytes,
-  wasmSha256: sizes.wasmSha256,
-  exportedFunctions,
-  timingMs: { fetch: fetchMs, link: Date.now() - linkStartedAt },
-  wallMs: Date.now() - startedAt,
-};
-writeFileSync(join(opts.outDir, "build-report.json"), JSON.stringify(report, null, 2) + "\n");
-console.log(`build OK (${report.mode} mode): ${opts.outDir}`);

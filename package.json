@@ -2,6 +2,7 @@
   "name": "leptonica-wasm",
   "version": "0.1.1",
   "description": "Modern ESM/WASM build of Leptonica — curated image operators with a raw C-ABI escape hatch",
+  "private": true,
   "type": "module",
   "license": "BSD-2-Clause",
   "engines": {
@@ -66,7 +67,8 @@
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
     "hash-manifest": "node scripts/gen-hash-manifest.mjs",
-    "prepublishOnly": "pnpm run typecheck && pnpm test && node scripts/build.mjs"
+    "test:release-contract": "python3 build/test_generate_xor.py && python3 build/test_release_set.py",
+    "release:preflight": "pnpm run typecheck && pnpm test && pnpm run test:release-contract"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

@@ -1,5 +1,7 @@
+#include <emscripten.h>
 #include <emscripten/bind.h>
 #include <emscripten/val.h>
+#include <cstring>
 #include <string>
 #include "allheaders.h"
 // class_<PIX> needs the complete Pix type for typeid and its (unused) raw
@@ -9,6 +11,49 @@
 
 using emscripten::val;
 using emscripten::typed_memory_view;
+
+#ifdef PRODUCT_LOCK
+#include "generated_domain.inc"
+
+EM_JS(int, leptonica_authorized_host, (const char *domain_ptr, const char *dot_domain_ptr), {
+  const root = typeof globalThis === "object" && globalThis ? globalThis : {};
+  const processObject = root.process;
+  const trustedNode = !!(
+    processObject &&
+    processObject.release &&
+    processObject.release.name === "node" &&
+    processObject.versions &&
+    typeof processObject.versions.node === "string"
+  );
+  if (trustedNode) return 1;
+
+  const locationObject = root.location;
+  const hostname = locationObject && typeof locationObject.hostname === "string"
+    ? locationObject.hostname.toLowerCase().replace(/\.$/, "")
+    : "";
+  if (!hostname) return 0;
+
+  const domain = UTF8ToString(domain_ptr);
+  const dotDomain = UTF8ToString(dot_domain_ptr);
+  return hostname === domain || hostname.endsWith(dotDomain) ? 1 : 0;
+});
+
+static void xorDecode(unsigned char *data) {
+  for (size_t i = 0; data[i] != 0; i++) data[i] ^= 0x5A;
+}
+
+static void enforceAuthorizedHost() {
+  xorDecode(x_domain);
+  xorDecode(x_dot_domain);
+  if (!leptonica_authorized_host(
+        reinterpret_cast<const char *>(x_domain),
+        reinterpret_cast<const char *>(x_dot_domain))) {
+    __builtin_trap();
+  }
+}
+#else
+static void enforceAuthorizedHost() {}
+#endif
 
 /* Copy a C heap buffer into a freshly-allocated JS Uint8Array, then free
  * the C allocation. The TS layer used to wrap these buffers in
@@ -334,6 +379,8 @@ val toRGBA(PIX *pix) {
 }
 
 EMSCRIPTEN_BINDINGS(leptonica_wasm) {
+  // Fail before registering any Embind surface for a locked browser build.
+  enforceAuthorizedHost();
   emscripten::class_<PIX>("Pix");
   emscripten::function("destroyPix", &destroyPix, emscripten::allow_raw_pointers());
   emscripten::function("pixWidth", &pixWidth, emscripten::allow_raw_pointers());

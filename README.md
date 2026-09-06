@@ -136,6 +136,9 @@ GitHub Releases (npm publishing is disabled by design); each release
 carries the package tarball, and the sha256 manifest inside it lets a
 wasm be matched to the exact source pins.
 
+Source-owned release variants and the public/private builder boundary are
+documented in [docs/release-set-contract.md](docs/release-set-contract.md).
+
 ## License
 
 BSD-2-Clause — see LICENSE. Leptonica copyright (2001) is preserved
