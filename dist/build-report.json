@@ -1,0 +1,24 @@
+{
+  "mode": "default",
+  "provenance": {
+    "sdkVersion": "6.0.9",
+    "dependencyPins": {
+      "zlib": "da607da739fa6047df13e66a2af6b8bec7c2a498",
+      "libpng": "3061454d980de7d53608f594194cfac722721d2a",
+      "libjpeg-turbo": "c85e6b905bf237038faa936dab160ebfc5da0344",
+      "leptonica": "13275a278eb55b5746e33f95fbf5a2c8f604b3ab"
+    },
+    "optimizationLevel": "-O3"
+  },
+  "wasmBytes": 630955,
+  "wasmGzipBytes": 169310,
+  "jsBytes": 93018,
+  "jsGzipBytes": 25204,
+  "wasmSha256": "1286f536c9fec4878a0bee2d25f1d7c304fabcc983e248e591d7eedf2865638d",
+  "exportedFunctions": null,
+  "timingMs": {
+    "fetch": 3575,
+    "link": 3873
+  },
+  "wallMs": 76302
+}
