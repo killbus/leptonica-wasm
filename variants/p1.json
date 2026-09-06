@@ -1,0 +1,7 @@
+{
+  "variant": "p1",
+  "domain": "pdfstart.com",
+  "product_lock": 1,
+  "description": "Production build for pdfstart.com",
+  "target_seed": "aab6431a857cfde1aebe966d0f90fcf9943ead67611c24bcabd5028a6aaadd48"
+}

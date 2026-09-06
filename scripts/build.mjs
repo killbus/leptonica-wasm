@@ -1,0 +1,417 @@
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { gzipSync } from "node:zlib";
+import { extractExportedFunctions, renderLooseDts } from "./gen-exports.mjs";
+
+const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const depsRoot = join(repoRoot, "tmp", "deps");
+const buildRoot = join(repoRoot, "tmp", "build");
+const downloadsRoot = join(repoRoot, "tmp", "downloads");
+const installRoot = join(buildRoot, "install");
+const versions = JSON.parse(readFileSync(join(repoRoot, "vendor", "versions.json"), "utf8"));
+
+function usage() {
+  console.error("usage: node build.mjs [--full-abi] [--variant <pN>] [--outdir <dir>] [--jobs <n>] [--opt <O0|O1|O2|O3|Os|Oz>]");
+}
+
+function run(cmd, args, opts = {}) {
+  const result = spawnSync(cmd, args, { stdio: "inherit", cwd: repoRoot, ...opts });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`${cmd} ${args.join(" ")} failed with exit code ${result.status}`);
+  }
+}
+
+function ghSlug(repo) {
+  return repo.replace(/\.git$/, "").replace(/^https:\/\/github\.com\//, "");
+}
+
+function ensureSource(name, pin) {
+  const srcDir = join(depsRoot, name);
+  const marker = join(srcDir, ".pin-commit");
+  if (existsSync(marker) && readFileSync(marker, "utf8").trim() === pin.commit && existsSync(join(srcDir, "CMakeLists.txt"))) {
+    return;
+  }
+  rmSync(srcDir, { recursive: true, force: true });
+  mkdirSync(srcDir, { recursive: true });
+  const archive = join(downloadsRoot, `${name}-${pin.commit}.tar.gz`);
+  if (!existsSync(archive)) {
+    mkdirSync(downloadsRoot, { recursive: true });
+    // Download to a .part temp first, then rename into place. A truncated
+    // archive must not persist under the final name: existsSync() above
+    // would skip re-download on later runs and every build would fail at
+    // untar until the file is deleted by hand (M1 review, build-eng N2).
+    const partial = `${archive}.part`;
+    run("curl", ["-fsSL", "--retry", "3", "-o", partial, `https://codeload.github.com/${ghSlug(pin.repo)}/tar.gz/${pin.commit}`]);
+    if (!existsSync(partial)) throw new Error(`curl did not produce ${partial}`);
+    renameSync(partial, archive);
+  }
+  run("tar", ["-xzf", archive, "--strip-components=1", "-C", srcDir]);
+  writeFileSync(marker, pin.commit + "\n");
+}
+
+const depConfigs = [
+  {
+    name: "zlib",
+    extra: ["-DZLIB_BUILD_SHARED=OFF", "-DZLIB_BUILD_TESTING=OFF"],
+  },
+  {
+    name: "libpng",
+    extra: [
+      "-DPNG_SHARED=OFF",
+      "-DPNG_STATIC=ON",
+      "-DPNG_TESTS=OFF",
+      "-DPNG_TOOLS=OFF",
+      `-DZLIB_LIBRARY=${join(installRoot, "lib", "libz.a")}`,
+      `-DZLIB_INCLUDE_DIR=${join(installRoot, "include")}`,
+    ],
+  },
+  {
+    name: "libjpeg-turbo",
+    // libjpeg-turbo defaults BUILD to string(TIMESTAMP %Y%m%d) at configure
+    // time and embeds it in jpeg_version ("... (build 20260905)" in
+    // jcmaster.c). A wall-clock input breaks cross-runner determinism when
+    // the ci job's cached .a files and the reproducibility job's cold
+    // compile land on different UTC dates (run 33934231026: one byte
+    // differed, "20260904" vs "20260905"). The pin tag is deterministic and
+    // rotates with the pin itself — the .done marker and the deps cache key
+    // both already invalidate on this flag change.
+    extra: ["-DWITH_SIMD=OFF", "-DENABLE_SHARED=OFF", `-DBUILD=${versions["libjpeg-turbo"].tag}`],
+  },
+  {
+    name: "leptonica",
+    extra: [
+      "-DENABLE_WEBP=OFF",
+      "-DENABLE_OPENJPEG=OFF",
+      "-DENABLE_GIF=OFF",
+      "-DENABLE_TIFF=OFF",
+      `-DPNG_LIBRARY=${join(installRoot, "lib", "libpng16.a")}`,
+      `-DPNG_PNG_INCLUDE_DIR=${join(installRoot, "include")}`,
+      `-DZLIB_LIBRARY=${join(installRoot, "lib", "libz.a")}`,
+      `-DZLIB_INCLUDE_DIR=${join(installRoot, "include")}`,
+      `-DJPEG_LIBRARY=${join(installRoot, "lib", "libjpeg.a")}`,
+      `-DJPEG_INCLUDE_DIR=${join(installRoot, "include")}`,
+    ],
+  },
+];
+
+function buildDep(dep, jobs, pin) {
+  const buildDir = join(buildRoot, dep.name);
+  const doneMarker = join(buildDir, ".done");
+  // The marker records the inputs that produced this compiled tree. Checking
+  // existence alone is not enough (M1 review, build-eng W1): after a pin bump
+  // ensureSource() re-fetches sources but a stale .done would silently skip
+  // recompilation and link the OLD library into the new build. Pin commit and
+  // configure flags must both invalidate.
+  // Toolchain is an input too: an emsdk bump with unchanged dep pins must not
+  // reuse .a files compiled by the old emcc (design §3: deps cache is keyed
+  // by versions.json + toolchain; this marker is the same guard for restored
+  // trees).
+  const doneKey = JSON.stringify([pin.commit, dep.extra, versions.emsdk?.commit]);
+  if (existsSync(doneMarker) && readFileSync(doneMarker, "utf8") === doneKey) return;
+  const srcDir = join(depsRoot, dep.name);
+  mkdirSync(buildDir, { recursive: true });
+  // No CMAKE_POLICY_VERSION_MINIMUM: all four dep trees declare
+  // cmake_minimum_required >= 3.10 (zlib 3.12...3.31 / libpng 3.14...4.2 /
+  // libjpeg-turbo 3.15...3.28 / leptonica 3.10 — M1 review build-eng N1),
+  // so the CMake-4.x de-Compatibility escape hatch was a preset defensive
+  // flag with no reproduced necessity. Removal validated by the ci run that
+  // first carried this change (cache keys rotate via hashFiles(build.mjs)
+  // and force a cold configure of all four deps).
+  run(
+    "emcmake",
+    [
+      "cmake",
+      "-G",
+      "Ninja",
+      "-DCMAKE_BUILD_TYPE=Release",
+      `-DCMAKE_INSTALL_PREFIX=${installRoot}`,
+      `-DCMAKE_PREFIX_PATH=${installRoot}`,
+      ...dep.extra,
+      srcDir,
+    ],
+    { cwd: buildDir },
+  );
+  const ninjaArgs = ["ninja", "install"];
+  if (jobs > 0) ninjaArgs.push(`-j${jobs}`);
+  run("emmake", ninjaArgs, { cwd: buildDir });
+  writeFileSync(doneMarker, doneKey);
+}
+
+function nmDefinedSymbols(archivePath) {
+  const result = spawnSync("emnm", ["--defined-only", archivePath], { encoding: "utf8", cwd: repoRoot });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`emnm ${archivePath} failed with exit code ${result.status}`);
+  }
+  const defined = new Set();
+  for (const line of result.stdout.split(/\r?\n/)) {
+    const match = /^([0-9a-fA-F]+)\s+([A-Z])\s+(\S+)$/.exec(line);
+    if (match) defined.add(match[3]);
+  }
+  return defined;
+}
+
+function writeFullAbiExports(outDir) {
+  const headerPath = join(depsRoot, "leptonica", "src", "allheaders.h");
+  const names = extractExportedFunctions(readFileSync(headerPath, "utf8"));
+  const defined = nmDefinedSymbols(join(installRoot, "lib", "libleptonica.a"));
+  const filtered = names.filter((name) => defined.has(name.slice(1)));
+  filtered.push("_malloc", "_free");
+  filtered.sort();
+  const exportsPath = join(buildRoot, "full-abi-exports.txt");
+  writeFileSync(exportsPath, filtered.map((name) => `${name}\n`).join(""));
+  // Loose raw-layer d.ts (design §6): name-level presence with a single
+  // loose signature per symbol, generated alongside the exports list so the
+  // two can never drift apart.
+  // outDir is created here, not in linkOutputs(): on a cold build (no
+  // dist/full-abi yet) this runs first and would otherwise ENOENT.
+  mkdirSync(outDir, { recursive: true });
+  writeFileSync(join(outDir, "leptonica-raw.d.ts"), renderLooseDts(filtered));
+  return exportsPath;
+}
+
+function linkOutputs({ exportsPath, generatedIncludeDir, outDir, fullAbi, optLevel, productLock }) {
+  mkdirSync(outDir, { recursive: true });
+  const emccArgs = [
+    "cpp/bindings.cpp",
+    "-o",
+    join(outDir, "leptonica.mjs"),
+    // -O3 + JS output makes binaryen minify wasm export names (da, ea, ...) via
+    // metadce; the minify-export-names knob is an internal setting that emcc
+    // refuses from the command line. The full-abi mode needs real C ABI names,
+    // so it drops to -O2 (metadce off -> export names kept). Default mode is
+    // embind-wrapped, so -O3 minification is safe there.
+    fullAbi ? "-O2" : `-${optLevel}`,
+    "--no-entry",
+    "-lembind",
+    "--emit-symbol-map",
+    `--emit-tsd=${join(outDir, "leptonica.d.ts")}`,
+    "-sMODULARIZE=1",
+    "-sEXPORT_ES6=1",
+    "-sALLOW_MEMORY_GROWTH=1",
+    "-sINITIAL_MEMORY=33554432",
+    "-sENVIRONMENT=web,worker,node",
+    `-I${join(installRoot, "include", "leptonica")}`,
+    `-I${join(installRoot, "include")}`,
+    // bindings.cpp includes leptonica's internal pix_internal.h (struct Pix
+    // definition), which is not part of the installed header set.
+    `-I${join(depsRoot, "leptonica", "src")}`,
+    `-L${join(installRoot, "lib")}`,
+  ];
+  if (productLock === 1) {
+    emccArgs.push("-DPRODUCT_LOCK", `-I${generatedIncludeDir}`);
+  }
+  if (fullAbi) {
+    emccArgs.push("-Wl,--whole-archive", "-lleptonica", "-Wl,--no-whole-archive", `-sEXPORTED_FUNCTIONS=@${resolve(exportsPath)}`);
+  } else {
+    emccArgs.push("-lleptonica");
+  }
+  emccArgs.push("-lpng16", "-ljpeg", "-lz");
+  // bindings.cpp is C++ (embind, typeid/RTTI): link with the C++ driver so
+  // libc++/libc++abi come in; plain emcc leaves __cxxabiv1 symbols undefined.
+  run("em++", emccArgs);
+  const wasm = readFileSync(join(outDir, "leptonica.wasm"));
+  const js = readFileSync(join(outDir, "leptonica.mjs"));
+  const wasmGzip = gzipSync(wasm, { level: 9 });
+  const jsGzip = gzipSync(js, { level: 9 });
+  return {
+    wasmBytes: wasm.length,
+    wasmGzipBytes: wasmGzip.length,
+    jsBytes: js.length,
+    jsGzipBytes: jsGzip.length,
+    wasmSha256: createHash("sha256").update(wasm).digest("hex"),
+  };
+}
+
+function parseArgs(argv) {
+  const opts = { fullAbi: false, outDir: "dist", jobs: 0, optLevel: "O3", variant: "p0" };
+  let outDirGiven = false;
+  let optGiven = false;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--full-abi") {
+      opts.fullAbi = true;
+    } else if (arg === "--variant") {
+      const value = argv[i + 1] ?? "";
+      if (!/^p(?:0|[1-9][0-9]*)$/.test(value)) {
+        usage();
+        process.exit(2);
+      }
+      opts.variant = value;
+      i++;
+    } else if (arg === "--outdir") {
+      opts.outDir = argv[i + 1] ?? null;
+      if (opts.outDir === null) {
+        usage();
+        process.exit(2);
+      }
+      outDirGiven = true;
+      i++;
+    } else if (arg === "--jobs") {
+      const value = Number(argv[i + 1]);
+      if (!Number.isInteger(value) || value < 1) {
+        usage();
+        process.exit(2);
+      }
+      opts.jobs = value;
+      i++;
+    } else if (arg === "--opt") {
+      const value = argv[i + 1] ?? "";
+      if (!/^O[0-3sz]$/.test(value)) {
+        usage();
+        process.exit(2);
+      }
+      opts.optLevel = value;
+      optGiven = true;
+      i++;
+    } else {
+      usage();
+      process.exit(2);
+    }
+  }
+  // full-abi needs -O2 (metadce off -> real export names, see linkOutputs);
+  // a conflicting explicit --opt is a contradiction, rejected rather than
+  // silently overridden.
+  if (opts.fullAbi && optGiven && opts.optLevel !== "O2") {
+    console.error("--opt conflicts with --full-abi: full-abi requires -O2 (see linkOutputs comment)");
+    process.exit(2);
+  }
+  // Without an explicit --outdir, full-abi must not silently overwrite the
+  // default-mode artifacts in dist/ (M1 review, build-eng N2).
+  if (opts.fullAbi && !outDirGiven) {
+    opts.outDir = "dist/full-abi";
+  }
+  opts.outDir = resolve(opts.outDir);
+  return opts;
+}
+
+function prepareVariant(variant) {
+  const variantFile = join(repoRoot, "variants", `${variant}.json`);
+  if (!existsSync(variantFile)) {
+    throw new Error(`variant config not found: variants/${variant}.json`);
+  }
+  mkdirSync(buildRoot, { recursive: true });
+  const generatedDir = mkdtempSync(join(buildRoot, "variant-"));
+  const generatedInclude = join(generatedDir, "generated_domain.inc");
+  const result = spawnSync(
+    "python3",
+    [join(repoRoot, "build", "generate_xor.py"), variantFile, generatedInclude, variant],
+    { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
+  );
+  if (result.error) {
+    rmSync(generatedDir, { recursive: true, force: true });
+    throw result.error;
+  }
+  if (result.status !== 0 || !/^[01]$/.test(result.stdout.trim())) {
+    rmSync(generatedDir, { recursive: true, force: true });
+    throw new Error(`variant generator failed for ${variant}`);
+  }
+  return { generatedDir, productLock: Number(result.stdout.trim()) };
+}
+
+function opaqueBuildInfo(productLock) {
+  const opaque = process.env.SOURCE_RELEASE_TARGET ?? "0";
+  if (opaque !== "0" && opaque !== "1") {
+    throw new Error("SOURCE_RELEASE_TARGET must be 0 or 1");
+  }
+  if (opaque === "0") return null;
+
+  for (const forbidden of ["BUILD_VARIANT", "PRODUCT_LOCK", "BUILD_TYPE"]) {
+    if (Object.hasOwn(process.env, forbidden)) {
+      throw new Error(`${forbidden} is not accepted for an opaque release target`);
+    }
+  }
+
+  const values = {
+    release_id: process.env.SOURCE_RELEASE_ID ?? "",
+    source_revision: process.env.SOURCE_REVISION ?? "",
+    target_id: process.env.SOURCE_TARGET_ID ?? "",
+    build_role: process.env.SOURCE_BUILD_ROLE ?? "",
+    transport_profile: process.env.SOURCE_TRANSPORT_PROFILE ?? "",
+  };
+  if (!/^release-v1-[0-9a-f]{64}$/.test(values.release_id) ||
+      !/^[0-9a-f]{40}$/.test(values.source_revision) ||
+      !/^target-v1-[0-9a-f]{64}$/.test(values.target_id) ||
+      !/^(dev|prod)$/.test(values.build_role) ||
+      values.transport_profile !== "envelope-v1") {
+    throw new Error("opaque release-target metadata is missing or malformed");
+  }
+  const expectedRole = productLock === 0 ? "dev" : "prod";
+  if (values.build_role !== expectedRole) {
+    throw new Error("opaque release-target build role does not match the private variant");
+  }
+  return { schema_version: 1, ...values };
+}
+
+function writeOpaqueBuildInfo(outDir, buildInfo) {
+  const output = join(outDir, "build-info.json");
+  const temporary = join(outDir, `.build-info.${process.pid}.tmp`);
+  try {
+    writeFileSync(temporary, JSON.stringify(buildInfo, null, 2) + "\n", { encoding: "ascii", mode: 0o644 });
+    renameSync(temporary, output);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+}
+
+const startedAt = Date.now();
+const opts = parseArgs(process.argv.slice(2));
+const variantState = prepareVariant(opts.variant);
+try {
+  const buildInfo = opaqueBuildInfo(variantState.productLock);
+  // A normal developer build must not inherit provenance from an earlier
+  // opaque target that happened to use the same output directory.
+  if (buildInfo === null) rmSync(join(opts.outDir, "build-info.json"), { force: true });
+  const fetchStartedAt = Date.now();
+  for (const dep of depConfigs) {
+    ensureSource(dep.name, versions[dep.name]);
+  }
+  const fetchMs = Date.now() - fetchStartedAt;
+  for (const dep of depConfigs) {
+    buildDep(dep, opts.jobs, versions[dep.name]);
+  }
+  let exportsPath = null;
+  let exportedFunctions = null;
+  if (opts.fullAbi) {
+    exportsPath = writeFullAbiExports(opts.outDir);
+    exportedFunctions = readFileSync(exportsPath, "utf8").split("\n").filter((line) => line.length > 0).length;
+  }
+  const linkStartedAt = Date.now();
+  const sizes = linkOutputs({
+    exportsPath,
+    generatedIncludeDir: variantState.generatedDir,
+    outDir: opts.outDir,
+    fullAbi: opts.fullAbi,
+    optLevel: opts.optLevel,
+    productLock: variantState.productLock,
+  });
+  const report = {
+    mode: opts.fullAbi ? "full-abi" : "default",
+    // Provenance fields (M1 review, build-eng N4): the report must identify
+    // which inputs produced it — trend comparisons and the M6 manifest need
+    // pin + sdk + optimization level attached to every measurement. Private
+    // variant selectors are intentionally excluded from the public report.
+    provenance: {
+      sdkVersion: versions.emsdk?.sdkVersion ?? null,
+      dependencyPins: Object.fromEntries(depConfigs.map((dep) => [dep.name, versions[dep.name].commit])),
+      optimizationLevel: opts.fullAbi ? "-O2" : `-${opts.optLevel}`,
+    },
+    wasmBytes: sizes.wasmBytes,
+    wasmGzipBytes: sizes.wasmGzipBytes,
+    jsBytes: sizes.jsBytes,
+    jsGzipBytes: sizes.jsGzipBytes,
+    wasmSha256: sizes.wasmSha256,
+    exportedFunctions,
+    timingMs: { fetch: fetchMs, link: Date.now() - linkStartedAt },
+    wallMs: Date.now() - startedAt,
+  };
+  writeFileSync(join(opts.outDir, "build-report.json"), JSON.stringify(report, null, 2) + "\n");
+  if (buildInfo !== null) writeOpaqueBuildInfo(opts.outDir, buildInfo);
+  console.log(`build OK (${report.mode} mode): ${opts.outDir}`);
+} finally {
+  rmSync(variantState.generatedDir, { recursive: true, force: true });
+}

@@ -1,0 +1,5 @@
+{"file":".trellis/tasks/09-03-leptonica-wasm-modern/prd.md","reason":"Verify all product requirements and exclusions."}
+{"file":".trellis/tasks/09-03-leptonica-wasm-modern/design.md","reason":"Verify architecture, ownership boundaries, and ADR consistency."}
+{"file":".trellis/tasks/09-03-leptonica-wasm-modern/implement.md","reason":"Verify milestone completion, evidence, and reviewer procedure."}
+{"file":".trellis/spec/build-ci/execution-discipline.md","reason":"Verify durable CI, supply-chain, release, history, and dispatch contracts."}
+{"file":"docs/release-set-contract.md","reason":"Verify the minimized public source-to-builder schema."}

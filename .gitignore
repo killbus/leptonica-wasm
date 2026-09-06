@@ -1,0 +1,18 @@
+node_modules/
+tmp/
+dist/
+coverage/
+*.tsbuildinfo
+*.log
+.DS_Store
+.cache/
+.zvec-grep/
+third_party/*
+!third_party/manifest.json
+
+# M4 golden oracle outputs (regenerated in CI every run; never a repo fixture)
+tests/golden/goldens/
+
+# Playwright transient output (test-results on failure, report on debug)
+test-results/
+playwright-report/

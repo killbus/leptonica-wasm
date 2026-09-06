@@ -1,0 +1,14 @@
+{
+  "name": "leptonica-wasm-bundler-esbuild",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node run.mjs"
+  },
+  "dependencies": {
+    "leptonica-wasm": "file:../../../"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.0"
+  }
+}

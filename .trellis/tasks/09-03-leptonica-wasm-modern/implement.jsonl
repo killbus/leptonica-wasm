@@ -1,0 +1,10 @@
+{"file":".trellis/spec/build-ci/execution-discipline.md","reason":"Durable build, CI, release, history, credential, and agent-execution contracts."}
+{"file":".trellis/tasks/09-03-leptonica-wasm-modern/prd.md","reason":"Product requirements, repository boundaries, and acceptance criteria."}
+{"file":".trellis/tasks/09-03-leptonica-wasm-modern/design.md","reason":"Architecture, API layers, worker lifecycle, testing, and release-set design."}
+{"file":".trellis/tasks/09-03-leptonica-wasm-modern/implement.md","reason":"Milestone status, reviewer SOP, evidence, and acceptance mapping."}
+{"file":".trellis/tasks/09-03-leptonica-wasm-modern/research-emscripten-patterns.md","reason":"Repository-local Emscripten integration patterns and constraints."}
+{"file":".trellis/tasks/09-03-leptonica-wasm-modern/research-alternative-toolchains.md","reason":"Neutral comparison of alternative WebAssembly integration models."}
+{"file":".trellis/tasks/09-03-leptonica-wasm-modern/research-vendor-pins.md","reason":"Verified source and toolchain pins plus archive-whitelist procedure."}
+{"file":".trellis/tasks/09-03-leptonica-wasm-modern/research-size-spike.md","reason":"Measured curated/full-ABI size and build behavior."}
+{"file":"docs/release-set-contract.md","reason":"Public source-owned release-set and dispatch contract."}
+{"file":".trellis/tasks/09-03-leptonica-wasm-modern/reviews/M7-release-contract-audit.md","reason":"Final cross-boundary release-contract audit."}
