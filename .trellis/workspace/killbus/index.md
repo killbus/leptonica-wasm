@@ -2,21 +2,28 @@
 
 ## Current status
 
-- Active journal: "journal-1.md"
-- Sessions recorded: 1
-- Last active: 2026-09-06
+<!-- @@@auto:current-status -->
+- **Active File**: `journal-1.md`
+- **Total Sessions**: 2
+- **Last Active**: 2026-09-06
+<!-- @@@/auto:current-status -->
 
 ## Active documents
 
-| File | Status |
-| --- | --- |
-| "journal-1.md" | Active |
+<!-- @@@auto:active-documents -->
+| File | Lines | Status |
+|------|-------|--------|
+| `journal-1.md` | ~104 | Active |
+<!-- @@@/auto:active-documents -->
 
 ## Session history
 
-| Session | Date range | Title | Branch |
-| --- | --- | --- | --- |
-| 1 | 2026-09-03 to 2026-09-06 | Leptonica WebAssembly milestones M1-M7 | main and milestone branches |
+<!-- @@@auto:session-history -->
+| # | Date | Title | Commits | Branch |
+|---|------|-------|---------|--------|
+| 2 | 2026-09-06 | Complete Trellis 0.6.16 reconciliation | `78a7731` | `trellis-0.6.16-reconcile` |
+| 1 | 2026-09-03 to 2026-09-06 | Leptonica WebAssembly milestones M1-M7 | - | `main and milestone branches` |
+<!-- @@@/auto:session-history -->
 
 ## Journal policy
 

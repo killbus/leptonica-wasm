@@ -80,3 +80,25 @@ Started: 2026-09-03
 - Fold private-branch corrections into the logical commit and use squash semantics for small pull requests.
 - Verify rendered documentation and packaged artifacts, not only source text.
 - Describe repository contracts in international English with clear ownership and without unrelated project identities.
+
+
+## Session 2: Complete Trellis 0.6.16 reconciliation
+<!-- trellis-session: v=2 fp=b40b3d02eacb78cf -->
+
+**Date**: 2026-09-06
+**Task**: Complete Trellis 0.6.16 reconciliation
+**Branch**: `trellis-0.6.16-reconcile`
+
+### Summary
+
+Upgraded the Trellis runtime, reconciled platform hooks and repository dispatch discipline, validated locally, and confirmed the source, builder, and promotion CI chain.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `78a7731` | chore: upgrade Trellis runtime to 0.6.16 |
+
+### Status
+
+[OK] **Completed**
