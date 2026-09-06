@@ -124,7 +124,7 @@ A drift failure is the intended regeneration guard. Do not bypass, disable, or r
 
 ### Trust root
 
-Branch protection on "main" is the trust root for reviewed whitelist changes. Required pull-request review and blocked force pushes must remain enabled for normal development and release operations.
+Branch protection on "main" anchors release provenance. Keep branch deletion and non-fast-forward updates blocked so published source history cannot be removed or rewritten.
 
 ## 8. Package and release channel
 
