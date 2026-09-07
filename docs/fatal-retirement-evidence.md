@@ -75,7 +75,7 @@ installation, not a recurrence of the native tool or install-tree link defects.
 `compare`, and `dispatch-builder` were skipped, so run `34145946482` still
 provides no target-WASM browser evidence.
 
-The latest completed run at this checkpoint is head commit
+The completed run at that checkpoint was head commit
 `468f15cb14b51630ac2c4556f191920a6b005829` (run `34146706412`, September 7,
 2026). It materially advanced the evidence boundary: `release-set`,
 `native-oracle`, and `reproducibility` passed; the main `ci` job passed its
@@ -102,12 +102,12 @@ an artifact-assembly correction, not browser fatal-retirement evidence.
 and three failed. The exact retained-resource observations were
 `cleanBackgroundToWhite` failure index 5 (+1 block/+16 bytes),
 `sauvolaTiled` (+2 blocks/+4,148 bytes), and `selectByArea` failure index 0
-(+5 blocks/+640 bytes). The current uncommitted canonical Leptonica patch
+(+5 blocks/+640 bytes). The canonical Leptonica patch in this branch
 expands recoverable allocation cleanup for those upstream paths; its patch
 SHA-256 is
 `239040d17ba4c177fc905f675055892fa5ccf4ddcc1f1e8a13bc88ca8e24ecf8`, and
 the resulting source-tree SHA-256 is
-`454614820a2f9f32a0fa036c73986cbaf3308ae6d6b9c7e9b8a63fa9088bbec1`.
+`99966c33881338ceb66941a3a97a6b297044a85274ef2c833356f237c98a70e8`.
 Fresh archive applications reproduce that tree locally, but only a new
 instrumented target-WASM CI run can show that the three observed leaks are
 closed.
@@ -173,6 +173,21 @@ This architectural evidence supports a general mechanism claim, while the next
 Chromium run can prove only the concrete `load`/`fromRGBA` path it executes. No
 operation-specific public API or test-only protocol command is added to blur
 that distinction.
+
+The latest completed run at this checkpoint is head commit
+`fe3a4abc050c4d771aea8d701799525f787e686c` (run `34168986320`, September 7,
+2026). `release-set` passed, while `native-oracle` and `reproducibility`
+independently rejected the same stale patched-source pin: the manifest expected
+`454614820a2f9f32a0fa036c73986cbaf3308ae6d6b9c7e9b8a63fa9088bbec1`, and
+both jobs computed
+`99966c33881338ceb66941a3a97a6b297044a85274ef2c833356f237c98a70e8`. The
+main `ci` job and every artifact-dependent downstream job were therefore
+skipped, so this run supplies no new browser or allocation evidence. Two
+separately extracted fixed-commit trees and a fresh application through
+`applySourcePatches()` reproduce the latter digest locally from the pinned
+upstream digest and canonical patch. The manifest now records that reproduced
+value; the patch digest itself remains unchanged. This metadata correction
+still requires a new CI run before any runtime claim can advance.
 
 ## Evidence required from the next CI run
 

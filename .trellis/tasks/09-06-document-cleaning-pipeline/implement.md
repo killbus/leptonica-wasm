@@ -46,7 +46,7 @@ DBS review evidence on 2026-09-07:
   introducing a consumer-specific policy API. Its SHA-256 is
   `239040d17ba4c177fc905f675055892fa5ccf4ddcc1f1e8a13bc88ca8e24ecf8`; the
   patched source-tree SHA-256 is
-  `454614820a2f9f32a0fa036c73986cbaf3308ae6d6b9c7e9b8a63fa9088bbec1`.
+  `99966c33881338ceb66941a3a97a6b297044a85274ef2c833356f237c98a70e8`.
 - Popper's falsification review showed that a declarative source marker did
   not prove source contents. Liskov's contract review required both build
   callers to share the same source identity semantics without introducing a
@@ -395,7 +395,7 @@ invariant across a timer turn.
 | General-purpose binding boundary is preserved | No `documentClean`, pdfhow profile, fixed operation order, output policy, or deskew policy appears in the package API | Proven by current source inspection |
 | Feasible local contracts pass without a native/WASM rebuild | Full serial Vitest reports 101 passed and 58 skipped; the current focused fatal/instrumentation/source-patch run reports 41 passed; typecheck, strict declaration emit, release contract, task validation, and `git diff --check` pass | Proven locally for source-only coverage; artifact-dependent tests remain skipped/unverified |
 
-The latest completed remote evidence at this checkpoint is feature commit
+The completed remote evidence at that checkpoint was feature commit
 `468f15cb14b51630ac2c4556f191920a6b005829`, CI run `34146706412`.
 `release-set`, `native-oracle`, and `reproducibility` passed. The main `ci` job
 also passed both production builds, export/smoke gates, goldens, normal tests,
@@ -412,7 +412,7 @@ resource job genuinely executed 15 cases: 12 passed, while
 blocks/4,148 bytes, and `selectByArea` retained 5 blocks/640 bytes. The current
 15-file canonical Leptonica patch addresses those observed upstream cleanup
 paths and reproducibly yields patched-tree digest
-`454614820a2f9f32a0fa036c73986cbaf3308ae6d6b9c7e9b8a63fa9088bbec1`, but
+`99966c33881338ceb66941a3a97a6b297044a85274ef2c833356f237c98a70e8`, but
 neither its target-WASM leak closure nor the browser fatal-retirement behavior
 is proved until a new CI run executes both jobs. `compare`,
 `fixed-commit-consumer`, and `dispatch-builder` were skipped. The repository's
@@ -420,6 +420,21 @@ active `main` ruleset was read-only checked on 2026-09-07 and currently
 enforces deletion/non-fast-forward protection but no required status checks;
 PR merge enforcement therefore remains an external repository-governance gap
 rather than a property this workflow can prove.
+
+The latest completed remote evidence at this checkpoint is feature commit
+`fe3a4abc050c4d771aea8d701799525f787e686c`, CI run `34168986320`.
+`release-set` passed, but `native-oracle` and `reproducibility` independently
+stopped source preparation because `vendor/versions.json` retained the former
+patched-tree value
+`454614820a2f9f32a0fa036c73986cbaf3308ae6d6b9c7e9b8a63fa9088bbec1`; each
+job computed
+`99966c33881338ceb66941a3a97a6b297044a85274ef2c833356f237c98a70e8`. The
+main `ci` job and all artifact-dependent jobs were skipped. Two independent
+fixed-commit source extractions plus a fresh `applySourcePatches()` replay
+locally reproduce the CI value from the pinned upstream tree and unchanged
+canonical patch. The manifest now records the reproduced value, but this
+metadata correction still requires a new CI run before any browser, allocation,
+consumer, comparison, or dispatch evidence can advance.
 
 The latest independent DBS chatroom review is complete for this source-only
 boundary. Nancy Leveson's systems-safety audit initially raised a blocking
