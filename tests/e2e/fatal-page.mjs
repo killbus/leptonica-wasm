@@ -27,7 +27,7 @@ function newInstrumentedWorker(fault) {
   });
 }
 
-async function openProductionAdapterSession() {
+async function openProductionAdapterSession(fault) {
   let worker;
   let adapterTeardownCalls = 0;
 
@@ -36,7 +36,7 @@ async function openProductionAdapterSession() {
   // still owns transport listeners and its real `() => worker.terminate()`
   // teardown callback. The wrapped native method proves that callback runs.
   function InstrumentedWorkerForAdapter() {
-    worker = newInstrumentedWorker("fatalTrap");
+    worker = newInstrumentedWorker(fault);
     const nativeTerminate = worker.terminate.bind(worker);
     Object.defineProperty(worker, "terminate", {
       configurable: true,
@@ -97,7 +97,7 @@ async function openTerminalGateProbeSession() {
 }
 
 async function runFatalRetirement() {
-  const trapped = await openProductionAdapterSession();
+  const trapped = await openProductionAdapterSession("fatalTrap");
   try {
     const first = trapped.session.load(rgbaPixel(), 1, 1);
     const second = trapped.session.load(rgbaPixel(), 1, 1);
@@ -153,21 +153,15 @@ async function runTerminalGateProbe() {
 }
 
 async function runFreshRecovery() {
-  const worker = newInstrumentedWorker();
-  const session = new WorkerSession(
-    (message, transfer) => worker.postMessage(message, transfer),
-    (callback) => worker.addEventListener("message", (event) => callback(event.data)),
-    () => worker.terminate(),
-  );
-  worker.addEventListener("error", () => session.markTerminated());
-  worker.addEventListener("messageerror", () => session.markTerminated(new Error("worker message deserialization failed")));
-  await session.init();
+  const fresh = await openProductionAdapterSession();
+  let dimensions;
   try {
-    const pix = await session.load(rgbaPixel(), 1, 1);
-    return { width: pix.width, height: pix.height, depth: pix.depth };
+    const pix = await fresh.session.load(rgbaPixel(), 1, 1);
+    dimensions = { width: pix.width, height: pix.height, depth: pix.depth };
   } finally {
-    await session.close();
+    await fresh.session.close();
   }
+  return { ...dimensions, freshAdapterTeardownCalls: fresh.adapterTeardownCalls() };
 }
 
 window.__fatalE2eResult = (async () => {

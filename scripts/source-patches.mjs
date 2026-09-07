@@ -307,13 +307,32 @@ export function prepareSourceTree(source, sourceDir, populate, requiredPath = "C
 }
 
 export function applySourcePatches(source, sourceDir) {
+  if (source.patches.length === 0) return;
+  const sourceRoot = resolve(sourceDir);
+  const repository = spawnSync("git", ["-C", sourceRoot, "rev-parse", "--show-toplevel"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  if (repository.error) throw repository.error;
+  const repositoryRoot = repository.status === 0 ? resolve(repository.stdout.trim()) : null;
+  const repositoryRelativeSource = repositoryRoot === null ? null : relative(repositoryRoot, sourceRoot);
+  if (repositoryRelativeSource !== null &&
+      (isAbsolute(repositoryRelativeSource) || repositoryRelativeSource.split(sep).includes(".."))) {
+    throw new Error(`${source.name} source tree is outside its discovered git worktree`);
+  }
   for (const patch of source.patches) {
     for (const phase of ["check", "apply"]) {
       const args = ["apply"];
+      // Git ignores paths outside the current repository subdirectory. Run
+      // from the discovered worktree root and prefix the nested staging path
+      // so applying under repo-owned tmp/ cannot become a successful no-op.
+      if (repositoryRelativeSource) {
+        args.push(`--directory=${normalizeRelative(repositoryRelativeSource)}`);
+      }
       if (phase === "check") args.push("--check");
       args.push("--whitespace=error-all", patch.absolutePath);
       const result = spawnSync("git", args, {
-        cwd: sourceDir,
+        cwd: repositoryRoot ?? sourceRoot,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
       });

@@ -161,6 +161,8 @@ describe("CI-only native fault instrumentation contract", () => {
     expect(browserFaultPage).toContain("createSession as createBrowserSession");
     expect(browserFaultPage).toContain('from "leptonica-wasm/worker"');
     expect(browserFaultPage).toContain("const session = await createBrowserSession()");
+    expect(browserFaultPage).toContain("const fresh = await openProductionAdapterSession()");
+    expect(browserFaultPage).toContain("freshAdapterTeardownCalls");
     expect(browserFaultPage).toContain("adapterTeardownCalls");
     expect(browserFaultPage).toContain("post-fatal worker probe");
     expect(browserViteConfig).toContain('packageJson.exports["./worker"]?.default?.import');
@@ -191,15 +193,18 @@ describe("CI-only native fault instrumentation contract", () => {
       "node scripts/build.mjs --test-instrumentation",
     );
     const uploadBlock = ci.slice(uploadStep, browserJob);
+    expect(workflowJob("ci")).toMatch(
+      /^      runtime_builds_ready: \$\{\{ steps\.upload_runtime_builds\.outcome == 'success' \}\}$/m,
+    );
     expect(uploadBlock).toContain("id: upload_runtime_builds");
     expect(uploadBlock).toContain("name: runtime-builds");
     expect(uploadBlock).toContain("dist-instrumented");
     const artifactGuard =
-      "if: ${{ always() && needs.ci.outputs.runtime_builds_ready == 'true' }}";
+      /^    if: \$\{\{ !cancelled\(\) && needs\.ci\.outputs\.runtime_builds_ready == 'true' \}\}$/m;
     const browserBlock = workflowJob("browser-e2e");
     const resourceBlock = workflowJob("instrumented-resource-failures");
     expect(browserBlock).toContain("needs: ci");
-    expect(browserBlock).toContain(artifactGuard);
+    expect(browserBlock).toMatch(artifactGuard);
     expect(browserBlock).toContain("timeout-minutes: 15");
     expect(browserBlock).toContain("name: runtime-builds");
     expect(browserBlock).toContain("Verify runtime build artifact identity");
@@ -209,7 +214,7 @@ describe("CI-only native fault instrumentation contract", () => {
     expect(browserBlock).not.toMatch(/continue-on-error:\s*(?:true|\$\{\{\s*true\s*\}\})/);
     expect(browserBlock).not.toContain("|| true");
     expect(resourceBlock).toContain("needs: ci");
-    expect(resourceBlock).toContain(artifactGuard);
+    expect(resourceBlock).toMatch(artifactGuard);
     expect(resourceBlock).toContain("timeout-minutes: 10");
     expect(resourceBlock).toContain("name: runtime-builds");
     expect(resourceBlock).toContain("Verify runtime build artifact identity");

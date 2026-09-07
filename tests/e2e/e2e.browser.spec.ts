@@ -125,7 +125,7 @@ test("a real browser Worker settles every pending request after a target-WASM tr
           terminalGateTeardownCalls: number;
           probe: { ok: boolean; fatal: boolean };
         };
-        fresh?: { width: number; height: number; depth: number };
+        fresh?: { width: number; height: number; depth: number; freshAdapterTeardownCalls: number };
         error?: string;
       }>;
     };
@@ -143,5 +143,10 @@ test("a real browser Worker settles every pending request after a target-WASM tr
   expect(result.fatal?.adapterTeardownCalls).toBe(1);
   expect(result.fatal?.terminalGateTeardownCalls).toBe(1);
   expect(result.fatal?.probe).toEqual({ ok: false, fatal: true });
-  expect(result.fresh).toEqual({ width: 1, height: 1, depth: 32 });
+  expect(result.fresh).toEqual({
+    width: 1,
+    height: 1,
+    depth: 32,
+    freshAdapterTeardownCalls: 1,
+  });
 });

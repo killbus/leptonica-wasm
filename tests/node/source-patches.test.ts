@@ -217,6 +217,64 @@ describe("pinned source patch supply chain", () => {
     }
   });
 
+  it("does not invoke git for an empty patch set", () => {
+    const root = mkdtempSync(join(tmpdir(), "leptonica-source-no-patches-"));
+    try {
+      const sourceDir = join(root, "source");
+      mkdirSync(sourceDir);
+      writeFileSync(join(sourceDir, "CMakeLists.txt"), "project(fixture)\n");
+      const source = resolveSourcePatchSet("fixture", {
+        commit: "a".repeat(40),
+        sourceTreeSha256: sourceTreeSha256(sourceDir),
+        patches: [],
+      }, root);
+      const originalPath = process.env.PATH;
+      process.env.PATH = "";
+      try {
+        expect(() => applySourcePatches(source, sourceDir)).not.toThrow();
+      } finally {
+        if (originalPath === undefined) delete process.env.PATH;
+        else process.env.PATH = originalPath;
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("applies patches when the staging tree is nested inside the repository", () => {
+    const tmpRoot = join(repoRoot, "tmp");
+    mkdirSync(tmpRoot, { recursive: true });
+    const root = mkdtempSync(join(tmpRoot, "leptonica-source-patch-nested-"));
+    try {
+      const sourceDir = join(root, "source");
+      const expectedDir = join(root, "expected");
+      const patchFile = "vendor/patches/change.patch";
+      mkdirSync(sourceDir, { recursive: true });
+      mkdirSync(expectedDir, { recursive: true });
+      mkdirSync(join(root, "vendor/patches"), { recursive: true });
+      writeFileSync(join(sourceDir, "input.txt"), "before\n");
+      writeFileSync(join(expectedDir, "input.txt"), "after\n");
+      writeFileSync(join(root, patchFile), oneLinePatch("after"));
+      const source = resolveSourcePatchSet(
+        "fixture",
+        fixturePin(
+          patchFile,
+          sha256(oneLinePatch("after")),
+          sourceTreeSha256(sourceDir),
+          sourceTreeSha256(expectedDir),
+        ),
+        root,
+      );
+
+      applySourcePatches(source, sourceDir);
+
+      expect(readFileSync(join(sourceDir, "input.txt"), "utf8")).toBe("after\n");
+      verifySourceTree(source, sourceDir, "patched");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("atomically installs a verified tree and rejects a tampered cache hit", () => {
     const root = mkdtempSync(join(tmpdir(), "leptonica-source-tree-cache-"));
     try {

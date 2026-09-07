@@ -415,7 +415,9 @@ jobs:
   # other; neither performs another native/WASM build.
   browser-e2e:
     needs: ci
-    if: ${{ always() && needs.ci.outputs.runtime_builds_ready == 'true' }}
+    # Run when the frozen runtime artifact exists even if a later ci step
+    # fails, but do not defeat an explicit workflow cancellation.
+    if: ${{ !cancelled() && needs.ci.outputs.runtime_builds_ready == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -461,7 +463,7 @@ jobs:
 
   instrumented-resource-failures:
     needs: ci
-    if: ${{ always() && needs.ci.outputs.runtime_builds_ready == 'true' }}
+    if: ${{ !cancelled() && needs.ci.outputs.runtime_builds_ready == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
