@@ -211,8 +211,13 @@ function linkOutputs({ exportsPath, generatedIncludeDir, outDir, fullAbi, optLev
     // display API. Some otherwise useful algorithms call pixDisplay() behind
     // runtime-only debug branches; resolving that symbol from writefile.c
     // pulls generic image I/O and JPEG decoding into the default artifact.
-    // The full-ABI escape hatch deliberately keeps upstream behavior.
-    emccArgs.push("-DLEPTONICA_WASM_CURATED_NO_DISPLAY");
+    // Linker wrapping avoids defining pixDisplay twice if writefile.c is
+    // independently required. The full-ABI escape hatch deliberately keeps
+    // upstream behavior and does not enable either half of the wrapper.
+    emccArgs.push(
+      "-DLEPTONICA_WASM_CURATED_NO_DISPLAY",
+      "-Wl,--wrap=pixDisplay",
+    );
   }
   if (testInstrumentation) {
     emccArgs.push("-DLEPTONICA_WASM_TEST_INSTRUMENTATION");

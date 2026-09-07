@@ -72,11 +72,14 @@ describe("CI-only native fault instrumentation contract", () => {
 
   it("cuts desktop debug display from curated links without changing full ABI", () => {
     expect(build).toMatch(
-      /if \(!fullAbi\) \{[\s\S]*?emccArgs\.push\("-DLEPTONICA_WASM_CURATED_NO_DISPLAY"\);[\s\S]*?\}/,
+      /if \(!fullAbi\) \{[\s\S]*?"-DLEPTONICA_WASM_CURATED_NO_DISPLAY"[\s\S]*?"-Wl,--wrap=pixDisplay"[\s\S]*?\}/,
     );
     expect(bindings).toContain('#ifdef LEPTONICA_WASM_CURATED_NO_DISPLAY');
     expect(executableBindings).toMatch(
-      /extern \"C\" l_ok pixDisplay\(PIX \*, l_int32, l_int32\) \{\s*return 0;\s*\}/,
+      /extern \"C\" l_ok __wrap_pixDisplay\(PIX \*, l_int32, l_int32\) \{\s*return 0;\s*\}/,
+    );
+    expect(executableBindings).not.toMatch(
+      /extern \"C\" l_ok pixDisplay\(PIX \*, l_int32, l_int32\)/,
     );
   });
 

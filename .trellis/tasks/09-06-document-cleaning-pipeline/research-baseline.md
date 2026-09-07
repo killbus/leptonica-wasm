@@ -106,6 +106,17 @@ default artifacts from CI run `34089310296`.
   the debug edge before archive extraction; the full-ABI build must omit that
   definition so its upstream ABI and behavior remain intact.
 
+CI run `34092410049` proved that a second strong `pixDisplay()` definition in
+`bindings.o` is not a valid isolation mechanism: `wasm-ld` reported the
+definition again in `libleptonica.a(writefile.c.o)` and rejected the link. The
+revised hypothesis uses the linker's `--wrap=pixDisplay` mechanism with a
+separately named `__wrap_pixDisplay()` implementation only in curated builds.
+This avoids the duplicate-definition failure and should satisfy the debug edge
+without archive extraction. If another required symbol still extracts
+`writefile.c.o`, the existing decoder-symbol gate must detect the retained
+graph; the wrapper is not treated as proof by itself. Full-ABI builds omit both
+the compile-time wrapper and linker option.
+
 This is a source-and-artifact causal hypothesis, not final proof. A clean
 target-WASM link must still pass the existing decoder-symbol gate.
 

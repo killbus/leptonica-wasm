@@ -236,6 +236,18 @@ the override and retain upstream behavior. The source-level contract proves
 the intended build split; only a clean CI link and the existing symbol-map
 gate can prove that the decoder path is absent from the resulting WASM.
 
+CI run `34092410049` from commit
+`e90eee2b9eb2717753273729cf540ed59326f97f` falsified that first isolation
+attempt before the symbol gate: defining `pixDisplay()` directly in
+`bindings.o` conflicted with the strong definition in
+`libleptonica.a(writefile.c.o)`. The pending revision instead defines
+`__wrap_pixDisplay()` and passes `-Wl,--wrap=pixDisplay` only for curated
+links. This leaves the upstream symbol definition untouched, prevents the
+debug-only undefined reference from forcing archive extraction, and avoids a
+duplicate definition if `writefile.c.o` is independently needed. Full-ABI
+builds omit both halves of the wrapper. A clean CI link and the existing
+symbol-map gate must still prove decoder-path absence in the resulting WASM.
+
 A local Vite preflight also found that Vite 7.2 does not resolve this
 repository's own bare package self-reference from the nested `tests/e2e` dev
 server root: both browser pages returned HTTP 500 before loading any test code.
@@ -258,17 +270,18 @@ absent locally.
 | One fatal response settles every concurrent pending request | Unit coverage passes; the browser case requires both promises to reject within 2 seconds | Locally simulated; target-browser proof pending |
 | Fatal retirement tears down once and blocks later dispatch/WASM re-entry | Unit coverage passes; browser test separately checks production teardown and a delayed physical-termination terminal gate | Locally simulated; target-browser proof pending |
 | A fresh Worker/module remains usable after another instance traps | Browser test creates a separate clean instance and checks a 1x1 load | CI-only proof pending |
-| Curated build remains decode-free after preserving `toJPEG()` | Compression-only JPEG path plus a curated-only inert `pixDisplay()` link boundary are present; full ABI omits the override | Compile/link/symbol-map proof pending |
+| Curated build remains decode-free after preserving `toJPEG()` | Compression-only JPEG path plus curated-only `--wrap=pixDisplay` isolation are present; full ABI omits both wrapper parts | Compile/link/symbol-map proof pending; direct strong-definition attempt failed in run `34092410049` |
 | Recoverable JPEG allocation and destination-growth failures leave no tracked native blocks | Instrumented allocation sweep and named growth fault are present | Target-WASM execution pending |
 | General-purpose binding boundary is preserved | No `documentClean`, pdfhow profile, fixed operation order, output policy, or deskew policy appears in the package API | Proven by current source inspection |
 | Feasible local contracts pass without a native/WASM rebuild | Typecheck, 66 tests, release contract, task validation, 28 focused tests, syntax checks, and `git diff --check` pass | Proven locally; 58 artifact-dependent tests remain skipped/unverified |
 
-Remote PR #12 still points at `06166cd9fecbc89efe5a2ea7b32253354ea42657`.
-Its `ci` job failed at the default decode-symbol gate before the instrumented
-suite, consumer and bundler gates, or Playwright could run; successful
-`native-oracle`, `release-set`, and `reproducibility` jobs do not close those
-later gates. The compression-only fix is intentionally uncommitted under the
-current no-commit/no-push constraint, so no remote run can yet test it.
+Remote PR #12 now points at `e90eee2b9eb2717753273729cf540ed59326f97f`.
+Its CI run `34092410049` failed while linking both default builds because the
+first curated-display isolation attempt created a duplicate `pixDisplay`
+definition. The default export gate, instrumented suite, consumer and bundler
+gates, and Playwright test therefore did not run. The linker-wrap correction
+is intentionally uncommitted under the current no-commit/no-push constraint,
+so no remote run can yet test it.
 
 The required independent DBS chatroom review was retried at this audit gate.
 All three `gpt-5.6-sol` dispatches were rejected before instance creation

@@ -24,11 +24,13 @@ using emscripten::val;
 
 #ifdef LEPTONICA_WASM_CURATED_NO_DISPLAY
 /* The curated Web surface has no display operation, while several upstream
- * algorithms retain runtime-only pixDisplay() debug branches. Supplying the
- * inert implementation here prevents those unreachable desktop branches from
- * extracting writefile.o (and its generic decode graph) from libleptonica.a.
- * Full-ABI builds omit this definition and retain Leptonica's native API. */
-extern "C" l_ok pixDisplay(PIX *, l_int32, l_int32) {
+ * algorithms retain runtime-only pixDisplay() debug branches. The curated
+ * linker wraps those references with this inert implementation, preventing
+ * the debug-only edge from extracting writefile.o (and its generic decode
+ * graph) from libleptonica.a. Naming the wrapper separately also avoids a
+ * duplicate definition if writefile.o is needed for another symbol. Full-ABI
+ * builds omit both the wrapper and linker option. */
+extern "C" l_ok __wrap_pixDisplay(PIX *, l_int32, l_int32) {
   return 0;
 }
 #endif
