@@ -66,11 +66,34 @@ function live(stats: AllocationStats): Pick<AllocationStats, "liveBlocks" | "liv
 function expectLiveAt(
   module: InstrumentedModule,
   baseline: Pick<AllocationStats, "liveBlocks" | "liveBytes">,
+  context?: {
+    readonly operation: string;
+    readonly phase: string;
+    readonly failureIndex?: number;
+    readonly allocationCount?: number;
+  },
 ): void {
-  expect(live(module.testAllocationStats())).toEqual(baseline);
+  const received = live(module.testAllocationStats());
+  const failurePosition =
+    context?.failureIndex === undefined
+      ? ""
+      : `, failureIndex=${context.failureIndex}, allocationCount=${context.allocationCount}`;
+  const diagnostic = context
+    ? [
+        `operation=${context.operation}, phase=${context.phase}${failurePosition}`,
+        `baseline=${JSON.stringify(baseline)}`,
+        `received=${JSON.stringify(received)}`,
+        `delta=${JSON.stringify({
+          liveBlocks: received.liveBlocks - baseline.liveBlocks,
+          liveBytes: received.liveBytes - baseline.liveBytes,
+        })}`,
+      ].join("; ")
+    : undefined;
+  expect(received, diagnostic).toEqual(baseline);
 }
 
 function sweepObservedAllocations(
+  operation: string,
   module: InstrumentedModule,
   fixture: AllocationSweepFixture,
 ): void {
@@ -84,7 +107,7 @@ function sweepObservedAllocations(
     module.testAllocationStats().allocationAttempts - attemptsBeforeProbe;
   fixture.disposeResult(probe);
   expect(allocationCount).toBeGreaterThan(0);
-  expectLiveAt(module, baseline);
+  expectLiveAt(module, baseline, { operation, phase: "probe" });
 
   let observedFailures = 0;
   for (let failureIndex = 0; failureIndex < allocationCount; failureIndex++) {
@@ -100,13 +123,18 @@ function sweepObservedAllocations(
       if (hasOutput) fixture.disposeResult(output);
       module.testClearFaults();
     }
-    expectLiveAt(module, baseline);
+    expectLiveAt(module, baseline, {
+      operation,
+      phase: "injected allocation failure",
+      failureIndex,
+      allocationCount,
+    });
   }
   expect(observedFailures).toBeGreaterThan(0);
 
   const recovered = fixture.run();
   fixture.disposeResult(recovered);
-  expectLiveAt(module, baseline);
+  expectLiveAt(module, baseline, { operation, phase: "recovery" });
 }
 
 const allocationSweepCases: ReadonlyArray<{
@@ -334,12 +362,12 @@ describe.skipIf(!instrumentedBuildPresent)("instrumented native failure paths", 
 
   it.each(allocationSweepCases)(
     "sweeps every observed $name allocation point and remains reusable",
-    async ({ setup }) => {
-    const { lp, module } = await loadInstrumented();
+    async ({ name, setup }) => {
+      const { lp, module } = await loadInstrumented();
       const initial = live(module.testAllocationStats());
       const fixture = setup(lp);
       try {
-        sweepObservedAllocations(module, fixture);
+        sweepObservedAllocations(name, module, fixture);
         fixture.dispose();
         expectLiveAt(module, initial);
       } finally {
