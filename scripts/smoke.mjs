@@ -206,6 +206,10 @@ const jpegView = L.toJPEG(pix, 85);
 check(jpegView !== null, "toJPEG(pix, 85) should return a view");
 const jpeg = new Uint8Array(jpegView);
 check(jpeg[0] === 0xff && jpeg[1] === 0xd8, "JPEG SOI marker mismatch");
+check(
+  jpeg[jpeg.length - 2] === 0xff && jpeg[jpeg.length - 1] === 0xd9,
+  "JPEG EOI marker mismatch",
+);
 check(L.toJPEG(pix, -1) === null, "toJPEG(pix, -1) should return null");
 check(L.toJPEG(pix, 101) === null, "toJPEG(pix, 101) should return null");
 

@@ -23,6 +23,7 @@ type FaultName =
   | "copyWasmBytesToJs"
   | "sauvola.partial"
   | "sauvolaTiled.partial"
+  | "jpeg.destinationGrow"
   | "fatalTrap";
 
 type InstrumentedModule = CuratedModule & {
@@ -181,6 +182,17 @@ const allocationSweepCases: ReadonlyArray<{
       };
     },
   },
+  {
+    name: "toJPEG",
+    setup: (lp) => {
+      const source = lp.fromRGBA(generateRgba(512, 512), 512, 512);
+      return {
+        run: () => source.toJPEG(100),
+        disposeResult: () => undefined,
+        dispose: () => source.dispose(),
+      };
+    },
+  },
 ];
 
 describe.skipIf(!instrumentedBuildPresent)("instrumented native failure paths", () => {
@@ -255,6 +267,29 @@ describe.skipIf(!instrumentedBuildPresent)("instrumented native failure paths", 
         extract.name === "toMask" ? Object : Uint8Array,
       );
       expectLiveAt(module, baseline);
+    }
+  });
+
+  it("cleans the current JPEG buffer when destination growth fails", async () => {
+    const { lp, module } = await loadInstrumented();
+    const source = lp.fromRGBA(generateRgba(512, 512), 512, 512);
+    try {
+      const baseline = live(module.testAllocationStats());
+
+      module.testArmFault("jpeg.destinationGrow");
+      expect(() => source.toJPEG(100)).toThrow(/toJPEG: encoder failed/);
+      expectLiveAt(module, baseline);
+
+      module.testClearFaults();
+      const jpeg = source.toJPEG(100);
+      expect(jpeg.byteLength).toBeGreaterThan(16 * 1024);
+      expect(jpeg.slice(0, 2)).toEqual(Uint8Array.of(0xff, 0xd8));
+      expect(jpeg.slice(-2)).toEqual(Uint8Array.of(0xff, 0xd9));
+      expectLiveAt(module, baseline);
+    } finally {
+      module.testClearFaults();
+      source.dispose();
+      lp.close();
     }
   });
 

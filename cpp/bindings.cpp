@@ -2,8 +2,10 @@
 #include <emscripten/bind.h>
 #include <emscripten/val.h>
 #include <cmath>
+#include <csetjmp>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -11,6 +13,8 @@
 #include <string>
 #include <utility>
 #include "allheaders.h"
+#include <jpeglib.h>
+#include <jerror.h>
 // class_<PIX> needs the complete Pix type for typeid and its (unused) raw
 // destructor; the definition lives in leptonica's internal header, which is
 // designed to be included after allheaders.h (same combination as bmf.c).
@@ -118,6 +122,7 @@ static void testArmAllocationFailure(int successfulAllocationsBeforeFailure) {
 static void testArmFault(std::string name) {
   if (name != "copyJsBytesToWasm" && name != "copyWasmBytesToJs" &&
       name != "sauvola.partial" && name != "sauvolaTiled.partial" &&
+      name != "jpeg.destinationGrow" &&
       name != "fatalTrap") {
     throw std::invalid_argument("unknown test fault");
   }
@@ -563,11 +568,222 @@ val toPNG(PIX *pix) {
   return copyToJs(data, size);
 }
 
+/* Leptonica keeps its JPEG reader and writer in one translation unit. Calling
+ * pixWriteMemJpeg() therefore makes decode code reachable whenever optimizer
+ * inlining changes. The curated artifact is deliberately decode-free, so the
+ * binding owns this small compression-only adapter instead of depending on
+ * that mixed read/write unit. It mirrors pixWriteStreamJpeg()'s public image
+ * conversion, resolution, text-marker, quality, and chroma-sampling behavior. */
+struct JpegOutputDestination {
+  jpeg_destination_mgr manager;
+  JOCTET *buffer;
+  size_t capacity;
+  size_t size;
+};
+
+struct JpegEncodeState {
+  jpeg_compress_struct compressor;
+  jpeg_error_mgr error;
+  std::jmp_buf jump;
+  JpegOutputDestination destination;
+  PIX *converted;
+  JSAMPROW rowBuffer;
+};
+
+static void jpegBindingErrorExit(j_common_ptr common) {
+  auto *state = static_cast<JpegEncodeState *>(common->client_data);
+  std::longjmp(state->jump, 1);
+}
+
+static void jpegBindingInitDestination(j_compress_ptr compressor) {
+  auto *destination = reinterpret_cast<JpegOutputDestination *>(compressor->dest);
+  destination->manager.next_output_byte = destination->buffer;
+  destination->manager.free_in_buffer = destination->capacity;
+  destination->size = 0;
+}
+
+static boolean jpegBindingGrowDestination(j_compress_ptr compressor) {
+  auto *destination = reinterpret_cast<JpegOutputDestination *>(compressor->dest);
+  if (consumeTestFault("jpeg.destinationGrow") ||
+      destination->capacity > std::numeric_limits<size_t>::max() / 2) {
+    compressor->err->msg_code = JERR_OUT_OF_MEMORY;
+    (*compressor->err->error_exit)(reinterpret_cast<j_common_ptr>(compressor));
+    return FALSE;
+  }
+
+  const size_t nextCapacity = destination->capacity * 2;
+  auto *next = static_cast<JOCTET *>(lept_calloc(nextCapacity, 1));
+  if (!next) {
+    compressor->err->msg_code = JERR_OUT_OF_MEMORY;
+    (*compressor->err->error_exit)(reinterpret_cast<j_common_ptr>(compressor));
+    return FALSE;
+  }
+
+  std::memcpy(next, destination->buffer, destination->capacity);
+  lept_free(destination->buffer);
+  destination->buffer = next;
+  destination->manager.next_output_byte = next + destination->capacity;
+  destination->manager.free_in_buffer = destination->capacity;
+  destination->capacity = nextCapacity;
+  return TRUE;
+}
+
+static void jpegBindingFinishDestination(j_compress_ptr compressor) {
+  auto *destination = reinterpret_cast<JpegOutputDestination *>(compressor->dest);
+  destination->size = destination->capacity - destination->manager.free_in_buffer;
+}
+
+static void destroyJpegEncodeState(JpegEncodeState *state) {
+  if (!state) return;
+  jpeg_destroy_compress(&state->compressor);
+  if (state->rowBuffer) lept_free(state->rowBuffer);
+  pixDestroy(&state->converted);
+  lept_free(state->destination.buffer);
+  lept_free(state);
+}
+
+static bool encodeJpegWriteOnly(PIX *source, int quality, l_uint8 **data, size_t *size) {
+  if (data) *data = nullptr;
+  if (size) *size = 0;
+  if (!source || !data || !size || quality < 0 || quality > 100) return false;
+
+  auto *state = static_cast<JpegEncodeState *>(lept_calloc(1, sizeof(JpegEncodeState)));
+  if (!state) return false;
+
+  const int sourceDepth = pixGetDepth(source);
+  if (pixGetColormap(source)) {
+    state->converted = pixRemoveColormap(source, REMOVE_CMAP_BASED_ON_SRC);
+  } else if (sourceDepth >= 8 && sourceDepth != 16) {
+    state->converted = pixClone(source);
+  } else if (sourceDepth < 8 || sourceDepth == 16) {
+    state->converted = pixConvertTo8(source, 0);
+  }
+  if (!state->converted) {
+    destroyJpegEncodeState(state);
+    return false;
+  }
+
+  int width = 0, height = 0, depth = 0;
+  pixGetDimensions(state->converted, &width, &height, &depth);
+  if (width <= 0 || height <= 0 || width > JPEG_MAX_DIMENSION ||
+      height > JPEG_MAX_DIMENSION || (depth != 8 && depth != 24 && depth != 32)) {
+    destroyJpegEncodeState(state);
+    return false;
+  }
+  pixSetPadBits(state->converted, 0);
+
+  constexpr size_t kInitialJpegCapacity = 16 * 1024;
+  state->destination.buffer =
+    static_cast<JOCTET *>(lept_calloc(kInitialJpegCapacity, 1));
+  if (!state->destination.buffer) {
+    destroyJpegEncodeState(state);
+    return false;
+  }
+  state->destination.capacity = kInitialJpegCapacity;
+  state->destination.manager.init_destination = jpegBindingInitDestination;
+  state->destination.manager.empty_output_buffer = jpegBindingGrowDestination;
+  state->destination.manager.term_destination = jpegBindingFinishDestination;
+
+  state->compressor.err = jpeg_std_error(&state->error);
+  state->compressor.client_data = state;
+  state->error.error_exit = jpegBindingErrorExit;
+  if (setjmp(state->jump)) {
+    destroyJpegEncodeState(state);
+    return false;
+  }
+
+  jpeg_create_compress(&state->compressor);
+  state->compressor.dest = &state->destination.manager;
+  state->compressor.image_width = static_cast<JDIMENSION>(width);
+  state->compressor.image_height = static_cast<JDIMENSION>(height);
+  state->compressor.input_components = (depth == 8) ? 1 : 3;
+  state->compressor.in_color_space = (depth == 8) ? JCS_GRAYSCALE : JCS_RGB;
+  jpeg_set_defaults(&state->compressor);
+  state->compressor.optimize_coding = FALSE;
+
+  const int actualQuality = quality == 0 ? 75 : quality;
+  jpeg_set_quality(&state->compressor, actualQuality, TRUE);
+  if (state->compressor.input_components == 3 &&
+      source->special == L_NO_CHROMA_SAMPLING_JPEG) {
+    for (int component = 0; component < 3; ++component) {
+      state->compressor.comp_info[component].h_samp_factor = 1;
+      state->compressor.comp_info[component].v_samp_factor = 1;
+    }
+  }
+
+  const int xResolution = pixGetXRes(state->converted);
+  const int yResolution = pixGetYRes(state->converted);
+  if (xResolution != 0 && yResolution != 0) {
+    state->compressor.density_unit = 1;
+    state->compressor.X_density = static_cast<UINT16>(xResolution);
+    state->compressor.Y_density = static_cast<UINT16>(yResolution);
+  }
+
+  jpeg_start_compress(&state->compressor, TRUE);
+  if (const char *text = pixGetText(state->converted)) {
+    const size_t sourceLength = std::strlen(text);
+    const size_t textLength = sourceLength > 65433 ? 65433 : sourceLength;
+    jpeg_write_marker(&state->compressor, JPEG_COM,
+                      reinterpret_cast<const JOCTET *>(text),
+                      static_cast<unsigned int>(textLength));
+  }
+
+  const size_t components = static_cast<size_t>(state->compressor.input_components);
+  if (components == 0 ||
+      static_cast<size_t>(width) > std::numeric_limits<size_t>::max() / components) {
+    destroyJpegEncodeState(state);
+    return false;
+  }
+  if (depth != 24) {
+    const size_t samplesPerRow = components * static_cast<size_t>(width);
+    state->rowBuffer = static_cast<JSAMPROW>(
+      lept_calloc(samplesPerRow, sizeof(JSAMPLE)));
+    if (!state->rowBuffer) {
+      destroyJpegEncodeState(state);
+      return false;
+    }
+  }
+
+  l_uint32 *pixels = pixGetData(state->converted);
+  const int wordsPerLine = pixGetWpl(state->converted);
+  for (int y = 0; y < height; ++y) {
+    l_uint32 *line = pixels + static_cast<size_t>(y) * wordsPerLine;
+    JSAMPROW outputRow = state->rowBuffer;
+    if (depth == 8) {
+      for (int x = 0; x < width; ++x) outputRow[x] = GET_DATA_BYTE(line, x);
+    } else if (depth == 24) {
+      outputRow = reinterpret_cast<JSAMPROW>(line);
+    } else {
+      size_t offset = 0;
+      for (int x = 0; x < width; ++x) {
+        outputRow[offset++] = GET_DATA_BYTE(line + x, COLOR_RED);
+        outputRow[offset++] = GET_DATA_BYTE(line + x, COLOR_GREEN);
+        outputRow[offset++] = GET_DATA_BYTE(line + x, COLOR_BLUE);
+      }
+    }
+    if (jpeg_write_scanlines(&state->compressor, &outputRow, 1) != 1) {
+      destroyJpegEncodeState(state);
+      return false;
+    }
+  }
+  jpeg_finish_compress(&state->compressor);
+
+  if (!state->destination.buffer || state->destination.size == 0) {
+    destroyJpegEncodeState(state);
+    return false;
+  }
+  *data = state->destination.buffer;
+  *size = state->destination.size;
+  state->destination.buffer = nullptr;
+  destroyJpegEncodeState(state);
+  return true;
+}
+
 val toJPEG(PIX *pix, int quality) {
   l_uint8 *data = nullptr;
   size_t size = 0;
-  if (!pix || quality < 0 || quality > 100 || pixWriteMemJpeg(&data, &size, pix, quality, 0) != 0 || !data || size == 0) {
-    if (data) lept_free(data);
+  if (!encodeJpegWriteOnly(pix, quality, &data, &size) || !data || size == 0) {
+    lept_free(data);
     return val::null();
   }
   return copyToJs(data, size);

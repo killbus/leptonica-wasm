@@ -171,11 +171,11 @@ runtime surface. Static and simulated-runtime coverage also verifies that
 Leptonica.close() continues destroying remaining Pix values after an ordinary
 destructor error before rethrowing the first failure.
 
-The 2026-09-07 lightweight run passed typecheck, 63 tests, release-contract
+The 2026-09-07 lightweight run passed typecheck, 65 tests, release-contract
 tests, task validation, and `git diff --check`. Five artifact-dependent files
-containing 56 tests skipped because `dist`/`dist-instrumented` are absent; those
+containing 58 tests skipped because `dist`/`dist-instrumented` are absent; those
 tests are unverified, not passing. The focused fatal/transfer/instrumentation
-suite passed 26 tests. The generated declaration script also cannot complete without the
+suite passed 28 tests. The generated declaration script also cannot complete without the
 CI-produced full-ABI module, although a declaration-only emit from the normal
 Node typecheck configuration confirmed private Pix/RemotePix constructors.
 
@@ -199,6 +199,67 @@ poison a fresh module instance. It does not claim detection of an arbitrary DOM
 Worker that exits silently without an error or terminal message.
 Allocation-stage, multipage, repeated-worker, and production-cross-check cases
 remain incomplete.
+
+The first CI run from commit `06166cd9fecbc89efe5a2ea7b32253354ea42657`
+stopped before Playwright because the curated symbol-map gate found
+`jpeg_read_header`. The new document-cleaning primitives do not call a JPEG
+decoder; the regression came from `toJPEG()` calling Leptonica's
+`pixWriteMemJpeg()`, whose implementation shares `jpegio.c` with JPEG read
+entry points. The pending fix replaces that call with a compression-only
+libjpeg destination adapter while preserving the existing curated `toJPEG()`
+contract. A source-level test now rejects a direct return to
+`pixWriteMemJpeg()` and requires the compression lifecycle to retain
+`jpeg_destroy_compress()`, but only a clean CI rebuild can prove that decoder
+symbols are absent from the final optimized WASM.
+
+The instrumented allocation sweep counts Leptonica-managed allocations,
+including the adapter state, converted PIX, row buffer, and output buffer. It
+does not count or fault-inject libjpeg-turbo's internal `malloc` allocations;
+their release is delegated to `jpeg_destroy_compress()` and is supported by
+fixed-source lifecycle review, not by the Leptonica live-block counters. The
+named destination-growth fault separately proves cleanup of the adapter-owned
+current output buffer. CI still must compile this path, run the allocation and
+growth-fault cases, verify a complete grown JPEG stream, and re-run the
+decode-symbol gate before this evidence is considered closed.
+
+A local Vite preflight also found that Vite 7.2 does not resolve this
+repository's own bare package self-reference from the nested `tests/e2e` dev
+server root: both browser pages returned HTTP 500 before loading any test code.
+`tests/e2e/vite.config.mjs` now derives the exact browser/default
+`./worker` target from `package.json`, aliases only
+`leptonica-wasm/worker` to that generated production adapter, and excludes the
+specifier from dependency optimization so Vite can still transform the
+adapter's literal Worker constructor. The package-contract and bundler-matrix
+gates remain responsible for consumer-side exports resolution; this E2E alias
+only makes the real-browser runtime test address the export-selected file. A
+local resolver probe now reaches `dist/types/worker/index.js`, while complete
+transform and Chromium execution remain CI-only because `dist` is intentionally
+absent locally.
+
+### Current fatal-retirement evidence ledger (2026-09-07)
+
+| Requirement | Current evidence | Status |
+| --- | --- | --- |
+| A real Chromium test uses the production browser adapter and target-WASM trap | `tests/e2e/fatal-page.mjs`, `instrumented-worker.mjs`, and `e2e.browser.spec.ts` are wired into the mandatory Playwright step; Vite resolves the bare test import through the browser/default `./worker` export target | Implemented and locally resolver-checked; Chromium execution pending |
+| One fatal response settles every concurrent pending request | Unit coverage passes; the browser case requires both promises to reject within 2 seconds | Locally simulated; target-browser proof pending |
+| Fatal retirement tears down once and blocks later dispatch/WASM re-entry | Unit coverage passes; browser test separately checks production teardown and a delayed physical-termination terminal gate | Locally simulated; target-browser proof pending |
+| A fresh Worker/module remains usable after another instance traps | Browser test creates a separate clean instance and checks a 1x1 load | CI-only proof pending |
+| Curated build remains decode-free after preserving `toJPEG()` | Compression-only source path and static call-site contract are present | Compile/link/symbol-map proof pending |
+| Recoverable JPEG allocation and destination-growth failures leave no tracked native blocks | Instrumented allocation sweep and named growth fault are present | Target-WASM execution pending |
+| General-purpose binding boundary is preserved | No `documentClean`, pdfhow profile, fixed operation order, output policy, or deskew policy appears in the package API | Proven by current source inspection |
+| Feasible local contracts pass without a native/WASM rebuild | Typecheck, 65 tests, release contract, task validation, 28 focused tests, syntax checks, and `git diff --check` pass | Proven locally; 58 artifact-dependent tests remain skipped/unverified |
+
+Remote PR #12 still points at `06166cd9fecbc89efe5a2ea7b32253354ea42657`.
+Its `ci` job failed at the default decode-symbol gate before the instrumented
+suite, consumer and bundler gates, or Playwright could run; successful
+`native-oracle`, `release-set`, and `reproducibility` jobs do not close those
+later gates. The compression-only fix is intentionally uncommitted under the
+current no-commit/no-push constraint, so no remote run can yet test it.
+
+The required independent DBS chatroom review was retried at this audit gate.
+All three `gpt-5.6-sol` dispatches were rejected before instance creation
+because that route is unavailable; no alternate model was substituted and no
+agent-owned goal or review result exists.
 
 ## M5: External real-scan comparison (R8)
 

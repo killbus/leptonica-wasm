@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { createServer } from "vite";
 import { describe, expect, it } from "vitest";
 
 const build = readFileSync("scripts/build.mjs", "utf8");
@@ -9,6 +11,10 @@ const packageContract = readFileSync("scripts/check-package-contract.mjs", "utf8
 const browserFaultWorker = readFileSync("tests/e2e/instrumented-worker.mjs", "utf8");
 const browserFaultPage = readFileSync("tests/e2e/fatal-page.mjs", "utf8");
 const browserSpec = readFileSync("tests/e2e/e2e.browser.spec.ts", "utf8");
+const browserViteConfig = readFileSync("tests/e2e/vite.config.mjs", "utf8");
+const executableBindings = bindings
+  .replace(/\/\*[\s\S]*?\*\//g, "")
+  .replace(/\/\/.*$/gm, "");
 
 describe("CI-only native fault instrumentation contract", () => {
   it("uses an explicit isolated build flavor", () => {
@@ -49,7 +55,19 @@ describe("CI-only native fault instrumentation contract", () => {
     expect(bindings).toContain("testAllocationStats");
     expect(bindings).toContain("testArmAllocationFailure");
     expect(bindings).toContain("testArmFault");
+    expect(bindings).toContain('consumeTestFault("jpeg.destinationGrow")');
     expect(bindings).toContain('consumeTestFault("fatalTrap")');
+  });
+
+  it("keeps the curated JPEG path compression-only at the binding call site", () => {
+    // The rebuilt symbol-map gate remains authoritative. This earlier source
+    // check makes a direct regression to Leptonica's mixed JPEG read/write
+    // translation unit fail without pretending to prove linker reachability.
+    expect(executableBindings).not.toMatch(/\bpixWriteMemJpeg\s*\(/);
+    expect(executableBindings).toMatch(/\bjpeg_create_compress\s*\(/);
+    expect(executableBindings).toMatch(/\bjpeg_write_scanlines\s*\(/);
+    expect(executableBindings).toMatch(/\bjpeg_finish_compress\s*\(/);
+    expect(executableBindings).toMatch(/\bjpeg_destroy_compress\s*\(/);
   });
 
   it("makes the instrumented runtime suite mandatory in CI", () => {
@@ -65,7 +83,32 @@ describe("CI-only native fault instrumentation contract", () => {
     expect(browserFaultPage).toContain('from "leptonica-wasm/worker"');
     expect(browserFaultPage).toContain("adapterTeardownCalls");
     expect(browserFaultPage).toContain("post-fatal worker probe");
+    expect(browserViteConfig).toContain('packageJson.exports["./worker"]?.default?.import');
+    expect(browserViteConfig).toContain("/^leptonica-wasm\\/worker$/");
+    expect(browserViteConfig).toContain('exclude: ["leptonica-wasm/worker"]');
+    expect(ci).toContain("test -f dist/types/worker/index.js");
+    expect(ci).toContain("test -f dist/types/worker/worker.mjs");
     expect(ci.match(/test -f dist-instrumented\/leptonica\.wasm/g)).toHaveLength(2);
+  });
+
+  it("resolves the browser E2E import to the package's default worker export", async () => {
+    // Vite does not implement package self-reference resolution for this
+    // nested dev-server root. Exercise the real plugin container so this
+    // cannot regress to a source-only assertion that still serves HTTP 500.
+    const server = await createServer({
+      configFile: resolve("tests/e2e/vite.config.mjs"),
+      server: { middlewareMode: true },
+      logLevel: "silent",
+    });
+    try {
+      const resolved = await server.pluginContainer.resolveId(
+        "leptonica-wasm/worker",
+        resolve("tests/e2e/fatal-page.mjs"),
+      );
+      expect(resolved?.id).toBe(resolve("dist/types/worker/index.js"));
+    } finally {
+      await server.close();
+    }
   });
 
   it("rejects test hooks from production package artifacts", () => {
