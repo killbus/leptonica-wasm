@@ -623,6 +623,7 @@ describe("pinned source patch supply chain", () => {
       expect(script).not.toContain("const partial = ");
     }
     expect(build).toContain("dependencySources");
+    expect(build).toContain('import { createHash } from "node:crypto";');
     expect(build).toContain("pinned: versions.emsdk");
     expect(build).toContain("sourceProvenance");
     expect(nativeBuild).toContain('commandPath("cc", { cwd: repoRoot })');

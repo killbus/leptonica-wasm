@@ -62,6 +62,19 @@ spelling, changing target bytes, replacing a link with a regular file, or
 redirecting it to an equal-content sibling invalidates the cache, while the
 legacy regular-file digest and strict source-tree policy remain unchanged.
 
+The next run for head commit
+`b49f27fa3095832bc694c62febde660335669ce8` (run `34145946482`, September 7,
+2026) confirmed both dependency corrections. `release-set` passed, and
+`native-oracle` completed its host build, golden generation, and artifact
+upload successfully. Both `reproducibility` and the main `ci` job then completed
+the target dependency builds and stopped in `scripts/build.mjs` while recording
+the linked WASM digest: `linkOutputs()` called `createHash()` without importing
+it from `node:crypto`. This is a JavaScript build-driver defect after dependency
+installation, not a recurrence of the native tool or install-tree link defects.
+`browser-e2e`, `instrumented-resource-failures`, `fixed-commit-consumer`,
+`compare`, and `dispatch-builder` were skipped, so run `34145946482` still
+provides no target-WASM browser evidence.
+
 ## Evidence required from the next CI run
 
 The browser fatal-retirement claim still requires a single new commit SHA whose
