@@ -19,7 +19,8 @@
     "dist",
     "README.md",
     "LICENSE",
-    "vendor/versions.json"
+    "vendor/versions.json",
+    "vendor/patches"
   ],
   "exports": {
     ".": {

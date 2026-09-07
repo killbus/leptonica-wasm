@@ -7,3 +7,8 @@
 # picking either side (task state lives in task.json, not index.md). See
 # .trellis/spec/cli/backend/directory-structure.md for details.
 .trellis/workspace/*/journal-*.md merge=union
+
+# Unified diffs encode blank context lines as a single leading space. Let the
+# inner strict git-apply gate validate patch payload whitespace without making
+# the outer repository diff checker reject valid patch syntax.
+vendor/patches/*.patch whitespace=-blank-at-eol

@@ -23,9 +23,14 @@ function fixture(): string {
     if (key.endsWith(".wasm")) return [key, { default: `./${base}.wasm` }];
     return [key, { types: `./${base}.d.ts`, import: `./${base}.js` }];
   }));
-  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "leptonica-wasm", version: "0.1.1", exports }));
+  writeFileSync(join(root, "package.json"), JSON.stringify({
+    name: "leptonica-wasm",
+    version: "0.1.1",
+    files: ["src", "dist", "README.md", "LICENSE", "vendor/versions.json", "vendor/patches"],
+    exports,
+  }));
   for (const path of [
-    "LICENSE", "README.md", "vendor/versions.json",
+    "LICENSE", "README.md", "vendor/patches/leptonica-1.87.0-recoverable-oom.patch",
     "dist/leptonica.mjs", "dist/leptonica.wasm", "dist/leptonica.d.ts", "dist/worker.mjs",
     "dist/types/index.js", "dist/types/index.d.ts", "dist/types/raw/index.js", "dist/types/raw/index.d.ts",
     "dist/types/worker/index.js", "dist/types/worker/index.d.ts", "dist/types/worker/node.js",
@@ -35,6 +40,17 @@ function fixture(): string {
     mkdirSync(join(root, path, ".."), { recursive: true });
     writeFileSync(join(root, path), path.endsWith(".json") ? "{}\n" : "");
   }
+  const patchFile = "vendor/patches/leptonica-1.87.0-recoverable-oom.patch";
+  const patchSha256 = createHash("sha256").update(readFileSync(join(root, patchFile))).digest("hex");
+  const dependencyPins = {
+    leptonica: {
+      commit: "c".repeat(40),
+      sourceTreeSha256: "1".repeat(64),
+      patchedSourceTreeSha256: "2".repeat(64),
+      patches: [{ file: patchFile, appliesToCommit: "c".repeat(40), sha256: patchSha256 }],
+    },
+  };
+  writeFileSync(join(root, "vendor/versions.json"), JSON.stringify(dependencyPins));
   for (const value of Object.values(exports)) {
     for (const target of Object.values(value)) {
       mkdirSync(join(root, target, ".."), { recursive: true });
@@ -42,7 +58,7 @@ function fixture(): string {
     }
   }
   writeFileSync(join(root, "dist/package-provenance.json"), JSON.stringify({
-    sourceCommit: "a".repeat(40), packageVersion: "0.1.1", sourceTreeDirty: false,
+    sourceCommit: "a".repeat(40), packageVersion: "0.1.1", sourceTreeDirty: false, dependencyPins,
   }));
   return root;
 }
@@ -97,6 +113,25 @@ describe("package contract checker", () => {
     const root = fixture();
     expect(validatePackageContract(root, { expectedCommit: "b".repeat(40) })).toContainEqual(
       expect.stringContaining("differs from expected"),
+    );
+  });
+
+  it("rejects a packaged source patch whose bytes no longer match its pin", () => {
+    const root = fixture();
+    writeFileSync(join(root, "vendor/patches/leptonica-1.87.0-recoverable-oom.patch"), "tampered\n");
+    expect(validatePackageContract(root)).toContainEqual(
+      expect.stringContaining("source patch metadata is invalid"),
+    );
+  });
+
+  it("rejects package provenance that diverges from the packaged dependency pins", () => {
+    const root = fixture();
+    const provenancePath = join(root, "dist/package-provenance.json");
+    const provenance = JSON.parse(readFileSync(provenancePath, "utf8"));
+    provenance.dependencyPins.leptonica.commit = "d".repeat(40);
+    writeFileSync(provenancePath, JSON.stringify(provenance));
+    expect(validatePackageContract(root)).toContain(
+      "package provenance dependencyPins differ from vendor/versions.json",
     );
   });
 

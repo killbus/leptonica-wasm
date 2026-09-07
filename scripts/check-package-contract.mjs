@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { resolveSourcePatchSet } from "./source-patches.mjs";
 
 export const EXPECTED_EXPORTS = Object.freeze([
   ".",
@@ -19,6 +20,7 @@ const REQUIRED_PACKAGE_FILES = Object.freeze([
   "LICENSE",
   "README.md",
   "vendor/versions.json",
+  "vendor/patches/leptonica-1.87.0-recoverable-oom.patch",
   "dist/leptonica.mjs",
   "dist/leptonica.wasm",
   "dist/leptonica.d.ts",
@@ -193,6 +195,9 @@ export function validatePackageContract(packageRoot, options = {}) {
   const packagePath = join(root, "package.json");
   if (!existsSync(packagePath)) return ["package.json is missing"];
   const pkg = JSON.parse(readFileSync(packagePath, "utf8"));
+  if (!Array.isArray(pkg.files) || !pkg.files.includes("vendor/patches")) {
+    errors.push("package files must include vendor/patches");
+  }
   const exportKeys = Object.keys(pkg.exports ?? {}).sort();
   const expected = [...EXPECTED_EXPORTS].sort();
   if (JSON.stringify(exportKeys) !== JSON.stringify(expected)) {
@@ -221,6 +226,17 @@ export function validatePackageContract(packageRoot, options = {}) {
     const required = join(root, path);
     if (!existsSync(required) || !lstatSync(required).isFile()) errors.push(`${path} is missing or not a regular file`);
   }
+  let dependencyPins = null;
+  try {
+    dependencyPins = JSON.parse(readFileSync(join(root, "vendor", "versions.json"), "utf8"));
+    for (const [name, pin] of Object.entries(dependencyPins)) {
+      if (pin?.sourceTreeSha256 !== undefined || pin?.patches !== undefined) {
+        resolveSourcePatchSet(name, pin, root);
+      }
+    }
+  } catch (error) {
+    errors.push(`source patch metadata is invalid: ${error.message}`);
+  }
   checkGeneratedImports(root, errors);
   checkNoTestBindings(root, errors);
 
@@ -230,6 +246,9 @@ export function validatePackageContract(packageRoot, options = {}) {
       const provenance = JSON.parse(readFileSync(provenancePath, "utf8"));
       if (!/^[0-9a-f]{40}$/.test(provenance.sourceCommit ?? "")) errors.push("package provenance sourceCommit is not a 40-character lowercase SHA");
       if (provenance.packageVersion !== pkg.version) errors.push("package provenance version differs from package.json");
+      if (dependencyPins && JSON.stringify(provenance.dependencyPins) !== JSON.stringify(dependencyPins)) {
+        errors.push("package provenance dependencyPins differ from vendor/versions.json");
+      }
       if (options.expectedCommit && provenance.sourceCommit !== options.expectedCommit) {
         errors.push(`package provenance commit ${provenance.sourceCommit} differs from expected ${options.expectedCommit}`);
       }

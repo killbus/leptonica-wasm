@@ -16,6 +16,15 @@ const executableBindings = bindings
   .replace(/\/\*[\s\S]*?\*\//g, "")
   .replace(/\/\/.*$/gm, "");
 
+function workflowJob(name: string): string {
+  const startMarker = `  ${name}:`;
+  const start = ci.indexOf(startMarker);
+  expect(start, `missing workflow job ${name}`).toBeGreaterThan(-1);
+  const remainder = ci.slice(start + startMarker.length);
+  const nextJob = remainder.search(/^  [a-zA-Z0-9_-]+:\s*$/m);
+  return nextJob === -1 ? ci.slice(start) : ci.slice(start, start + startMarker.length + nextJob);
+}
+
 describe("CI-only native fault instrumentation contract", () => {
   it("uses an explicit isolated build flavor", () => {
     expect(build).toContain("--test-instrumentation");
@@ -57,6 +66,9 @@ describe("CI-only native fault instrumentation contract", () => {
     expect(bindings).toContain("testArmFault");
     expect(bindings).toContain('consumeTestFault("jpeg.destinationGrow")');
     expect(bindings).toContain('consumeTestFault("fatalTrap")');
+    expect(executableBindings).toMatch(
+      /consumeTestFault\("fatalTrap"\)[\s\S]*?__builtin_trap\(\)/,
+    );
   });
 
   it("keeps the curated JPEG path compression-only at the binding call site", () => {
@@ -144,9 +156,11 @@ describe("CI-only native fault instrumentation contract", () => {
     expect(ci).toContain("tests/node/fault-injection.test.ts");
     expect(browserFaultWorker).toContain('../../dist-instrumented/leptonica.mjs');
     expect(browserFaultWorker).toContain('testArmFault("fatalTrap")');
+    expect(browserFaultWorker).toContain("wireWorker(new Leptonica(module), surface)");
     expect(browserSpec).toContain("target-WASM trap");
     expect(browserFaultPage).toContain("createSession as createBrowserSession");
     expect(browserFaultPage).toContain('from "leptonica-wasm/worker"');
+    expect(browserFaultPage).toContain("const session = await createBrowserSession()");
     expect(browserFaultPage).toContain("adapterTeardownCalls");
     expect(browserFaultPage).toContain("post-fatal worker probe");
     expect(browserViteConfig).toContain('packageJson.exports["./worker"]?.default?.import');
@@ -154,7 +168,62 @@ describe("CI-only native fault instrumentation contract", () => {
     expect(browserViteConfig).toContain('exclude: ["leptonica-wasm/worker"]');
     expect(ci).toContain("test -f dist/types/worker/index.js");
     expect(ci).toContain("test -f dist/types/worker/worker.mjs");
-    expect(ci.match(/test -f dist-instrumented\/leptonica\.wasm/g)).toHaveLength(2);
+    // Build, browser E2E, and the independent resource sweep each fail
+    // loudly if the target-WASM artifact they consume is absent.
+    expect(ci.match(/test -f dist-instrumented\/leptonica\.wasm/g)).toHaveLength(3);
+  });
+
+  it("runs browser fatal-retirement and OOM evidence in independent artifact-consuming jobs", () => {
+    const buildStep = ci.indexOf("- name: Build instrumented target-WASM");
+    const uploadStep = ci.indexOf("- name: Upload runtime build artifacts");
+    const browserJob = ci.indexOf("  browser-e2e:");
+    const browserStep = ci.indexOf("- name: E2E (browser output and fatal retirement)");
+    const resourceJob = ci.indexOf("  instrumented-resource-failures:");
+    const resourceStep = ci.indexOf("- name: Instrumented resource-failure suite");
+
+    expect(buildStep).toBeGreaterThan(-1);
+    expect(uploadStep).toBeGreaterThan(buildStep);
+    expect(browserJob).toBeGreaterThan(uploadStep);
+    expect(browserStep).toBeGreaterThan(browserJob);
+    expect(resourceJob).toBeGreaterThan(browserStep);
+    expect(resourceStep).toBeGreaterThan(resourceJob);
+    expect(ci.slice(buildStep, uploadStep)).toContain(
+      "node scripts/build.mjs --test-instrumentation",
+    );
+    const uploadBlock = ci.slice(uploadStep, browserJob);
+    expect(uploadBlock).toContain("id: upload_runtime_builds");
+    expect(uploadBlock).toContain("name: runtime-builds");
+    expect(uploadBlock).toContain("dist-instrumented");
+    const artifactGuard =
+      "if: ${{ always() && needs.ci.outputs.runtime_builds_ready == 'true' }}";
+    const browserBlock = workflowJob("browser-e2e");
+    const resourceBlock = workflowJob("instrumented-resource-failures");
+    expect(browserBlock).toContain("needs: ci");
+    expect(browserBlock).toContain(artifactGuard);
+    expect(browserBlock).toContain("timeout-minutes: 15");
+    expect(browserBlock).toContain("name: runtime-builds");
+    expect(browserBlock).toContain("Verify runtime build artifact identity");
+    expect(browserBlock).toContain('report.mode !== mode || report.wasmSha256 !== actual');
+    expect(browserBlock).toContain("pnpm exec playwright test");
+    expect(browserBlock).not.toMatch(/if:\s*(?:false|\$\{\{\s*false\s*\}\})/);
+    expect(browserBlock).not.toMatch(/continue-on-error:\s*(?:true|\$\{\{\s*true\s*\}\})/);
+    expect(browserBlock).not.toContain("|| true");
+    expect(resourceBlock).toContain("needs: ci");
+    expect(resourceBlock).toContain(artifactGuard);
+    expect(resourceBlock).toContain("timeout-minutes: 10");
+    expect(resourceBlock).toContain("name: runtime-builds");
+    expect(resourceBlock).toContain("Verify runtime build artifact identity");
+    expect(resourceBlock).toContain('report.mode !== mode || report.wasmSha256 !== actual');
+    expect(resourceBlock).not.toMatch(/if:\s*(?:false|\$\{\{\s*false\s*\}\})/);
+    expect(resourceBlock).not.toMatch(/continue-on-error:\s*(?:true|\$\{\{\s*true\s*\}\})/);
+    expect(resourceBlock).not.toContain("|| true");
+    expect(resourceBlock).toContain(
+      "pnpm exec vitest run tests/node/fault-injection.test.ts",
+    );
+
+    const dispatchBuilder = workflowJob("dispatch-builder");
+    expect(dispatchBuilder).toContain("- browser-e2e");
+    expect(dispatchBuilder).toContain("- instrumented-resource-failures");
   });
 
   it("resolves the browser E2E import to the package's default worker export", async () => {

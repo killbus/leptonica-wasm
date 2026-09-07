@@ -1,0 +1,150 @@
+diff --git a/src/boxbasic.c b/src/boxbasic.c
+index aaffbb1..b5ea22b 100644
+--- a/src/boxbasic.c
++++ b/src/boxbasic.c
+@@ -191,6 +191,8 @@ BOX  *box;
+     }
+ 
+     box = (BOX *)LEPT_CALLOC(1, sizeof(BOX));
++    if (!box)
++        return (BOX *)ERROR_PTR("box not made", __func__, NULL);
+     boxSetGeometry(box, x, y, w, h);
+     box->refcount = 1;
+     return box;
+@@ -447,6 +449,8 @@ BOXA  *boxa;
+         n = InitialPtrArraySize;
+ 
+     boxa = (BOXA *)LEPT_CALLOC(1, sizeof(BOXA));
++    if (!boxa)
++        return (BOXA *)ERROR_PTR("boxa not made", __func__, NULL);
+     boxa->n = 0;
+     boxa->nalloc = n;
+     boxa->refcount = 1;
+diff --git a/src/fpix1.c b/src/fpix1.c
+index e0616fa..e66973a 100644
+--- a/src/fpix1.c
++++ b/src/fpix1.c
+@@ -976,6 +976,8 @@ DPIX       *dpix;
+     }
+ 
+     dpix = (DPIX *)LEPT_CALLOC(1, sizeof(DPIX));
++    if (!dpix)
++        return (DPIX *)ERROR_PTR("dpix not made", __func__, NULL);
+     dpixSetDimensions(dpix, width, height);
+     dpixSetWpl(dpix, width);  /* 8 byte words */
+     dpix->refcount = 1;
+diff --git a/src/numabasic.c b/src/numabasic.c
+index 5138f98..77c03f4 100644
+--- a/src/numabasic.c
++++ b/src/numabasic.c
+@@ -198,6 +198,8 @@ NUMA  *na;
+         n = InitialArraySize;
+ 
+     na = (NUMA *)LEPT_CALLOC(1, sizeof(NUMA));
++    if (!na)
++        return (NUMA *)ERROR_PTR("numa not made", __func__, NULL);
+     if ((na->array = (l_float32 *)LEPT_CALLOC(n, sizeof(l_float32))) == NULL) {
+         numaDestroy(&na);
+         return (NUMA *)ERROR_PTR("number array not made", __func__, NULL);
+diff --git a/src/pixabasic.c b/src/pixabasic.c
+index f6dc079..e4e6375 100644
+--- a/src/pixabasic.c
++++ b/src/pixabasic.c
+@@ -172,6 +172,8 @@ PIXA  *pixa;
+         n = InitialPtrArraySize;
+ 
+     pixa = (PIXA *)LEPT_CALLOC(1, sizeof(PIXA));
++    if (!pixa)
++        return (PIXA *)ERROR_PTR("pixa not made", __func__, NULL);
+     pixa->n = 0;
+     pixa->nalloc = n;
+     pixa->refcount = 1;
+@@ -548,8 +550,7 @@ pixaAddBox(PIXA    *pixa,
+     if (copyflag != L_INSERT && copyflag != L_COPY && copyflag != L_CLONE)
+         return ERROR_INT("invalid copyflag", __func__, 1);
+ 
+-    boxaAddBox(pixa->boxa, box, copyflag);
+-    return 0;
++    return boxaAddBox(pixa->boxa, box, copyflag);
+ }
+ 
+ 
+diff --git a/src/pixtiling.c b/src/pixtiling.c
+index 82a3098..b81153d 100644
+--- a/src/pixtiling.c
++++ b/src/pixtiling.c
+@@ -156,6 +156,8 @@ PIXTILING  *pt;
+     }
+ 
+     pt = (PIXTILING *)LEPT_CALLOC(1, sizeof(PIXTILING));
++    if (!pt)
++        return (PIXTILING *)ERROR_PTR("pt not made", __func__, NULL);
+     pt->pix = pixClone(pixs);
+     pt->xoverlap = xoverlap;
+     pt->yoverlap = yoverlap;
+diff --git a/src/sarray1.c b/src/sarray1.c
+index 5436c06..34ab2e5 100644
+--- a/src/sarray1.c
++++ b/src/sarray1.c
+@@ -174,6 +174,8 @@ SARRAY  *sa;
+         n = InitialPtrArraySize;
+ 
+     sa = (SARRAY *)LEPT_CALLOC(1, sizeof(SARRAY));
++    if (!sa)
++        return (SARRAY *)ERROR_PTR("sarray not made", __func__, NULL);
+     if ((sa->array = (char **)LEPT_CALLOC(n, sizeof(char *))) == NULL) {
+         sarrayDestroy(&sa);
+         return (SARRAY *)ERROR_PTR("ptr array not made", __func__, NULL);
+diff --git a/src/sel1.c b/src/sel1.c
+index bddf1f7..6fbea01 100644
+--- a/src/sel1.c
++++ b/src/sel1.c
+@@ -312,8 +312,15 @@ selCreate(l_int32      height,
+ SEL  *sel;
+ 
+     sel = (SEL *)LEPT_CALLOC(1, sizeof(SEL));
+-    if (name)
++    if (!sel)
++        return (SEL *)ERROR_PTR("sel not made", __func__, NULL);
++    if (name) {
+         sel->name = stringNew(name);
++        if (!sel->name) {
++            LEPT_FREE(sel);
++            return (SEL *)ERROR_PTR("sel name not made", __func__, NULL);
++        }
++    }
+     sel->sy = height;
+     sel->sx = width;
+     if ((sel->data = create2dIntArray(height, width)) == NULL) {
+@@ -514,8 +521,17 @@ l_int32  **array;
+         return (l_int32 **)ERROR_PTR("sy out of bounds", __func__, NULL);
+ 
+     array = (l_int32 **)LEPT_CALLOC(sy, sizeof(l_int32 *));
+-    for (i = 0; i < sy; i++)
++    if (!array)
++        return (l_int32 **)ERROR_PTR("row ptrs not made", __func__, NULL);
++    for (i = 0; i < sy; i++) {
+         array[i] = (l_int32 *)LEPT_CALLOC(sx, sizeof(l_int32));
++        if (!array[i]) {
++            while (i > 0)
++                LEPT_FREE(array[--i]);
++            LEPT_FREE(array);
++            return (l_int32 **)ERROR_PTR("row not made", __func__, NULL);
++        }
++    }
+     return array;
+ }
+ 
+diff --git a/src/stack.c b/src/stack.c
+index 7f84f07..69695d2 100644
+--- a/src/stack.c
++++ b/src/stack.c
+@@ -87,6 +87,8 @@ L_STACK  *lstack;
+         n = InitialPtrArraySize;
+ 
+     lstack = (L_STACK *)LEPT_CALLOC(1, sizeof(L_STACK));
++    if (!lstack)
++        return (L_STACK *)ERROR_PTR("lstack not made", __func__, NULL);
+     lstack->array = (void **)LEPT_CALLOC(n, sizeof(void *));
+     if (!lstack->array) {
+         lstackDestroy(&lstack, FALSE);

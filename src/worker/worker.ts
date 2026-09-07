@@ -14,7 +14,7 @@
  */
 
 import type { CuratedModule } from "../core/emscripten-glue-shape.d.ts";
-import { isFatalWasmTrap, Leptonica } from "../core/types.ts";
+import { shouldRetireWasmInstance, Leptonica } from "../core/types.ts";
 // Statically imported (not dynamically): bundlers must see the wasm
 // loader as a hard dependency of the worker entry so it lands in the
 // worker chunk. A dynamic import is left as a runtime path by several
@@ -59,7 +59,7 @@ async function main(): Promise<void> {
       surface.post({ id: req.id, ok: true, type: "init" });
     } catch (err) {
       const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
-      if (isFatalWasmTrap(err)) {
+      if (shouldRetireWasmInstance(err)) {
         fatalError = message;
         surface.post({ id: req.id, ok: false, fatal: true, error: message });
       } else {

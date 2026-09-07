@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CuratedModule, PixHandle } from "../../src/core/emscripten-glue-shape.d.ts";
-import { isFatalWasmTrap, Leptonica } from "../../src/core/types.ts";
+import { shouldRetireWasmInstance, Leptonica } from "../../src/core/types.ts";
 import { createSession as createBrowserSession } from "../../src/worker/index.ts";
 import { WorkerSession } from "../../src/worker/session.ts";
 import type { WorkerRequest, WorkerResponse } from "../../src/worker/protocol.ts";
@@ -173,14 +173,23 @@ describe("fatal WebAssembly trap retirement", () => {
     expect(destroyCalls).toBe(0);
   });
 
-  it("recognizes cross-realm traps without trusting a renamed ordinary Error", async () => {
+  it("retires conservatively for cross-realm RuntimeError shapes", async () => {
     const { runInNewContext } = await import("node:vm");
     const crossRealmTrap = runInNewContext('new WebAssembly.RuntimeError("unreachable")');
+    const runtimeErrorLike = runInNewContext(`
+      new (class RuntimeError extends Error {
+        constructor() {
+          super("not distinguishable portably from a cross-realm trap");
+          this.name = "RuntimeError";
+        }
+      })()
+    `);
     const renamed = new Error("not a trap");
     renamed.name = "RuntimeError";
 
-    expect(isFatalWasmTrap(crossRealmTrap)).toBe(true);
-    expect(isFatalWasmTrap(renamed)).toBe(false);
+    expect(shouldRetireWasmInstance(crossRealmTrap)).toBe(true);
+    expect(shouldRetireWasmInstance(runtimeErrorLike)).toBe(true);
+    expect(shouldRetireWasmInstance(renamed)).toBe(false);
   });
 
   it("does not retire the instance for an ordinary operation error", () => {

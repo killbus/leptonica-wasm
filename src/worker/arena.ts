@@ -1,5 +1,5 @@
 import { runChain } from "../core/chain.ts";
-import { isFatalWasmTrap, Leptonica, type Pix } from "../core/types.ts";
+import { shouldRetireWasmInstance, Leptonica, type Pix } from "../core/types.ts";
 import type { Op, Query } from "../protocol.ts";
 import { toTransferableArrayBuffer } from "./bytes.ts";
 import type { HandleId, WorkerRequest, WorkerResponse } from "./protocol.ts";
@@ -142,7 +142,7 @@ export function wireWorker(lp: Leptonica, surface: PostSurface): void {
       }
     } catch (err) {
       const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
-      if (isFatalWasmTrap(err)) {
+      if (shouldRetireWasmInstance(err)) {
         // postMessage queues the terminal signal for the owner. Closing the
         // Worker here can make that last signal unobservable to the browser
         // client, which has no DOM Worker exit event. The client terminates

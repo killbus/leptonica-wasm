@@ -32,8 +32,17 @@ export interface PackedMask {
   readonly foregroundBit: 1;
 }
 
-/** True only for an actual WebAssembly execution trap. */
-export function isFatalWasmTrap(error: unknown): error is WebAssembly.RuntimeError {
+/**
+ * Fail-closed retirement policy for errors crossing a native/module boundary.
+ *
+ * JavaScript exposes no portable, cross-realm discriminator between an actual
+ * execution trap and a RuntimeError constructed by that realm. Treating the
+ * RuntimeError shape conservatively can retire a healthy instance, but avoids
+ * the more dangerous false negative: re-entering a heap after a real trap.
+ * Call this only around trusted WASM module initialization/native operations,
+ * never as a classifier for arbitrary external input.
+ */
+export function shouldRetireWasmInstance(error: unknown): error is WebAssembly.RuntimeError {
   if (
     typeof WebAssembly === "object" &&
     typeof WebAssembly.RuntimeError === "function" &&
@@ -332,7 +341,7 @@ export class Leptonica {
       try {
         this.#callNativeUnchecked(() => nativeModuleFor(this).destroyPix(nativeHandleFor(pix)));
       } catch (error) {
-        if (isFatalWasmTrap(error)) throw error;
+        if (shouldRetireWasmInstance(error)) throw error;
         firstError ??= error;
       }
     }
@@ -401,7 +410,7 @@ export class Leptonica {
     try {
       return operation();
     } catch (error) {
-      if (isFatalWasmTrap(error)) this.#retireAfterTrap();
+      if (shouldRetireWasmInstance(error)) this.#retireAfterTrap();
       throw error;
     }
   }

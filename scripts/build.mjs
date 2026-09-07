@@ -1,10 +1,18 @@
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { extractExportedFunctions, renderLooseDts } from "./gen-exports.mjs";
+import {
+  dependencyBuildIdentitySha256,
+  dependencySourceSetSha256,
+  commandVersion,
+  readDependencyBuildCache,
+  withDependencyBuildLock,
+  writeDependencyBuildCache,
+} from "./dependency-cache.mjs";
+import { prepareSourceTreeFromArchive, resolveSourcePatchSet, sourceProvenance } from "./source-patches.mjs";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const depsRoot = join(repoRoot, "tmp", "deps");
@@ -28,27 +36,22 @@ function ghSlug(repo) {
 }
 
 function ensureSource(name, pin) {
-  const srcDir = join(depsRoot, name);
-  const marker = join(srcDir, ".pin-commit");
-  if (existsSync(marker) && readFileSync(marker, "utf8").trim() === pin.commit && existsSync(join(srcDir, "CMakeLists.txt"))) {
-    return;
-  }
-  rmSync(srcDir, { recursive: true, force: true });
-  mkdirSync(srcDir, { recursive: true });
+  const source = resolveSourcePatchSet(name, pin, repoRoot);
+  const srcDir = join(depsRoot, `${name}-${source.sourceIdentitySha256}`);
   const archive = join(downloadsRoot, `${name}-${pin.commit}.tar.gz`);
-  if (!existsSync(archive)) {
-    mkdirSync(downloadsRoot, { recursive: true });
-    // Download to a .part temp first, then rename into place. A truncated
-    // archive must not persist under the final name: existsSync() above
-    // would skip re-download on later runs and every build would fail at
-    // untar until the file is deleted by hand (M1 review, build-eng N2).
-    const partial = `${archive}.part`;
-    run("curl", ["-fsSL", "--retry", "3", "-o", partial, `https://codeload.github.com/${ghSlug(pin.repo)}/tar.gz/${pin.commit}`]);
-    if (!existsSync(partial)) throw new Error(`curl did not produce ${partial}`);
-    renameSync(partial, archive);
-  }
-  run("tar", ["-xzf", archive, "--strip-components=1", "-C", srcDir]);
-  writeFileSync(marker, pin.commit + "\n");
+  prepareSourceTreeFromArchive({
+    source,
+    sourceDir: srcDir,
+    archive,
+    download(candidate) {
+      mkdirSync(downloadsRoot, { recursive: true });
+      run("curl", ["-fsSL", "--retry", "3", "-o", candidate, `https://codeload.github.com/${ghSlug(pin.repo)}/tar.gz/${pin.commit}`]);
+    },
+    extract(archiveToExtract, stagingDir) {
+      run("tar", ["-xzf", archiveToExtract, "--strip-components=1", "-C", stagingDir]);
+    },
+  });
+  return Object.freeze({ ...source, sourceDir: srcDir });
 }
 
 function createDepConfigs(installRoot, testInstrumentation) {
@@ -99,21 +102,9 @@ function createDepConfigs(installRoot, testInstrumentation) {
   ];
 }
 
-function buildDep(dep, jobs, pin, buildRoot, installRoot) {
-  const buildDir = join(buildRoot, dep.name);
-  const doneMarker = join(buildDir, ".done");
-  // The marker records the inputs that produced this compiled tree. Checking
-  // existence alone is not enough (M1 review, build-eng W1): after a pin bump
-  // ensureSource() re-fetches sources but a stale .done would silently skip
-  // recompilation and link the OLD library into the new build. Pin commit and
-  // configure flags must both invalidate.
-  // Toolchain is an input too: an emsdk bump with unchanged dep pins must not
-  // reuse .a files compiled by the old emcc (design §3: deps cache is keyed
-  // by versions.json + toolchain; this marker is the same guard for restored
-  // trees).
-  const doneKey = JSON.stringify([pin.commit, dep.extra, versions.emsdk?.commit]);
-  if (existsSync(doneMarker) && readFileSync(doneMarker, "utf8") === doneKey) return;
-  const srcDir = join(depsRoot, dep.name);
+function buildDep(dep, jobs, source, dependencyBuildRoot, installRoot) {
+  const buildDir = join(dependencyBuildRoot, dep.name);
+  const srcDir = source.sourceDir;
   mkdirSync(buildDir, { recursive: true });
   // No CMAKE_POLICY_VERSION_MINIMUM: all four dep trees declare
   // cmake_minimum_required >= 3.10 (zlib 3.12...3.31 / libpng 3.14...4.2 /
@@ -139,7 +130,66 @@ function buildDep(dep, jobs, pin, buildRoot, installRoot) {
   const ninjaArgs = ["ninja", "install"];
   if (jobs > 0) ninjaArgs.push(`-j${jobs}`);
   run("emmake", ninjaArgs, { cwd: buildDir });
-  writeFileSync(doneMarker, doneKey);
+}
+
+function createDependencyBuildInput(depConfigs, dependencySources) {
+  return {
+    schemaVersion: 1,
+    toolchain: {
+      pinned: versions.emsdk ?? null,
+      emccVersion: commandVersion("emcc"),
+      cmakeVersion: commandVersion("cmake"),
+      ninjaVersion: commandVersion("ninja"),
+    },
+    environment: Object.fromEntries([
+      "CFLAGS",
+      "CXXFLAGS",
+      "CPPFLAGS",
+      "LDFLAGS",
+      "EMCC_CFLAGS",
+    ].map((name) => [name, process.env[name] ?? null])),
+    dependencies: depConfigs.map((dep) => ({
+      name: dep.name,
+      sourceIdentitySha256: dependencySources.get(dep.name).sourceIdentitySha256,
+      configure: dep.extra,
+    })),
+  };
+}
+
+function buildDependencies(depConfigs, dependencySources, jobs, dependencyBuildRoot, installRoot, buildIdentitySha256) {
+  const marker = join(dependencyBuildRoot, ".done.json");
+  const cached = readDependencyBuildCache({
+    marker,
+    installRoot,
+    buildIdentitySha256,
+    label: "dependency",
+  });
+  if (cached) return cached;
+
+  return withDependencyBuildLock({
+    lock: `${dependencyBuildRoot}.lock`,
+    label: "dependency",
+  }, () => {
+    const rechecked = readDependencyBuildCache({
+      marker,
+      installRoot,
+      buildIdentitySha256,
+      label: "dependency",
+    });
+    if (rechecked) return rechecked;
+
+    rmSync(dependencyBuildRoot, { recursive: true, force: true });
+    mkdirSync(dependencyBuildRoot, { recursive: true });
+    for (const dep of depConfigs) {
+      buildDep(dep, jobs, dependencySources.get(dep.name), dependencyBuildRoot, installRoot);
+    }
+    return writeDependencyBuildCache({
+      marker,
+      installRoot,
+      buildIdentitySha256,
+      label: "dependency",
+    });
+  });
 }
 
 function nmDefinedSymbols(archivePath) {
@@ -156,8 +206,8 @@ function nmDefinedSymbols(archivePath) {
   return defined;
 }
 
-function writeFullAbiExports(outDir, buildRoot, installRoot) {
-  const headerPath = join(depsRoot, "leptonica", "src", "allheaders.h");
+function writeFullAbiExports(outDir, buildRoot, installRoot, leptonicaSourceDir) {
+  const headerPath = join(leptonicaSourceDir, "src", "allheaders.h");
   const names = extractExportedFunctions(readFileSync(headerPath, "utf8"));
   const defined = nmDefinedSymbols(join(installRoot, "lib", "libleptonica.a"));
   const filtered = names.filter((name) => defined.has(name.slice(1)));
@@ -175,7 +225,7 @@ function writeFullAbiExports(outDir, buildRoot, installRoot) {
   return exportsPath;
 }
 
-function linkOutputs({ exportsPath, generatedIncludeDir, outDir, fullAbi, optLevel, productLock, testInstrumentation, installRoot, linkDiagnostics }) {
+function linkOutputs({ exportsPath, generatedIncludeDir, outDir, fullAbi, optLevel, productLock, testInstrumentation, installRoot, leptonicaSourceDir, linkDiagnostics }) {
   mkdirSync(outDir, { recursive: true });
   const emccArgs = [
     "cpp/bindings.cpp",
@@ -200,7 +250,7 @@ function linkOutputs({ exportsPath, generatedIncludeDir, outDir, fullAbi, optLev
     `-I${join(installRoot, "include")}`,
     // bindings.cpp includes leptonica's internal pix_internal.h (struct Pix
     // definition), which is not part of the installed header set.
-    `-I${join(depsRoot, "leptonica", "src")}`,
+    `-I${join(leptonicaSourceDir, "src")}`,
     `-L${join(installRoot, "lib")}`,
   ];
   if (productLock === 1) {
@@ -432,8 +482,6 @@ const opts = parseArgs(process.argv.slice(2));
 const buildRoot = opts.testInstrumentation
   ? resolve(repoRoot, "tmp/build-instrumented")
   : resolve(repoRoot, "tmp/build");
-const installRoot = join(buildRoot, "install");
-const depConfigs = createDepConfigs(installRoot, opts.testInstrumentation);
 const variantState = prepareVariant(opts.variant, buildRoot);
 try {
   const buildInfo = opaqueBuildInfo(variantState.productLock);
@@ -441,17 +489,33 @@ try {
   // opaque target that happened to use the same output directory.
   if (buildInfo === null) rmSync(join(opts.outDir, "build-info.json"), { force: true });
   const fetchStartedAt = Date.now();
-  for (const dep of depConfigs) {
-    ensureSource(dep.name, versions[dep.name]);
+  const dependencySources = new Map();
+  const dependencyNames = ["zlib", "libpng", "libjpeg-turbo", "leptonica"];
+  for (const name of dependencyNames) {
+    dependencySources.set(name, ensureSource(name, versions[name]));
   }
   const fetchMs = Date.now() - fetchStartedAt;
-  for (const dep of depConfigs) {
-    buildDep(dep, opts.jobs, versions[dep.name], buildRoot, installRoot);
-  }
+  const sourceSetSha256 = dependencySourceSetSha256(dependencyNames, dependencySources);
+  const identityDepConfigs = createDepConfigs("<INSTALL_ROOT>", opts.testInstrumentation);
+  const dependencyBuildIdentity = dependencyBuildIdentitySha256(
+    createDependencyBuildInput(identityDepConfigs, dependencySources),
+  );
+  const dependencyBuildRoot = join(buildRoot, "deps", sourceSetSha256, dependencyBuildIdentity);
+  const installRoot = join(dependencyBuildRoot, "install");
+  const depConfigs = createDepConfigs(installRoot, opts.testInstrumentation);
+  const dependencyBuild = buildDependencies(
+    depConfigs,
+    dependencySources,
+    opts.jobs,
+    dependencyBuildRoot,
+    installRoot,
+    dependencyBuildIdentity,
+  );
+  const leptonicaSourceDir = dependencySources.get("leptonica").sourceDir;
   let exportsPath = null;
   let exportedFunctions = null;
   if (opts.fullAbi) {
-    exportsPath = writeFullAbiExports(opts.outDir, buildRoot, installRoot);
+    exportsPath = writeFullAbiExports(opts.outDir, buildRoot, installRoot, leptonicaSourceDir);
     exportedFunctions = readFileSync(exportsPath, "utf8").split("\n").filter((line) => line.length > 0).length;
   }
   const linkStartedAt = Date.now();
@@ -464,6 +528,7 @@ try {
     productLock: variantState.productLock,
     testInstrumentation: opts.testInstrumentation,
     installRoot,
+    leptonicaSourceDir,
     linkDiagnostics: opts.linkDiagnostics,
   });
   const report = {
@@ -475,6 +540,8 @@ try {
     provenance: {
       sdkVersion: versions.emsdk?.sdkVersion ?? null,
       dependencyPins: Object.fromEntries(depConfigs.map((dep) => [dep.name, versions[dep.name].commit])),
+      dependencySources: Object.fromEntries(depConfigs.map((dep) => [dep.name, sourceProvenance(dependencySources.get(dep.name))])),
+      dependencyBuild,
       optimizationLevel: opts.fullAbi ? "-O2" : `-${opts.optLevel}`,
     },
     wasmBytes: sizes.wasmBytes,

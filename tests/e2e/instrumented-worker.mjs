@@ -5,7 +5,7 @@
  * Nothing in this file is part of the published package.
  */
 import leptonicaFactory from "../../dist-instrumented/leptonica.mjs";
-import { isFatalWasmTrap, Leptonica } from "../../src/core/types.ts";
+import { shouldRetireWasmInstance, Leptonica } from "../../src/core/types.ts";
 import { wireWorker } from "../../src/worker/arena.ts";
 
 const ctx = self;
@@ -42,7 +42,7 @@ surface.onMessage(async (request) => {
     surface.post({
       id: request.id,
       ok: false,
-      ...(isFatalWasmTrap(error) ? { fatal: true } : {}),
+      ...(shouldRetireWasmInstance(error) ? { fatal: true } : {}),
       error: message,
     });
   }

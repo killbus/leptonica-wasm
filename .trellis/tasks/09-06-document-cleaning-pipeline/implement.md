@@ -13,10 +13,9 @@ consumer-specific document-cleaning policy remains outside this repository.
 - Treat stream disconnects, HTTP 429, and transient 5xx responses as retryable.
   Back off, honor Retry-After, inspect remote state before retrying a
   non-idempotent operation, and keep monitoring until terminal state.
-- Dispatched review agents use the user-approved gpt-5.6-sol route. Verify the
-  effective routed model instead of assuming that an omitted model override
-  selected it. A model mismatch invalidates that review and the instance must
-  stop without doing task work.
+- Dispatched review agents use the user-approved route. Record the effective
+  routed model when the runtime exposes it; do not infer it from an omitted
+  override or replace a requested route silently.
 - Every dispatched agent must make create_goal its first action. The
   agent-owned goal must include its exact assignment and the retry policy.
 - Because the main thread has an active goal, dispatch with isolated context
@@ -34,25 +33,45 @@ consumer-specific document-cleaning policy remains outside this repository.
   interact for recovery or follow-up when useful, and verify a terminal event.
   Do not use passive waiting as the only response to a running or recovering
   agent.
-- Runtime capability audit on 2026-09-06: the available spawn overrides and
-  inherited parent model do not provide the user-required `gpt-5.6-sol` route.
-  Do not perform a substitute-model lifecycle test; re-check capabilities
-  before the next authorized dispatch.
+DBS review evidence on 2026-09-07:
 
-Agent-protocol audit evidence on 2026-09-06:
-
-- The active task has `meta.execution_mode: inline`; no sub-agent was
-  dispatched for this audit.
-- Root workflow/spec rules and every existing direct or channel Agent role
-  card require an agent-owned `create_goal` as the first action. The audited
-  role-card set contains 14 files under `.codex/agents/`, `.claude/agents/`,
-  `.cursor/agents/`, `.opencode/agents/`, and `.trellis/agents/`.
-- All three Codex Agent TOML files parse successfully. A static contract check
-  confirmed every role card contains `create_goal`, `stream disconnected`,
-  `429`, `5xx`, and `GOAL_MISSING`; task validation and `git diff --check` pass.
-- Static text cannot prove runtime goal activation, retry, resume, or terminal
-  monitoring. That lifecycle remains unverified until the required
-  `gpt-5.6-sol` route is actually available.
+- Nancy Leveson, Karl Popper, and Barbara Liskov completed two independent
+  review rounds. Each instance performed agent-owned `create_goal` as its
+  first action, included the disconnect/429/transient-5xx recovery policy, and
+  reached an explicit completed goal state.
+- Leveson's first-round review rejected an earlier broad patch candidate whose
+  failure behavior was not justified at the general Leptonica boundary. The
+  accepted canonical patch was reduced to recoverable allocation paths in
+  eight foundational containers; its SHA-256 is
+  `2e2070fbc3180114e5300d84e09272d45c283ef657e62cd69a69884db0ae5fd7`.
+- Popper's falsification review showed that a declarative source marker did
+  not prove source contents. Liskov's contract review required both build
+  callers to share the same source identity semantics without introducing a
+  pdfhow-specific policy API. The resulting implementation binds upstream and
+  patched tree digests, patch identity, provenance, and cache paths.
+- The second round supplied concrete counterexamples for marker symlink
+  write-through, missing transitive cache identity, mutable installed static
+  libraries, and replacement of a supposedly immutable source directory. The
+  implementation now rejects non-regular markers, uses identity-addressed
+  source directories, hashes the complete install tree, and rebuilds the whole
+  dependency set when any source/configuration identity changes.
+- Later cross-audits found five additional supply-chain failure classes: an
+  install-tree digest that ignored a marker-shaped file, incomplete toolchain
+  identity, concurrent dependency-cache writers and lock-owner replacement,
+  native `CMAKE_TOOLCHAIN_FILE` injection, and two callers sharing one fixed
+  download `.part`. The implementation now hashes every installed file, binds
+  the complete pinned/observed toolchain and environment, serializes each
+  identity-addressed build with an owner token, rejects the native toolchain
+  override, and gives every download a private PID/UUID candidate.
+- Both build callers now use one `prepareSourceTreeFromArchive` contract. It
+  publishes a candidate with an atomic no-clobber hard link only after the
+  extracted and patched source tree passes its complete digest checks, adopts
+  a separately verified concurrent winner, and removes losing candidates and
+  staging trees. Failing tests cover pre-verification rejection, damaged-cache
+  fail-closed behavior, a barrier-synchronized two-process publish race, and
+  source-tree rename contention. These source-only reviews do not replace
+  target-WASM, Chromium, native-oracle, multipage, or allocation-sweep
+  execution evidence.
 
 ## M0: Correct the contract boundary (R1-R9)
 
@@ -171,7 +190,7 @@ runtime surface. Static and simulated-runtime coverage also verifies that
 Leptonica.close() continues destroying remaining Pix values after an ordinary
 destructor error before rethrowing the first failure.
 
-The 2026-09-07 lightweight run passed typecheck, 67 tests, release-contract
+The 2026-09-07 lightweight run passed typecheck, 89 tests, release-contract
 tests, task validation, and `git diff --check`. Five artifact-dependent files
 containing 58 tests skipped because `dist`/`dist-instrumented` are absent; those
 tests are unverified, not passing. The generated declaration script also cannot
@@ -320,39 +339,55 @@ absent locally.
 
 | Requirement | Current evidence | Status |
 | --- | --- | --- |
-| A real Chromium test uses the production browser adapter and target-WASM trap | `tests/e2e/fatal-page.mjs`, `instrumented-worker.mjs`, and `e2e.browser.spec.ts` are wired into the mandatory Playwright step; Vite resolves the bare test import through the browser/default `./worker` export target | Implemented and locally resolver-checked; Chromium execution pending |
+| A real Chromium test uses the production browser adapter and target-WASM trap | `tests/e2e/fatal-page.mjs`, `instrumented-worker.mjs`, and `e2e.browser.spec.ts` are wired into a dedicated Playwright job; Vite resolves the bare test import through the browser/default `./worker` export target; CI freezes the production and instrumented artifacts once, then the browser and OOM jobs consume that same artifact independently | Implemented and locally resolver/topology-checked; Chromium execution pending |
 | One fatal response settles every concurrent pending request | Unit coverage passes; the browser case requires both promises to reject within 2 seconds | Locally simulated; target-browser proof pending |
 | Fatal retirement tears down once and blocks later dispatch/WASM re-entry | Unit coverage passes; browser test separately checks production teardown and a delayed physical-termination terminal gate | Locally simulated; target-browser proof pending |
 | A fresh Worker/module remains usable after another instance traps | Browser test creates a separate clean instance and checks a 1x1 load | CI-only proof pending |
 | Curated build remains decode-free after preserving `toJPEG()` | Compression-only JPEG path plus curated-only `--wrap=pixDisplay` isolation are present; run `34094334788` linked both default builds but still found `jpeg_read_header` | Not achieved; extraction diagnostics are prepared but require CI execution |
 | Recoverable JPEG allocation and destination-growth failures leave no tracked native blocks | Instrumented allocation sweep and named growth fault are present | Target-WASM execution pending |
 | General-purpose binding boundary is preserved | No `documentClean`, pdfhow profile, fixed operation order, output policy, or deskew policy appears in the package API | Proven by current source inspection |
-| Feasible local contracts pass without a native/WASM rebuild | Full Vitest reports 67 passed and 58 skipped; focused fatal/transfer/instrumentation coverage reports 30 passed; typecheck, release contract, task validation, and `git diff --check` pass | Proven locally for source-only coverage; artifact-dependent tests remain skipped/unverified |
+| Feasible local contracts pass without a native/WASM rebuild | Full Vitest reports 89 passed and 58 skipped; focused source/cache/package coverage reports 49 passed; typecheck, release contract, task validation, and `git diff --check` pass | Proven locally for source-only coverage; artifact-dependent tests remain skipped/unverified |
 
-The latest completed remote evidence at this checkpoint is PR #12 commit
-`5f2762008cd47468a9e96a6ae78be569a9b05e42`. Its run `34094334788` built the
-default artifacts successfully, then failed the default export gate on
-`jpeg_read_header`; all later target-WASM and browser evidence remains skipped.
-That run predates the linker-diagnostic revision described above, so it does
-not provide target-toolchain evidence for the new report.
+The latest completed remote evidence at this checkpoint is feature commit
+`7a033e142966a60b3889240c71f8651bee41f4fc`, CI run `34117174428` (job
+`101726682649`). Default and full-ABI builds, curated export/method/smoke gates,
+goldens, and the normal target-WASM tests passed. The combined instrumented
+step then found four real recoverable-allocation leaks:
+`cleanBackgroundToWhite` index 4 (+1 block/+200 bytes), `sauvolaTiled` index 6
+(+1/+43,808), `selectByArea` index 0 (+6/+720), and
+`maskOverColorPixels` index 2 (+2/+24). Because that step both built the
+instrumented artifact and ran the independent OOM sweep, GitHub skipped the
+later Playwright step even though the artifact build itself had succeeded.
+The current uncommitted workflow revision separates those concerns at the job
+boundary. The main CI job freezes `dist/` and `dist-instrumented/` immediately
+after the isolated build and exposes an output only when that upload succeeds.
+Dedicated browser and OOM jobs each depend on that output and download the same
+artifact, but use separate runners and timeout budgets, so failure or stalling
+in either runtime gate cannot mask the other. Both jobs are also explicit
+prerequisites of `dispatch-builder`, so a runtime failure cannot race ahead of
+the external release dispatch. This does not waive or hide any leak: the same
+four failures will still fail the workflow until their ownership defects are
+repaired. A new CI run is still required to execute Chromium and close the
+target-browser evidence rows above. The repository's active `main` ruleset was
+read-only checked on 2026-09-07 and currently enforces deletion/non-fast-forward
+protection but no required status checks; PR merge enforcement therefore remains
+an external repository-governance gap rather than a property this workflow can
+prove.
 
-The required independent DBS chatroom review remains partially complete. The
-anti-audit instance has a verified agent-owned goal and reported that 58
-artifact-dependent tests, multipage retention, worker-race cases, and the
-production cross-check remain unproved. The domain-boundary instance later
-confirmed that its first actual action was successful goal creation, so its
-earlier read-only boundary review is also lifecycle-valid. The linker-review
-output still lacks first-action proof and remains excluded. Attempts to run a
-fresh post-diagnostic review on the two verified threads repeatedly ended in
-eastus `gpt-5.6-sol` HTTP 429 stream disconnects before goal activation could
-be confirmed; both uncertain instances were terminated as required. Explicit
-replacement dispatches using the required `gpt-5.6-sol` model were then
-rejected before instance creation because the current agent tool does not
-expose that route. No substitute model was used, and a final post-diagnostic
-multi-perspective review remains an explicit outstanding gate.
-A fresh three-role dispatch attempt during the final fatal-retirement source
-audit failed at the same pre-instance model-validation boundary, so no agent
-could create a goal or produce admissible review output in that attempt.
+The final independent DBS chatroom review is complete for this source-only
+submission boundary. Nancy Leveson, Karl Popper, and Barbara Liskov each
+created an agent-owned goal as their first action, included the required
+disconnect/429/transient-5xx recovery policy, inspected the shared archive
+helper and its counterexample tests, and explicitly completed their goals.
+All three reported that the change is ready to submit with no new integrity,
+concurrency, or abstraction-boundary blocker. They agreed that the remaining
+gap around an already damaged archive is availability rather than silent
+integrity: the helper fails closed, and the recorded recovery procedure is to
+remove that cache entry before retrying. Popper and Liskov suggested a fuller
+helper-level damaged-cache recovery regression as a non-blocking follow-up.
+This review does not upgrade the 58 skipped artifact-dependent tests, target
+Chromium, native oracle, target-WASM allocation sweep, multipage retention, or
+consumer/release evidence; those remain explicitly unproved.
 
 ## M5: External real-scan comparison (R8)
 
