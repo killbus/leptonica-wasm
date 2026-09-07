@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const defaultRepoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -14,12 +14,37 @@ function normalizeRelative(path) {
   return path.split(sep).join("/");
 }
 
-export function directoryTreeSha256(sourceDir, { ignoredRootEntries = [] } = {}) {
+function isWithinRoot(root, candidate) {
+  const candidateRelative = relative(root, candidate);
+  return candidateRelative === "" || (
+    candidateRelative !== ".." &&
+    !candidateRelative.startsWith(`..${sep}`) &&
+    !isAbsolute(candidateRelative)
+  );
+}
+
+function symbolicLinkWalkEscapesRoot(root, linkParent, target) {
+  const parent = relative(root, linkParent);
+  let depth = parent === "" ? 0 : parent.split(sep).length;
+  for (const segment of target.split(/[\\/]/)) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") {
+      depth -= 1;
+      if (depth < 0) return true;
+    } else {
+      depth += 1;
+    }
+  }
+  return false;
+}
+
+function treeSha256(sourceDir, { ignoredRootEntries = [], allowInternalSymlinks = false, label = "source tree" } = {}) {
   const root = resolve(sourceDir);
   const rootStat = lstatSync(root, { throwIfNoEntry: false });
   if (!rootStat) throw new Error(`tree root is missing: ${root}`);
   if (rootStat.isSymbolicLink()) throw new Error(`tree root is a symbolic link: ${root}`);
   if (!rootStat.isDirectory()) throw new Error(`tree root is not a directory: ${root}`);
+  const canonicalRoot = realpathSync(root);
   const ignored = new Set(ignoredRootEntries);
   const entries = [];
   const visit = (directory, prefix = "") => {
@@ -30,7 +55,46 @@ export function directoryTreeSha256(sourceDir, { ignoredRootEntries = [] } = {})
       const absolutePath = join(directory, child.name);
       const stat = lstatSync(absolutePath);
       if (stat.isSymbolicLink()) {
-        throw new Error(`source tree contains a symbolic link: ${relativePath}`);
+        if (!allowInternalSymlinks) {
+          throw new Error(`${label} contains a symbolic link: ${relativePath}`);
+        }
+        const target = readlinkSync(absolutePath);
+        if (isAbsolute(target) || win32.isAbsolute(target)) {
+          throw new Error(`${label} contains an absolute symbolic link: ${relativePath}`);
+        }
+        if (symbolicLinkWalkEscapesRoot(root, dirname(absolutePath), target)) {
+          throw new Error(`${label} symbolic link escapes its root: ${relativePath}`);
+        }
+        const lexicalTarget = resolve(dirname(absolutePath), target);
+        if (!isWithinRoot(root, lexicalTarget)) {
+          throw new Error(`${label} symbolic link escapes its root: ${relativePath}`);
+        }
+        let resolvedTarget;
+        try {
+          resolvedTarget = realpathSync(absolutePath);
+        } catch (error) {
+          if (error?.code === "ENOENT") {
+            throw new Error(`${label} symbolic link target is missing: ${relativePath}`);
+          }
+          if (error?.code === "ELOOP") {
+            throw new Error(`${label} contains a symbolic link loop: ${relativePath}`);
+          }
+          throw error;
+        }
+        if (!isWithinRoot(canonicalRoot, resolvedTarget)) {
+          throw new Error(`${label} symbolic link escapes its root: ${relativePath}`);
+        }
+        if (!lstatSync(resolvedTarget).isFile()) {
+          throw new Error(`${label} symbolic link target is not a regular file: ${relativePath}`);
+        }
+        entries.push({
+          path: relativePath,
+          mode: "120000",
+          bytes: Buffer.byteLength(target),
+          sha256: sha256(target),
+          resolvedPath: normalizeRelative(relative(canonicalRoot, resolvedTarget)),
+        });
+        continue;
       }
       if (prefix === "" && ignored.has(child.name)) {
         if (!stat.isFile()) throw new Error(`${child.name} is not a regular file`);
@@ -41,7 +105,7 @@ export function directoryTreeSha256(sourceDir, { ignoredRootEntries = [] } = {})
         continue;
       }
       if (!stat.isFile()) {
-        throw new Error(`source tree contains a non-regular entry: ${relativePath}`);
+        throw new Error(`${label} contains a non-regular entry: ${relativePath}`);
       }
       entries.push({
         path: relativePath,
@@ -53,6 +117,17 @@ export function directoryTreeSha256(sourceDir, { ignoredRootEntries = [] } = {})
   };
   visit(root);
   return sha256(JSON.stringify(entries));
+}
+
+export function directoryTreeSha256(sourceDir, { ignoredRootEntries = [] } = {}) {
+  return treeSha256(sourceDir, { ignoredRootEntries });
+}
+
+export function installTreeSha256(installDir) {
+  return treeSha256(installDir, {
+    allowInternalSymlinks: true,
+    label: "install tree",
+  });
 }
 
 export function sourceTreeSha256(sourceDir) {

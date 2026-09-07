@@ -32,9 +32,39 @@ independently. Their `!cancelled()` status check preserves that behavior for a
 failed dependency without overriding an explicit workflow cancellation. The
 workflow contract test locks both the job output and the downstream guards.
 
+The follow-up run for head commit
+`229be252294d84304a37b6379199023cb961b04c` (run `34136217383`, September 7,
+2026) proved that source preparation now advances into both dependency builds.
+`release-set` passed, but two independent build defects then stopped the
+runtime graph:
+
+- `native-oracle` failed while archiving Leptonica because the native CMake
+  invocation explicitly supplied relative `CMAKE_AR=ar` and
+  `CMAKE_RANLIB=ranlib` values. CMake persisted them as nonexistent paths under
+  the Leptonica source directory. The correction asks the selected host
+  compiler for its archiver and ranlib, resolves both to executable canonical
+  paths, supplies those absolute paths to CMake, and binds the same paths and
+  version output into the dependency cache identity.
+- `reproducibility` completed dependency compilation and installation, then
+  rejected libpng's legitimate `bin/libpng-config -> libpng16-config` link. The
+  correction keeps source-tree hashing strictly link-free while giving
+  dependency install trees a separate digest contract. That contract permits
+  only internal relative links to regular files and binds the entry type, exact
+  link text, resolved root-relative target, and the complete target tree. It
+  rejects absolute, escaping, dangling, looping, directory, and special-file
+  targets on both cache write and cache read.
+
+The main `ci`, `browser-e2e`, `instrumented-resource-failures`,
+`fixed-commit-consumer`, `compare`, and `dispatch-builder` jobs were skipped in
+run `34136217383`. It therefore also supplies no target-WASM browser evidence.
+The install-tree regression tests additionally prove that changing only link
+spelling, changing target bytes, replacing a link with a regular file, or
+redirecting it to an equal-content sibling invalidates the cache, while the
+legacy regular-file digest and strict source-tree policy remain unchanged.
+
 ## Evidence required from the next CI run
 
-The browser fatal-retirement claim requires a single new commit SHA whose
+The browser fatal-retirement claim still requires a single new commit SHA whose
 `browser-e2e` job actually executes, without skips, against the generated
 target-WASM artifact and proves all of the following:
 

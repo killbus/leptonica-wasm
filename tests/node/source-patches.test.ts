@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   applySourcePatches,
+  directoryTreeSha256,
+  installTreeSha256,
   prepareSourceTree,
   prepareSourceTreeFromArchive,
   publishVerifiedFile,
@@ -54,6 +56,35 @@ function oneLinePatch(replacement: string): string {
 }
 
 describe("pinned source patch supply chain", () => {
+  it("keeps the existing regular-file digest for symlink-free install trees", () => {
+    const root = mkdtempSync(join(tmpdir(), "leptonica-install-tree-regular-"));
+    try {
+      mkdirSync(join(root, "bin"));
+      writeFileSync(join(root, "bin/tool"), "regular bytes\n");
+      chmodSync(join(root, "bin/tool"), 0o755);
+      writeFileSync(join(root, "README"), "regular bytes\n");
+      chmodSync(join(root, "README"), 0o644);
+      const historicalDigest = "73827e41a417402e7478299fa8a73347d96bf25697190e9e1efaf3fbbf055c54";
+      expect(directoryTreeSha256(root)).toBe(historicalDigest);
+      expect(installTreeSha256(root)).toBe(historicalDigest);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps source-tree hashing strict about symbolic links", () => {
+    const root = mkdtempSync(join(tmpdir(), "leptonica-source-tree-link-"));
+    try {
+      writeFileSync(join(root, "target.txt"), "target\n");
+      symlinkSync("target.txt", join(root, "link.txt"));
+      expect(() => sourceTreeSha256(root)).toThrow(
+        "source tree contains a symbolic link: link.txt",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("binds the checked-in patch to the pinned Leptonica commit and content hash", () => {
     const source = resolveSourcePatchSet("leptonica", leptonicaPin, repoRoot);
     expect(source.commit).toBe("13275a278eb55b5746e33f95fbf5a2c8f604b3ab");
@@ -594,6 +625,15 @@ describe("pinned source patch supply chain", () => {
     expect(build).toContain("dependencySources");
     expect(build).toContain("pinned: versions.emsdk");
     expect(build).toContain("sourceProvenance");
+    expect(nativeBuild).toContain('commandPath("cc", { cwd: repoRoot })');
+    expect(nativeBuild).toContain('commandPath("c++", { cwd: repoRoot })');
+    expect(nativeBuild).toContain('compilerProgramPath(nativeCompiler, "ar"');
+    expect(nativeBuild).toContain('compilerProgramPath(nativeCompiler, "ranlib"');
+    expect(nativeBuild).toContain('`-DCMAKE_C_COMPILER:FILEPATH=${nativeCompiler}`');
+    expect(nativeBuild).toContain('`-DCMAKE_CXX_COMPILER:FILEPATH=${nativeCxxCompiler}`');
+    expect(nativeBuild).toContain('`-DCMAKE_MAKE_PROGRAM:FILEPATH=${nativeNinja}`');
+    expect(nativeBuild).toContain('`-DCMAKE_AR:FILEPATH=${nativeArchiver}`');
+    expect(nativeBuild).toContain('`-DCMAKE_RANLIB:FILEPATH=${nativeRanlib}`');
     expect(ci).toContain("'vendor/patches/**'");
     expect(ci).toContain("'scripts/source-patches.mjs'");
     expect(ci).toContain("'scripts/dependency-cache.mjs'");

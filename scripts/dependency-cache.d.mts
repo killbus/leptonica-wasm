@@ -20,6 +20,21 @@ export function dependencySourceSetSha256(
 ): string;
 export function dependencyBuildIdentitySha256(buildInput: unknown): string;
 export function commandVersion(command: string, args?: string[]): string;
+export function commandPath(
+  command: string,
+  options?: {
+    cwd?: string;
+    environment?: Record<string, string | undefined>;
+  },
+): string;
+export function compilerProgramPath(
+  compiler: string,
+  program: string,
+  options?: {
+    cwd?: string;
+    environment?: Record<string, string | undefined>;
+  },
+): string;
 export function assertEnvironmentVariablesUnset(
   environment: Record<string, string | undefined>,
   names: string[],

@@ -10,11 +10,13 @@
  * script runs inside a workflow job, never on a dev machine.
  */
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   assertEnvironmentVariablesUnset,
+  commandPath,
+  compilerProgramPath,
   dependencyBuildIdentitySha256,
   dependencySourceSetSha256,
   commandVersion,
@@ -29,11 +31,18 @@ const depsRoot = join(repoRoot, "tmp", "deps");
 const downloadsRoot = join(repoRoot, "tmp", "downloads");
 const buildRoot = join(repoRoot, "tmp", "build-native");
 const versions = JSON.parse(readFileSync(join(repoRoot, "vendor", "versions.json"), "utf8"));
+const nativeCompiler = commandPath("cc", { cwd: repoRoot });
+const nativeCxxCompiler = commandPath("c++", { cwd: repoRoot });
+const nativeCmake = commandPath("cmake", { cwd: repoRoot });
+const nativeNinja = commandPath("ninja", { cwd: repoRoot });
+const nativeArchiver = compilerProgramPath(nativeCompiler, "ar", { cwd: repoRoot });
+const nativeRanlib = compilerProgramPath(nativeCompiler, "ranlib", { cwd: repoRoot });
 const nativeToolchainConfigure = [
-  "-DCMAKE_C_COMPILER=cc",
-  "-DCMAKE_CXX_COMPILER=c++",
-  "-DCMAKE_AR=ar",
-  "-DCMAKE_RANLIB=ranlib",
+  `-DCMAKE_C_COMPILER:FILEPATH=${nativeCompiler}`,
+  `-DCMAKE_CXX_COMPILER:FILEPATH=${nativeCxxCompiler}`,
+  `-DCMAKE_MAKE_PROGRAM:FILEPATH=${nativeNinja}`,
+  `-DCMAKE_AR:FILEPATH=${nativeArchiver}`,
+  `-DCMAKE_RANLIB:FILEPATH=${nativeRanlib}`,
 ];
 
 function run(cmd, args, opts = {}) {
@@ -117,7 +126,7 @@ function buildDep(dep, jobs, source, dependencyBuildRoot, installRoot) {
   const buildDir = join(dependencyBuildRoot, dep.name);
   const srcDir = source.sourceDir;
   mkdirSync(buildDir, { recursive: true });
-  run("cmake", [
+  run(nativeCmake, [
     "-G",
     "Ninja",
     "-DCMAKE_BUILD_TYPE=Release",
@@ -126,7 +135,7 @@ function buildDep(dep, jobs, source, dependencyBuildRoot, installRoot) {
     ...dep.extra,
     srcDir,
   ], { cwd: buildDir });
-  run("ninja", ["install", ...(jobs > 0 ? [`-j${jobs}`] : [])], { cwd: buildDir });
+  run(nativeNinja, ["install", ...(jobs > 0 ? [`-j${jobs}`] : [])], { cwd: buildDir });
 }
 
 function createDependencyBuildInput(depConfigs, dependencySources) {
@@ -135,12 +144,22 @@ function createDependencyBuildInput(depConfigs, dependencySources) {
     platform: process.platform,
     architecture: process.arch,
     toolchain: {
-      ccVersion: commandVersion("cc"),
-      cxxVersion: commandVersion("c++"),
-      arVersion: commandVersion("ar"),
-      ranlibVersion: commandVersion("ranlib"),
-      cmakeVersion: commandVersion("cmake"),
-      ninjaVersion: commandVersion("ninja"),
+      ccPath: nativeCompiler,
+      ccCanonicalPath: realpathSync(nativeCompiler),
+      ccVersion: commandVersion(nativeCompiler),
+      cxxPath: nativeCxxCompiler,
+      cxxCanonicalPath: realpathSync(nativeCxxCompiler),
+      cxxVersion: commandVersion(nativeCxxCompiler),
+      arPath: nativeArchiver,
+      arCanonicalPath: realpathSync(nativeArchiver),
+      arVersion: commandVersion(nativeArchiver),
+      ranlibPath: nativeRanlib,
+      ranlibCanonicalPath: realpathSync(nativeRanlib),
+      ranlibVersion: commandVersion(nativeRanlib),
+      cmakePath: nativeCmake,
+      cmakeVersion: commandVersion(nativeCmake),
+      ninjaPath: nativeNinja,
+      ninjaVersion: commandVersion(nativeNinja),
     },
     environment: Object.fromEntries([
       "CFLAGS",
@@ -198,7 +217,7 @@ function buildOracle(installRoot) {
   const outDir = join(buildRoot, "oracle");
   mkdirSync(outDir, { recursive: true });
   run(
-    "cc",
+    nativeCompiler,
     [
       "cpp/oracle.c",
       "-o",

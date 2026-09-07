@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
-import { dirname, join } from "node:path";
-import { directoryTreeSha256 } from "./source-patches.mjs";
+import { delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { installTreeSha256 } from "./source-patches.mjs";
 
 function sha256Json(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -41,6 +41,63 @@ export function commandVersion(command, args = ["--version"]) {
     .join("\n")
     .replace(/\r\n/g, "\n")
     .trim();
+}
+
+export function commandPath(command, {
+  cwd = process.cwd(),
+  environment = process.env,
+} = {}) {
+  if (typeof command !== "string" || command === "" || /[\r\n\0]/.test(command)) {
+    throw new Error("command path is invalid");
+  }
+  const hasPathSeparator = command.includes("/") || command.includes("\\") || command.includes(sep);
+  const candidates = isAbsolute(command) || hasPathSeparator
+    ? [isAbsolute(command) ? command : resolve(cwd, command)]
+    : (environment.PATH ?? "")
+      .split(delimiter)
+      .map((directory) => resolve(cwd, directory || ".", command));
+  for (const candidate of candidates) {
+    try {
+      const invocationPath = resolve(candidate);
+      const canonicalTarget = realpathSync(invocationPath);
+      if (!lstatSync(canonicalTarget).isFile()) continue;
+      accessSync(invocationPath, constants.X_OK);
+      return invocationPath;
+    } catch (error) {
+      if (["ENOENT", "ENOTDIR", "EACCES"].includes(error?.code)) continue;
+      throw error;
+    }
+  }
+  throw new Error(`command executable is unavailable: ${command}`);
+}
+
+export function compilerProgramPath(compiler, program, {
+  cwd = process.cwd(),
+  environment = process.env,
+} = {}) {
+  if (!/^[A-Za-z0-9_.+-]+$/.test(program)) {
+    throw new Error(`compiler program name is invalid: ${program}`);
+  }
+  const compilerPath = commandPath(compiler, { cwd, environment });
+  const args = [`-print-prog-name=${program}`];
+  const result = spawnSync(compilerPath, args, {
+    cwd,
+    env: environment,
+    encoding: "utf8",
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`${compilerPath} ${args.join(" ")} failed with exit code ${result.status}`);
+  }
+  const reported = result.stdout.trim();
+  if (reported === "" || /[\r\n\0]/.test(reported)) {
+    throw new Error(`${compilerPath} reported an invalid ${program} path`);
+  }
+  try {
+    return commandPath(reported, { cwd, environment });
+  } catch (error) {
+    throw new Error(`${compilerPath} reported ${program} executable is unavailable: ${reported}`, { cause: error });
+  }
 }
 
 export function assertEnvironmentVariablesUnset(environment, names, label) {
@@ -155,23 +212,23 @@ export function readDependencyBuildCache({ marker, installRoot, buildIdentitySha
   if (recorded.buildIdentitySha256 !== buildIdentitySha256) return null;
 
   if (!existsSync(installRoot)) throw new Error(`${label} install tree is missing`);
-  const installTreeSha256 = directoryTreeSha256(installRoot);
-  if (recorded.installTreeSha256 !== installTreeSha256) {
-    throw new Error(`${label} install tree sha256 mismatch: expected ${recorded.installTreeSha256}, got ${installTreeSha256}`);
+  const actualInstallTreeSha256 = installTreeSha256(installRoot);
+  if (recorded.installTreeSha256 !== actualInstallTreeSha256) {
+    throw new Error(`${label} install tree sha256 mismatch: expected ${recorded.installTreeSha256}, got ${actualInstallTreeSha256}`);
   }
-  return { buildIdentitySha256, installTreeSha256 };
+  return { buildIdentitySha256, installTreeSha256: actualInstallTreeSha256 };
 }
 
 export function writeDependencyBuildCache({ marker, installRoot, buildIdentitySha256, label }) {
   requireSha256(buildIdentitySha256, `${label} build identity sha256`);
   const buildRootStat = lstatSync(dirname(marker), { throwIfNoEntry: false });
   if (!buildRootStat?.isDirectory()) throw new Error(`${label} build root is not a directory`);
-  const installTreeSha256 = directoryTreeSha256(installRoot);
+  const computedInstallTreeSha256 = installTreeSha256(installRoot);
   const temporary = join(dirname(marker), `.done.${process.pid}.${randomUUID()}.tmp`);
   const contents = JSON.stringify({
     schemaVersion: 1,
     buildIdentitySha256,
-    installTreeSha256,
+    installTreeSha256: computedInstallTreeSha256,
   }) + "\n";
   try {
     writeFileSync(temporary, contents, { flag: "wx" });
@@ -179,5 +236,5 @@ export function writeDependencyBuildCache({ marker, installRoot, buildIdentitySh
   } finally {
     rmSync(temporary, { force: true });
   }
-  return { buildIdentitySha256, installTreeSha256 };
+  return { buildIdentitySha256, installTreeSha256: computedInstallTreeSha256 };
 }
