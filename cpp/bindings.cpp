@@ -179,7 +179,7 @@ static void enforceAuthorizedHost() {}
  * storage. These helpers contain allocation/view failures and return a
  * status or a null handle, allowing C++ to release PIX/buffer ownership on
  * every path. */
-EM_JS(int, copyJsBytesToWasm, (EM_VAL source_handle, uint8_t *dest, size_t size, int force_fail), {
+EM_JS(int, copyJsBytesToWasm, (emscripten::EM_VAL source_handle, uint8_t *dest, size_t size, int force_fail), {
   try {
     if (force_fail) return 0;
     const source = Emval.toValue(source_handle);
@@ -192,7 +192,7 @@ EM_JS(int, copyJsBytesToWasm, (EM_VAL source_handle, uint8_t *dest, size_t size,
   }
 });
 
-EM_JS(EM_VAL, copyWasmBytesToJs, (const uint8_t *source, size_t size, int force_fail), {
+EM_JS(emscripten::EM_VAL, copyWasmBytesToJs, (const uint8_t *source, size_t size, int force_fail), {
   try {
     if (force_fail) return Emval.toHandle(null);
     const out = new Uint8Array(size);
@@ -206,7 +206,7 @@ EM_JS(EM_VAL, copyWasmBytesToJs, (const uint8_t *source, size_t size, int force_
 /* Copy a C heap buffer into a freshly allocated JS Uint8Array, then free
  * the native allocation regardless of whether JS allocation/copy succeeds. */
 static val copyToJs(uint8_t *data, size_t size) {
-  EM_VAL handle = copyWasmBytesToJs(
+  emscripten::EM_VAL handle = copyWasmBytesToJs(
     data, size, consumeTestFault("copyWasmBytesToJs") ? 1 : 0);
   lept_free(data);
   return val::take_ownership(handle);
