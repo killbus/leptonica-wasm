@@ -81,6 +81,34 @@ The following URLs identify the exact source revision.
   structures, not an official 16 bytes/pixel constant. No dewarp memory
   measurement is claimed here.
 
+## Curated decoder-reachability evidence
+
+Inspected on 2026-09-07 against the same pinned Leptonica commit and the
+default artifacts from CI run `34089310296`.
+
+- The failed default symbol map contains `pixMorphSequence` together with
+  `jpeg_read_header`, `jpeg_CreateDecompress`, `jpeg_stdio_src`, and
+  `jpeg_resync_to_restart`; the earlier successful main artifact contains none
+  of those decoder symbols.
+- [adaptmap.c, lines 876-930](https://github.com/DanBloomberg/leptonica/blob/13275a278eb55b5746e33f95fbf5a2c8f604b3ab/src/adaptmap.c#L876)
+  shows `pixGetBackgroundGrayMap()` calling
+  `pixMorphSequence(pixb, "d7.1 + d1.7", 0)`.
+- [morphseq.c, lines 137-235](https://github.com/DanBloomberg/leptonica/blob/13275a278eb55b5746e33f95fbf5a2c8f604b3ab/src/morphseq.c#L137)
+  retains `pixDisplay()` in the compiled function body even though this call
+  site passes `dispsep = 0`; ordinary static linking cannot assume that runtime
+  argument throughout a separately compiled archive member.
+- [environ.h, lines 396-476](https://github.com/DanBloomberg/leptonica/blob/13275a278eb55b5746e33f95fbf5a2c8f604b3ab/src/environ.h#L396)
+  defines `NO_CONSOLE_IO` as message-severity control. It does not remove the
+  `pixDisplay()` branch.
+- [writefile.c, lines 855-923](https://github.com/DanBloomberg/leptonica/blob/13275a278eb55b5746e33f95fbf5a2c8f604b3ab/src/writefile.c#L855)
+  places `pixDisplay()` and generic image-writing behavior in the desktop I/O
+  translation unit. A curated-only definition of `pixDisplay()` can satisfy
+  the debug edge before archive extraction; the full-ABI build must omit that
+  definition so its upstream ABI and behavior remain intact.
+
+This is a source-and-artifact causal hypothesis, not final proof. A clean
+target-WASM link must still pass the existing decoder-symbol gate.
+
 ## Fixed-commit pnpm installation research
 
 Official sources inspected on 2026-09-06:

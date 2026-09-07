@@ -171,7 +171,7 @@ runtime surface. Static and simulated-runtime coverage also verifies that
 Leptonica.close() continues destroying remaining Pix values after an ordinary
 destructor error before rethrowing the first failure.
 
-The 2026-09-07 lightweight run passed typecheck, 65 tests, release-contract
+The 2026-09-07 lightweight run passed typecheck, 66 tests, release-contract
 tests, task validation, and `git diff --check`. Five artifact-dependent files
 containing 58 tests skipped because `dist`/`dist-instrumented` are absent; those
 tests are unverified, not passing. The focused fatal/transfer/instrumentation
@@ -222,6 +222,20 @@ current output buffer. CI still must compile this path, run the allocation and
 growth-fault cases, verify a complete grown JPEG stream, and re-run the
 decode-symbol gate before this evidence is considered closed.
 
+The follow-up CI run from commit `61d08799893c1ae974b3763328c9355d2740d736`
+still stopped at the same gate. Its default symbol map contained
+`jpeg_read_header`, `jpeg_CreateDecompress`, `jpeg_stdio_src`, and
+`jpeg_resync_to_restart`. Fixed-source inspection traced the remaining edge to
+background normalization: `pixGetBackgroundGrayMap()` calls
+`pixMorphSequence(..., 0)`, whose compiled body retains a runtime debug call to
+`pixDisplay()`. `NO_CONSOLE_IO` controls diagnostic messages only and does not
+remove that display branch. The pending fix gives curated builds an inert
+`pixDisplay()` definition so the static linker does not extract Leptonica's
+desktop `writefile.c` object and generic decoder graph. Full-ABI builds omit
+the override and retain upstream behavior. The source-level contract proves
+the intended build split; only a clean CI link and the existing symbol-map
+gate can prove that the decoder path is absent from the resulting WASM.
+
 A local Vite preflight also found that Vite 7.2 does not resolve this
 repository's own bare package self-reference from the nested `tests/e2e` dev
 server root: both browser pages returned HTTP 500 before loading any test code.
@@ -244,10 +258,10 @@ absent locally.
 | One fatal response settles every concurrent pending request | Unit coverage passes; the browser case requires both promises to reject within 2 seconds | Locally simulated; target-browser proof pending |
 | Fatal retirement tears down once and blocks later dispatch/WASM re-entry | Unit coverage passes; browser test separately checks production teardown and a delayed physical-termination terminal gate | Locally simulated; target-browser proof pending |
 | A fresh Worker/module remains usable after another instance traps | Browser test creates a separate clean instance and checks a 1x1 load | CI-only proof pending |
-| Curated build remains decode-free after preserving `toJPEG()` | Compression-only source path and static call-site contract are present | Compile/link/symbol-map proof pending |
+| Curated build remains decode-free after preserving `toJPEG()` | Compression-only JPEG path plus a curated-only inert `pixDisplay()` link boundary are present; full ABI omits the override | Compile/link/symbol-map proof pending |
 | Recoverable JPEG allocation and destination-growth failures leave no tracked native blocks | Instrumented allocation sweep and named growth fault are present | Target-WASM execution pending |
 | General-purpose binding boundary is preserved | No `documentClean`, pdfhow profile, fixed operation order, output policy, or deskew policy appears in the package API | Proven by current source inspection |
-| Feasible local contracts pass without a native/WASM rebuild | Typecheck, 65 tests, release contract, task validation, 28 focused tests, syntax checks, and `git diff --check` pass | Proven locally; 58 artifact-dependent tests remain skipped/unverified |
+| Feasible local contracts pass without a native/WASM rebuild | Typecheck, 66 tests, release contract, task validation, 28 focused tests, syntax checks, and `git diff --check` pass | Proven locally; 58 artifact-dependent tests remain skipped/unverified |
 
 Remote PR #12 still points at `06166cd9fecbc89efe5a2ea7b32253354ea42657`.
 Its `ci` job failed at the default decode-symbol gate before the instrumented
@@ -260,6 +274,10 @@ The required independent DBS chatroom review was retried at this audit gate.
 All three `gpt-5.6-sol` dispatches were rejected before instance creation
 because that route is unavailable; no alternate model was substituted and no
 agent-owned goal or review result exists.
+The same three-perspective review was attempted again after the curated-display
+link isolation change, with each instance instructed to create its own goal as
+its first action. The platform again rejected the required model before any
+instance existed, so this remains an explicit outstanding review gate.
 
 ## M5: External real-scan comparison (R8)
 

@@ -22,6 +22,17 @@
 
 using emscripten::val;
 
+#ifdef LEPTONICA_WASM_CURATED_NO_DISPLAY
+/* The curated Web surface has no display operation, while several upstream
+ * algorithms retain runtime-only pixDisplay() debug branches. Supplying the
+ * inert implementation here prevents those unreachable desktop branches from
+ * extracting writefile.o (and its generic decode graph) from libleptonica.a.
+ * Full-ABI builds omit this definition and retain Leptonica's native API. */
+extern "C" l_ok pixDisplay(PIX *, l_int32, l_int32) {
+  return 0;
+}
+#endif
+
 #ifdef LEPTONICA_WASM_TEST_INSTRUMENTATION
 /* Test-only allocator instrumentation. Leptonica is compiled with
  * LEPTONICA_INTERCEPT_ALLOC in the isolated instrumented build, so every

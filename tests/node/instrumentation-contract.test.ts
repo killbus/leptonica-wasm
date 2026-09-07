@@ -70,6 +70,16 @@ describe("CI-only native fault instrumentation contract", () => {
     expect(executableBindings).toMatch(/\bjpeg_destroy_compress\s*\(/);
   });
 
+  it("cuts desktop debug display from curated links without changing full ABI", () => {
+    expect(build).toMatch(
+      /if \(!fullAbi\) \{[\s\S]*?emccArgs\.push\("-DLEPTONICA_WASM_CURATED_NO_DISPLAY"\);[\s\S]*?\}/,
+    );
+    expect(bindings).toContain('#ifdef LEPTONICA_WASM_CURATED_NO_DISPLAY');
+    expect(executableBindings).toMatch(
+      /extern \"C\" l_ok pixDisplay\(PIX \*, l_int32, l_int32\) \{\s*return 0;\s*\}/,
+    );
+  });
+
   it("makes the instrumented runtime suite mandatory in CI", () => {
     expect(ci).toContain("node scripts/build.mjs --test-instrumentation");
     expect(ci).toContain("test -f dist-instrumented/leptonica.mjs");
