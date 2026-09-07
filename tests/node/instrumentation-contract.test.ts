@@ -83,6 +83,16 @@ describe("CI-only native fault instrumentation contract", () => {
     );
   });
 
+  it("gives curated links section-level dead-code isolation without disabling codecs", () => {
+    expect(build).toContain('"-ffunction-sections"');
+    expect(build).toContain('"-fdata-sections"');
+    expect(build).toMatch(
+      /if \(!fullAbi\) \{[\s\S]*?"-Wl,--gc-sections"[\s\S]*?\}/,
+    );
+    expect(build).not.toContain('"-DENABLE_PNG=OFF"');
+    expect(build).not.toContain('"-DENABLE_JPEG=OFF"');
+  });
+
   it("captures curated linker extraction evidence outside publishable artifacts", () => {
     expect(build).toContain("--link-diagnostics");
     expect(build).toContain("tmp/link-diagnostics");

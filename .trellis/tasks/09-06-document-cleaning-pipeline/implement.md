@@ -278,7 +278,22 @@ The current diagnostic revision adds an opt-in
 `--link-diagnostics` build argument. Its output is restricted to
 `tmp/link-diagnostics/`, passes lld `--why-extract`, traces `pixRead` and
 `jpeg_read_header`, and uploads the extraction report from CI even when the
-export gate fails. The report is outside `dist`, package files, release
+symbol gate fails. Run `34103003138` established the surviving extraction
+chain as `bindings.o -> adaptmap.c.o -> morphseq.c.o -> morphapp.c.o ->
+compare.c.o -> pdfio1.c.o -> pdfio2.c.o -> jpegio.c.o`. The edges cross
+unrelated functions co-located in the same Leptonica translation units; they
+do not represent a curated call to a decoder.
+
+The next falsifiable revision preserves Leptonica's codec-enabled API instead
+of replacing upstream behavior with a pdfhow-specific build. Leptonica is
+compiled with function/data sections and curated links explicitly enable
+section GC. Full ABI uses the same complete source and codec configuration and
+continues exporting the upstream functions. This is intentionally narrower
+than disabling JPEG/PNG (which would change the existing general `toPNG()`
+contract) and more systematic than wrapping each incidental PDF/read/debug
+symbol. The target symbol-map gate remains authoritative: if any decoder
+section is genuinely reachable, CI must still fail. The report is outside
+`dist`, package files, release
 tarballs, and hash manifests. The current upstream wasm lld option table and
 tests contain both `--why-extract=` and `--trace-symbol`; the exact pinned
 emsdk 6.0.9 binary is intentionally not installed locally, so target-toolchain

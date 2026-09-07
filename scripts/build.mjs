@@ -52,6 +52,18 @@ function ensureSource(name, pin) {
 }
 
 function createDepConfigs(installRoot, testInstrumentation) {
+  // Several Leptonica source files contain unrelated public algorithms and
+  // desktop/debug I/O helpers in the same translation unit.  Static archive
+  // extraction works at object-file granularity, so a curated algorithm can
+  // otherwise make an unrelated decoder graph available to the final link.
+  // Preserve every upstream function for the full-ABI build, but give lld
+  // section-level granularity so curated links can discard functions that are
+  // not reachable from the binding surface.
+  const leptonicaCFlags = [
+    "-ffunction-sections",
+    "-fdata-sections",
+    ...(testInstrumentation ? ["-DLEPTONICA_INTERCEPT_ALLOC"] : []),
+  ].join(" ");
   return [
   {
     name: "zlib",
@@ -83,7 +95,7 @@ function createDepConfigs(installRoot, testInstrumentation) {
   {
     name: "leptonica",
     extra: [
-      ...(testInstrumentation ? ["-DCMAKE_C_FLAGS=-DLEPTONICA_INTERCEPT_ALLOC"] : []),
+      `-DCMAKE_C_FLAGS=${leptonicaCFlags}`,
       "-DENABLE_WEBP=OFF",
       "-DENABLE_OPENJPEG=OFF",
       "-DENABLE_GIF=OFF",
@@ -217,6 +229,11 @@ function linkOutputs({ exportsPath, generatedIncludeDir, outDir, fullAbi, optLev
     emccArgs.push(
       "-DLEPTONICA_WASM_CURATED_NO_DISPLAY",
       "-Wl,--wrap=pixDisplay",
+      // Archive extraction may still inspect an object that contains a dead
+      // reference, but section GC keeps that unrelated function and the codec
+      // graph it names out of the curated artifact. Full ABI deliberately
+      // omits this option and exports the complete upstream surface.
+      "-Wl,--gc-sections",
     );
   }
   if (testInstrumentation) {

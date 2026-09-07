@@ -120,6 +120,24 @@ the compile-time wrapper and linker option.
 This is a source-and-artifact causal hypothesis, not final proof. A clean
 target-WASM link must still pass the existing decoder-symbol gate.
 
+The later `--why-extract` report from CI run `34103003138` showed a second,
+longer object-granularity chain: `pixCleanBackgroundToWhite` extracts
+`adaptmap.c.o`; `pixMorphSequence` extracts `morphseq.c.o`; a `pixTophat`
+reference extracts `morphapp.c.o`; an unrelated `pixEqual` reference extracts
+`compare.c.o`; and debug/PDF helpers then reach `pdfio1.c.o`, `pdfio2.c.o`,
+`jpegio.c.o`, and `jpeg_read_header`. Source inspection confirms the
+`pixEqual`, PDF, and decoder references are not on the curated background
+normalization execution path; they are neighboring functions in the same
+archive members.
+
+The next experiment therefore changes link granularity, not public
+capability: compile Leptonica with `-ffunction-sections -fdata-sections` and
+pass `--gc-sections` only on curated links. JPEG and PNG remain enabled,
+`toPNG()` keeps its existing Leptonica-backed behavior, and full ABI still
+exports the complete codec-enabled surface. This hypothesis is unproved until
+the target-WASM symbol map excludes the decoder-library patterns and the full
+ABI/runtime gates pass.
+
 ## Fixed-commit pnpm installation research
 
 Official sources inspected on 2026-09-06:
