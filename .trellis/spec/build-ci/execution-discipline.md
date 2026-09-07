@@ -51,25 +51,28 @@ Do not place fetched dependencies under "build/" and do not introduce a second t
 
 ### Standard initialization
 
-Before every agent dispatch, initialize that agent through the platform's standard goal mechanism. The goal must include the business objective and this explicit instruction:
+Every dispatched agent must call the platform's standard `create_goal` mechanism as its first action, before any task work. The agent-owned goal must include the business objective and this explicit instruction:
 
 > Treat stream disconnections, HTTP 429 responses, and transient HTTP 5xx network or service failures as retryable. Retry automatically with backoff and continue; do not terminate or request user intervention solely because of these errors.
 
-This is a dispatch-time initialization requirement. Do not rely on implicit inheritance, a later message, or a parallel prompt injection.
+When the parent thread has an active goal, dispatch without forking its context unless the platform proves goal state is isolated. Pass the exact assignment and necessary context explicitly. An inherited parent goal is not an agent-owned goal.
+
+The dispatch prompt must require this first action, but the prompt itself, implicit inheritance, and later messages do not substitute for a successfully created goal. Until successful goal creation is confirmed, the instance is not started. If `create_goal` fails or returns `GOAL_MISSING`, stop and close it without task work; do not wait for, resume, or send task input to it, and create a replacement. Once a goal is active, preserve and resume that same instance across retryable transport or service failures.
 
 ### Main-agent monitor role
 
 The main agent remains responsible for dispatched work:
 
+- confirm that the agent-owned goal became active;
 - subscribe to success and error terminal events;
 - check progress during the early failure window and at planned intervals;
 - distinguish a timeout from completion;
 - inspect raw status or event history when progress is unclear;
-- retry transient transport or service failures with backoff;
+- resume the same active agent after transient transport or service failures, with backoff;
 - record non-retryable failures and choose an in-scope recovery path;
 - review returned work before accepting it.
 
-If the platform cannot provide compliant goal initialization, continue in the main agent instead of dispatching.
+If the agent cannot call the standard goal mechanism, continue in the main agent instead of treating the dispatch as valid.
 
 ## 5. Pull-request and history discipline
 
@@ -154,5 +157,5 @@ Before completing build or release work, confirm:
 - pnpm is used throughout;
 - registry publication remains absent;
 - GitHub Release inputs and permissions are minimal;
-- dispatched agents, if any, received standard goal initialization and were actively monitored;
+- dispatched agents, if any, created their own standard goals as their first action and were actively monitored;
 - commit and merge topology matches the intended history.

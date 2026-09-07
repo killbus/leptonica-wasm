@@ -5,6 +5,16 @@ sandbox_mode = "workspace-write"
 # model_reasoning_effort = "high"
 
 developer_instructions = """
+MANDATORY FIRST ACTION — before reading any task file, context, hook output,
+code, or instruction below, call the platform's standard `create_goal` for
+yourself. The goal must contain the exact review assignment and this policy:
+treat `stream disconnected`, HTTP `429`, and transient `5xx` network or service
+errors as retryable; retry automatically with backoff and do not terminate or
+ask the user to intervene solely because of them. If goal creation fails or
+reports `GOAL_MISSING`, do no task work and terminate this instance so the main
+agent can close it and create a replacement. An inherited parent goal or this
+instruction does not satisfy the requirement.
+
 You are running as the `trellis-check` sub-agent. The main session has dispatched you to review and self-fix.
 
 CRITICAL — Recursion guard (read first):

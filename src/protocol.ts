@@ -48,6 +48,39 @@ export interface SauvolaOp {
   readonly factor?: number;
 }
 
+export interface CleanBackgroundToWhiteOp {
+  readonly op: "cleanBackgroundToWhite";
+  readonly gamma: number;
+  readonly black: number;
+  readonly white: number;
+}
+
+export interface SauvolaTiledOp {
+  readonly op: "sauvolaTiled";
+  readonly whsize: number;
+  readonly factor: number;
+  readonly nx: number;
+  readonly ny: number;
+}
+
+/** Connected-component area comparison, matching Leptonica's four selectors. */
+export type AreaSelection = "lt" | "gt" | "lte" | "gte";
+
+export interface SelectByAreaOp {
+  readonly op: "selectByArea";
+  /** Finite non-negative threshold representable by Leptonica's l_float32. */
+  readonly thresholdArea: number;
+  readonly connectivity: 4 | 8;
+  readonly relation: AreaSelection;
+}
+
+export interface MaskOverColorPixelsOp {
+  readonly op: "maskOverColorPixels";
+  readonly thresholdDiff: number;
+  /** Positive int32 8-connected distance; over-image kernels yield an empty mask. */
+  readonly minDistance: number;
+}
+
 export interface DeskewOp {
   readonly op: "deskew";
   /** Search reduction ∈ {1, 2, 4} (0 → default 2; smaller = finer). */
@@ -134,6 +167,10 @@ export type Op =
   | ThresholdOp
   | OtsuOp
   | SauvolaOp
+  | CleanBackgroundToWhiteOp
+  | SauvolaTiledOp
+  | SelectByAreaOp
+  | MaskOverColorPixelsOp
   | DeskewOp
   | RotateOp
   | ScaleOp
@@ -173,6 +210,10 @@ export const OP_DEPTH_RULES: Readonly<Record<Op["op"], DepthRule>> = {
   otsu: { requires: [8], produces: 1 },
   // pixSauvolaBinarizeTiled (binarize.c): requires 8bpp.
   sauvola: { requires: [8], produces: 1 },
+  cleanBackgroundToWhite: { requires: [8, 32], produces: (d) => d },
+  sauvolaTiled: { requires: [8], produces: 1 },
+  selectByArea: { requires: [1], produces: 1 },
+  maskOverColorPixels: { requires: [32], produces: 1 },
   // pixDeskewGeneral (skew.c): for non-1bpp inputs pixConvertTo1 is used
   // only to FIND the angle; the output is pixRotate(origImage) or
   // pixClone(origImage) — any depth accepted, depth preserved.

@@ -9,6 +9,24 @@
  */
 
 import type { HandleId, WorkerRequest, WorkerResponse } from "./protocol.ts";
+import type { PackedMask } from "../core/types.ts";
+import { toTransferableArrayBuffer } from "./bytes.ts";
+
+const remoteHandles = new WeakMap<RemotePix, HandleId>();
+const remotePixConstructionToken = Symbol("leptonica-wasm RemotePix construction");
+let createRemotePix: (
+  session: WorkerSession,
+  id: HandleId,
+  width: number,
+  height: number,
+  depth: number,
+) => RemotePix;
+
+function remoteHandleFor(pix: RemotePix): HandleId {
+  const handle = remoteHandles.get(pix);
+  if (handle === undefined) throw new ReferenceError("RemotePix handle is unavailable");
+  return handle;
+}
 
 /** Options for createSession. */
 export interface SessionOptions {
@@ -25,8 +43,6 @@ export class RemotePix {
   /** @internal — session backref for request dispatch. */
   readonly #session: WorkerSession;
   /** @internal */
-  readonly id: HandleId;
-  /** @internal */
   readonly width: number;
   /** @internal */
   readonly height: number;
@@ -34,10 +50,25 @@ export class RemotePix {
   readonly depth: number;
   #poisoned = false;
 
+  static {
+    createRemotePix = (session, id, width, height, depth) =>
+      new RemotePix(session, id, width, height, depth, remotePixConstructionToken);
+  }
+
   /** @internal — constructed by WorkerSession only. */
-  constructor(session: WorkerSession, id: HandleId, width: number, height: number, depth: number) {
+  private constructor(
+    session: WorkerSession,
+    id: HandleId,
+    width: number,
+    height: number,
+    depth: number,
+    token: symbol,
+  ) {
+    if (token !== remotePixConstructionToken) {
+      throw new TypeError("RemotePix cannot be constructed directly");
+    }
     this.#session = session;
-    this.id = id;
+    remoteHandles.set(this, id);
     this.width = width;
     this.height = height;
     this.depth = depth;
@@ -80,6 +111,21 @@ export class RemotePix {
   /** Extract RGBA bytes (32bpp only). */
   toRGBA(): Promise<Uint8Array> {
     return this.#session.extract(this, "rgba");
+  }
+
+  /** Extract a compact, row-major MSB-first mask (1bpp only). */
+  async toMask(): Promise<PackedMask> {
+    await Promise.resolve().then(() => this.#assertAlive("toMask"));
+    if (this.depth !== 1) throw new TypeError(`toMask: requires 1bpp, got ${this.depth}bpp`);
+    const data = await this.#session.extract(this, "mask");
+    return {
+      data,
+      width: this.width,
+      height: this.height,
+      strideBytes: Math.ceil(this.width / 8),
+      bitOrder: "msb-first",
+      foregroundBit: 1,
+    };
   }
 
   /** Query: deskew angle estimate (1bpp only). */
@@ -145,6 +191,7 @@ export class WorkerSession {
   #nextRequestId = 1;
   #closed = false;
   #terminated = false;
+  #terminationReason: Error | null = null;
 
   /** @internal — created by createSession(). */
   constructor(
@@ -183,7 +230,8 @@ export class WorkerSession {
 
   /**
    * Load RGBA bytes as a new 32bpp Pix in the worker's arena.
-   * The buffer is transferred, not copied — the caller's view detaches.
+   * A full view over an ArrayBuffer is transferred and detaches. Partial or
+   * SharedArrayBuffer-backed views are copied exactly before transfer.
    */
   load(data: Uint8Array | ArrayBufferView, w: number, h: number): Promise<RemotePix> {
     // Async API: refusals surface as rejections, uniform with the
@@ -196,13 +244,13 @@ export class WorkerSession {
     if (!Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0) {
       throw new RangeError(`load: bad dimensions ${w}x${h}`);
     }
-    const bytes = data.buffer instanceof ArrayBuffer ? data.buffer : data;
-    if (bytes.byteLength !== w * h * 4) {
-      throw new RangeError(`load: expected ${w * h * 4} bytes, got ${bytes.byteLength}`);
+    if (data.byteLength !== w * h * 4) {
+      throw new RangeError(`load: expected ${w * h * 4} bytes, got ${data.byteLength}`);
     }
-    return this.#request({ id: this.#nextRequestId++, type: "load", buffer: bytes as ArrayBuffer, w, h }, [bytes as ArrayBuffer]).then((r) => {
+    const buffer = toTransferableArrayBuffer(data);
+    return this.#request({ id: this.#nextRequestId++, type: "load", buffer, w, h }, [buffer]).then((r) => {
       if (!r.ok || r.type !== "load") throw new Error(`load: unexpected response ${JSON.stringify(r)}`);
-      const pix = new RemotePix(this, r.handle, r.width, r.height, r.depth);
+      const pix = createRemotePix(this, r.handle, r.width, r.height, r.depth);
       this.#live.add(pix);
       return pix;
     });
@@ -221,9 +269,9 @@ export class WorkerSession {
       return Promise.reject(err);
     }
     if (source.isPoisoned()) throw new ReferenceError("run: source RemotePix is not usable");
-    const r = await this.#request({ id: this.#nextRequestId++, type: "run", source: source.id, ops: [...ops] });
+    const r = await this.#request({ id: this.#nextRequestId++, type: "run", source: remoteHandleFor(source), ops: [...ops] });
     if (!r.ok || r.type !== "run") throw new Error(`run: unexpected response ${JSON.stringify(r)}`);
-    const pix = new RemotePix(this, r.handle, r.width, r.height, r.depth);
+    const pix = createRemotePix(this, r.handle, r.width, r.height, r.depth);
     this.#live.add(pix);
     return pix;
   }
@@ -269,26 +317,38 @@ export class WorkerSession {
   }
 
   /** @internal — mark terminated without a round trip (worker died). */
-  markTerminated(): void {
+  markTerminated(reason: Error = new Error("worker terminated")): void {
+    if (this.#terminated) return;
     this.#terminated = true;
+    this.#terminationReason = reason;
     for (const pix of this.#live) pix.poison();
     this.#live.clear();
-    this.#rejectPending(new Error("worker terminated"));
+    this.#rejectPending(reason);
     this.#runTeardown();
   }
 
-  /** @internal — extract dispatch (RemotePix calls this; it checks liveness itself). */
-  extract(pix: RemotePix, format: "rgba" | "png" | "jpeg", quality?: number): Promise<Uint8Array> {
-    const req: WorkerRequest = { id: this.#nextRequestId++, type: "extract", handle: pix.id, format, ...(quality !== undefined ? { quality } : {}) };
+  /** @internal — extract dispatch with session ownership and liveness checks. */
+  extract(pix: RemotePix, format: "rgba" | "png" | "jpeg" | "mask", quality?: number): Promise<Uint8Array> {
+    try {
+      this.#assertUsablePix(pix, `extract:${format}`);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+    const req: WorkerRequest = { id: this.#nextRequestId++, type: "extract", handle: remoteHandleFor(pix), format, ...(quality !== undefined ? { quality } : {}) };
     return this.#request(req).then((r) => {
       if (!r.ok || r.type !== "extract") throw new Error(`extract: unexpected response ${JSON.stringify(r)}`);
       return new Uint8Array(r.buffer);
     });
   }
 
-  /** @internal — query dispatch (RemotePix checks liveness itself). */
+  /** @internal — query dispatch with session ownership and liveness checks. */
   query(pix: RemotePix, query: import("../protocol.ts").Query): Promise<Extract<WorkerResponse, { ok: true; type: "query" }>["value"]> {
-    return this.#request({ id: this.#nextRequestId++, type: "query", handle: pix.id, query }).then((r) => {
+    try {
+      this.#assertUsablePix(pix, `query:${query.query}`);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+    return this.#request({ id: this.#nextRequestId++, type: "query", handle: remoteHandleFor(pix), query }).then((r) => {
       if (!r.ok || r.type !== "query") throw new Error(`query: unexpected response ${JSON.stringify(r)}`);
       return r.value;
     });
@@ -300,11 +360,32 @@ export class WorkerSession {
     }
     return new Promise<WorkerResponse>((resolve, reject) => {
       this.#pending.set(msg.id, { resolve, reject });
-      this.#post(msg, transfer);
+      try {
+        this.#post(msg, transfer);
+      } catch (error) {
+        // A synchronous transport failure means no response can complete this
+        // request. Remove its resolver immediately so a malformed or delayed
+        // message cannot revive stale state, and so a live session does not
+        // retain one pending entry per failed post.
+        this.#pending.delete(msg.id);
+        reject(error);
+      }
     });
   }
 
   #onResponse(response: WorkerResponse): void {
+    // Fatal is a session-wide control signal, so it remains authoritative
+    // even if its request was already rejected locally. Check only the
+    // explicit discriminator here: ordinary stale responses must be ignored
+    // without inspecting their payload (the transport may already have
+    // invalidated or detached it).
+    if ("fatal" in response && response.fatal === true) {
+      const error = new WebAssembly.RuntimeError(
+        `worker retired after fatal WebAssembly trap: ${response.error}`,
+      );
+      this.markTerminated(error);
+      return;
+    }
     const pending = this.#pending.get(response.id);
     if (pending === undefined) {
       // A response for a request we already rejected (e.g. after close).
@@ -329,8 +410,19 @@ export class WorkerSession {
     }
   }
 
+  #assertUsablePix(pix: RemotePix, what: string): void {
+    this.#assertOpen(what);
+    this.#assertOwns(pix, what);
+    pix.assertAlive(what);
+  }
+
   #assertOpen(what: string): void {
-    if (this.isClosed()) {
+    if (this.#terminated) {
+      throw new ReferenceError(
+        `WorkerSession is terminated (call: ${what}; reason: ${this.#terminationReason?.message ?? "worker terminated"})`,
+      );
+    }
+    if (this.#closed) {
       throw new ReferenceError(`WorkerSession is closed (call: ${what})`);
     }
   }

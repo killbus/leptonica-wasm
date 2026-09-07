@@ -4,6 +4,8 @@ dist/
 coverage/
 *.tsbuildinfo
 *.log
+__pycache__/
+*.pyc
 .DS_Store
 .cache/
 .zvec-grep/

@@ -2,8 +2,8 @@ name: release
 
 # GitHub Release workflow (M6, design §3): CI is the ONLY source of published
 # artifacts — local builds never publish. Tag push (v*) triggers: install →
-# build (default profile) → test → generate the dist sha256 manifest → pack
-# review → create a GitHub Release with the package tarball attached.
+# prepare the complete package → test → independent tarball/Git consumers →
+# create a GitHub Release with the already-tested tarball attached.
 # npm publishing is DISABLED by design (user direction 2026-09-05): the
 # tarball asset on the GitHub Release is the distribution artifact, and
 # remains installable via the release URL.
@@ -30,7 +30,7 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 90
     steps:
       # v7.0.1 (2026-07-20): https://github.com/actions/checkout/releases/tag/v7.0.1
       # Same pin+research trail as ci.yml.
@@ -84,32 +84,22 @@ jobs:
           corepack enable pnpm
           pnpm install --frozen-lockfile --ignore-scripts
 
-      - name: Build (default profile)
+      - name: Pack release candidate
+        # prepack is the single package-preparation path used here and by a
+        # fixed-commit pnpm Git dependency: curated build -> full ABI build ->
+        # generated declarations/workers -> export/smoke checks -> provenance
+        # -> final hash manifest. Nothing in dist changes after this step.
+        env:
+          LEPTONICA_WASM_SOURCE_COMMIT: ${{ github.sha }}
         run: |
           . ./tmp/emsdk/emsdk_env.sh
-          node scripts/build.mjs
-
-      - name: Generate dist sha256 manifest
-        run: pnpm run hash-manifest
+          mkdir -p tmp/release-candidate
+          pnpm pack --pack-destination tmp/release-candidate
 
       - name: Test
-        run: pnpm test
-
-      - name: Build (full ABI)
-        # The raw escape hatch ships in the package (M3 re-adjudication
-        # of M2 F2: the no-decode promise applies to the DEFAULT dist/
-        # artifacts, not the package scope — dist/full-abi/ is the escape
-        # hatch, design §4.3 / PRD decision ⑦). Built from the same
-        # verified toolchain; its export surface is asserted below.
         run: |
-          . ./tmp/emsdk/emsdk_env.sh
-          node scripts/build.mjs --full-abi
-
-      - name: Check exports (full ABI)
-        run: node scripts/check-exports.mjs --full-abi dist/full-abi
-
-      - name: Smoke test (full ABI)
-        run: node scripts/smoke.mjs --full-abi dist/full-abi
+          test -f dist/full-abi/leptonica.wasm
+          pnpm test
 
       - name: Pack review
         # M2 F2, as re-adjudicated by M3: pack MUST include the full-abi
@@ -118,12 +108,13 @@ jobs:
         # release — an incomplete raw layer is worse than none.
         run: |
           set -euo pipefail
-          pnpm pack --pack-destination tmp
           # Read the full listing into a variable first: piping tar into
           # grep -qx makes grep exit on first match, tar dies with SIGPIPE,
           # and pipefail turns that into a false "missing" failure
           # (first seen in run 33949512439).
-          listing="$(tar -tzf tmp/leptonica-wasm-*.tgz)"
+          candidate=$(find tmp/release-candidate -maxdepth 1 -name 'leptonica-wasm-*.tgz' -print -quit)
+          test -n "$candidate"
+          listing="$(tar -tzf "$candidate")"
           for required in \
             package/dist/full-abi/leptonica.mjs \
             package/dist/full-abi/leptonica.wasm \
@@ -142,6 +133,19 @@ jobs:
           fi
           sort <<< "$listing"
 
+      - name: Fresh tarball consumer
+        run: |
+          candidate=$(find tmp/release-candidate -maxdepth 1 -name 'leptonica-wasm-*.tgz' -print -quit)
+          node scripts/run-consumer-gate.mjs --tarball "$candidate" --commit "${{ github.sha }}" --repeat 2
+
+      - name: Fresh fixed-commit Git consumer
+        run: |
+          . ./tmp/emsdk/emsdk_env.sh
+          node scripts/run-consumer-gate.mjs \
+            --github-repository "${{ github.repository }}" \
+            --commit "${{ github.sha }}" \
+            --repeat 2
+
       # npm publishing disabled (user direction 2026-09-05): distribution
       # is the release tarball asset, installable from the release URL.
       # GitHub's own attestation/signing replaces npm provenance here;
@@ -152,6 +156,6 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64
         with:
-          files: tmp/leptonica-wasm-*.tgz
+          files: tmp/release-candidate/leptonica-wasm-*.tgz
           generate_release_notes: true
           fail_on_unmatched_files: true

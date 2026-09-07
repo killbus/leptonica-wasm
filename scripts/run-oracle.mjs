@@ -12,7 +12,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { generateRgba, generateSlantRgba } from "./generate-rgba.mjs";
+import { generateNamedRgba } from "./generate-rgba.mjs";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const oracleBin = process.argv[2];
@@ -30,8 +30,7 @@ mkdirSync(outDir, { recursive: true });
 mkdirSync(workDir, { recursive: true });
 
 for (const chain of chains) {
-  const gen = chain.input === "slant" ? generateSlantRgba : generateRgba;
-  const rgba = gen(chain.width, chain.height);
+  const rgba = generateNamedRgba(chain.input, chain.width, chain.height);
   // Per-chain files carry the run's transient inputs (.rgba/.chain.json);
   // only the two outputs per chain are needed in the goldens dir.
   const rgbaPath = join(workDir, chain.name + ".rgba");

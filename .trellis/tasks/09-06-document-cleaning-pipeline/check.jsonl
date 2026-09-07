@@ -1,0 +1,4 @@
+{"file":".trellis/spec/build-ci/execution-discipline.md","reason":"Audit CI provenance, action pins, toolchain checks, pnpm/GitHub-only distribution and permitted execution"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Check complete native-to-worker-to-consumer contracts and no missing generated export consumers"}
+{"file":"docs/release-set-contract.md","reason":"Review release-set identity and private configuration boundaries against package changes"}
+{"file":".trellis/tasks/09-06-document-cleaning-pipeline/research-baseline.md","reason":"Verify each integration blocker against current evidence without treating earlier checks or skipped suites as proof"}

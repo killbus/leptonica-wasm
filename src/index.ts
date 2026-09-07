@@ -7,5 +7,5 @@
  */
 export { load } from "./core/load.ts";
 export { Leptonica, Pix } from "./core/types.ts";
-export type { Box, SkewResult } from "./core/types.ts";
+export type { Box, PackedMask, SkewResult } from "./core/types.ts";
 export type { ChainBuilder } from "./core/chain.ts";

@@ -33,6 +33,10 @@ declare module "leptonica-wasm/leptonica.mjs" {
     threshold(pix: PixHandle | null, level: number): PixHandle | null;
     otsu(pix: PixHandle | null, tile: number, factor: number): PixHandle | null;
     sauvola(pix: PixHandle | null, whsize: number, factor: number): PixHandle | null;
+    cleanBackgroundToWhite(pix: PixHandle | null, gamma: number, blackval: number, whiteval: number): PixHandle | null;
+    sauvolaTiled(pix: PixHandle | null, whsize: number, factor: number, nx: number, ny: number): PixHandle | null;
+    selectByArea(pix: PixHandle | null, thresholdArea: number, connectivity: 4 | 8, relation: "lt" | "gt" | "lte" | "gte"): PixHandle | null;
+    maskOverColorPixels(pix: PixHandle | null, thresholdDiff: number, minDistance: number): PixHandle | null;
     deskew(pix: PixHandle | null, reduction: number): PixHandle | null;
     rotate(pix: PixHandle | null, angle: number, quality: string): PixHandle | null;
     scale(pix: PixHandle | null, fx: number, fy: number): PixHandle | null;
@@ -57,6 +61,7 @@ declare module "leptonica-wasm/leptonica.mjs" {
     toPNG(pix: PixHandle | null): Uint8Array | null;
     toJPEG(pix: PixHandle | null, quality: number): Uint8Array | null;
     toRGBA(pix: PixHandle | null): Uint8Array | null;
+    toMask(pix: PixHandle | null): Uint8Array | null;
   }
 
   const factory: (moduleArg?: EmscriptenModuleArg) => Promise<CuratedModule>;

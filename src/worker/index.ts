@@ -26,6 +26,7 @@ export async function createSession(opts: SessionOptions = {}): Promise<WorkerSe
     postMessage(msg: unknown, transfer?: Transferable[]): void;
     addEventListener(type: "message", cb: (ev: { data: WorkerResponse }) => void): void;
     addEventListener(type: "error", cb: (ev: unknown) => void): void;
+    addEventListener(type: "messageerror", cb: (ev: unknown) => void): void;
     terminate(): void;
   } = domWorker;
   const session = new WorkerSession(
@@ -41,10 +42,15 @@ export async function createSession(opts: SessionOptions = {}): Promise<WorkerSe
     () => worker.terminate(),
   );
   worker.addEventListener("error", () => session.markTerminated());
+  worker.addEventListener("messageerror", () => session.markTerminated(new Error("worker message deserialization failed")));
   try {
     await session.init(opts.wasmPath);
   } catch (err) {
-    worker.terminate();
+    // Route initialization failures through the session's idempotent
+    // retirement gate. A fatal init response has already called the same
+    // teardown; terminating the native Worker directly here would do it
+    // twice. Ordinary init failures still retire and release it once.
+    session.terminate();
     throw err;
   }
   return session;
@@ -52,3 +58,4 @@ export async function createSession(opts: SessionOptions = {}): Promise<WorkerSe
 
 export { WorkerSession, RemotePix } from "./session.ts";
 export type { SessionOptions } from "./session.ts";
+export type { PackedMask } from "../core/types.ts";

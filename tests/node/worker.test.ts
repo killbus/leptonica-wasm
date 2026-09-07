@@ -14,6 +14,22 @@ import type { Op } from "../../src/protocol.ts";
 
 const artifactsPresent = existsSync(resolve("dist/leptonica.wasm")) && existsSync(resolve("dist/worker.mjs"));
 
+function maskPatternRgba(width = 9, height = 3): Uint8Array {
+  const rgba = new Uint8Array(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const foreground = y === 0 || (y === 1 && x % 2 === 0);
+      const value = foreground ? 0 : 255;
+      const i = (y * width + x) * 4;
+      rgba[i] = value;
+      rgba[i + 1] = value;
+      rgba[i + 2] = value;
+      rgba[i + 3] = 255;
+    }
+  }
+  return rgba;
+}
+
 describe.skipIf(!artifactsPresent)("worker session (Node worker_threads)", () => {
   let session: WorkerSession;
 
@@ -62,6 +78,21 @@ describe.skipIf(!artifactsPresent)("worker session (Node worker_threads)", () =>
     expect(png.buffer.byteLength).toBe(png.byteLength);
   });
 
+  it("toMask transfers exact compact bytes and metadata", async () => {
+    const src = await session.load(maskPatternRgba(), 9, 3);
+    const out = await session.run(src, [{ op: "toGray" }, { op: "threshold", level: 128 }]);
+    const mask = await out.toMask();
+    expect(mask).toMatchObject({
+      width: 9,
+      height: 3,
+      strideBytes: 2,
+      bitOrder: "msb-first",
+      foregroundBit: 1,
+    });
+    expect([...mask.data]).toEqual([0xff, 0x80, 0xaa, 0x80, 0x00, 0x00]);
+    await expect(src.toMask()).rejects.toThrow(TypeError);
+  });
+
   it("queries run through the wire", async () => {
     const src = await session.load(generateRgba(48, 48), 48, 48);
     const out = await session.run(src, [{ op: "toGray" }, { op: "otsu", tile: 16 }]);
@@ -100,6 +131,7 @@ describe.skipIf(!artifactsPresent)("worker session (Node worker_threads)", () =>
     await expect(pix.connComp()).rejects.toThrow();
     await expect(pix.histogram()).rejects.toThrow();
     await expect(pix.average()).rejects.toThrow();
+    await expect(pix.toMask()).rejects.toThrow();
   });
 
   it("run() failure cleans up intermediates (no handle leak)", async () => {

@@ -196,6 +196,7 @@ jobs:
           path: |
             tmp/deps
             tmp/build
+            tmp/build-instrumented
             tmp/downloads
           key: deps-${{ steps.pins.outputs.deps_hash }}-${{ steps.pins.outputs.emsdk_commit }}-${{ hashFiles('scripts/build.mjs') }}
 
@@ -267,6 +268,18 @@ jobs:
           test -f dist/full-abi/leptonica.wasm
           pnpm test
 
+      # CI-only allocation interception and deterministic wrapper faults.
+      # The separate build/install root is mandatory: instrumented Leptonica
+      # has a different allocator ABI and must never contaminate dist/.
+      - name: Instrumented resource-failure suite
+        run: |
+          . ./tmp/emsdk/emsdk_env.sh
+          node scripts/build.mjs --test-instrumentation
+          test -f dist-instrumented/leptonica.mjs
+          test -f dist-instrumented/leptonica.wasm
+          test -f dist-instrumented/leptonica.d.ts
+          pnpm exec vitest run tests/node/fault-injection.test.ts
+
       # Mutation smoke (M2 review F5): prove the golden suite catches a
       # broken parameter mapping — mutate threshold's level (+1), require
       # the suite to go red, restore, require green. Runs after the main
@@ -305,8 +318,14 @@ jobs:
       # session API, same chain, different platform stack. Chromium is
       # installed per-run (no cache layer for browser binaries — the
       # download is ~2min and keeps the runner stateless).
-      - name: E2E (browser vs Node, byte-identical)
+      - name: E2E (browser output and fatal retirement)
         run: |
+          # The fatal-retirement browser case runs the production package
+          # adapter while substituting the separately linked target-WASM
+          # instrumented Worker entry. Fail loudly instead of letting Vite
+          # turn a missing CI-only artifact into a misleading skip.
+          test -f dist-instrumented/leptonica.mjs
+          test -f dist-instrumented/leptonica.wasm
           # chromium-headless-shell listed explicitly: 1.63's headless mode
           # uses the separate headless-shell binary; "chromium" alone did
           # not pull it in local testing, leaving the suite to fail on a
@@ -343,14 +362,24 @@ jobs:
           console.log("all four artifacts reproducible (wasm, mjs, d.ts, symbols)");
           NODE
 
-      # dist sha256 manifest (M0 review F7 / M6): generated after all
-      # builds and relinks so it covers the final dist/ tree (default
-      # + full-abi), then uploaded with ci-dist. The compare job below
-      # proves ci-dist and repro-dist byte-identical across runners, so
-      # the manifest that ships with ci-dist is proven to describe the
-      # independently compiled tree too.
-      - name: Generate dist sha256 manifest
-        run: pnpm run hash-manifest
+      # Build the exact release-candidate package through the same prepack
+      # path used by release tags and fixed-commit Git dependencies. This
+      # reruns the cheap link/generation phase against the cached native
+      # libraries, checks all exports, writes source provenance, hashes only
+      # after every generator, and freezes the candidate tarball for Gate A.
+      - name: Pack release candidate
+        env:
+          LEPTONICA_WASM_SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          . ./tmp/emsdk/emsdk_env.sh
+          mkdir -p tmp/release-candidate
+          pnpm pack --pack-destination tmp/release-candidate
+
+      - name: Fresh tarball consumer
+        run: |
+          candidate=$(find tmp/release-candidate -maxdepth 1 -name 'leptonica-wasm-*.tgz' -print -quit)
+          test -n "$candidate"
+          node scripts/run-consumer-gate.mjs --tarball "$candidate" --commit "${{ github.sha }}" --repeat 2
 
       # v7.0.1 (2026-04-10): https://github.com/actions/upload-artifact/releases/tag/v7.0.1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -359,6 +388,65 @@ jobs:
           name: ci-dist
           path: dist
           if-no-files-found: warn
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-candidate
+          path: tmp/release-candidate/leptonica-wasm-*.tgz
+          if-no-files-found: error
+
+  # A normal PR uses a synthetic merge commit that is not guaranteed to be
+  # reachable by a fresh GitHub clone. Run the fixed-40-character source gate
+  # on main pushes, where github.sha is an ordinary reachable commit. Release
+  # tags repeat the same gate before publishing.
+  fixed-commit-consumer:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: |
+          corepack enable pnpm
+          pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Resolve toolchain pins
+        id: pins
+        run: |
+          node --input-type=module -e '
+          import { appendFileSync, readFileSync } from "node:fs";
+          const v = JSON.parse(readFileSync("vendor/versions.json", "utf8"));
+          const out = (name, value) => appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
+          out("emsdk_commit", v.emsdk.commit);
+          out("sdk_version", v.emsdk.sdkVersion);
+          out("cmake_tool", v.emsdk.cmakeTool);
+          out("ninja_tool", v.emsdk.ninjaTool);
+          '
+
+      - name: Install pinned emsdk (cold, verified)
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git tmp/emsdk
+          git -C tmp/emsdk fetch --depth 1 origin ${{ steps.pins.outputs.emsdk_commit }}
+          git -C tmp/emsdk checkout ${{ steps.pins.outputs.emsdk_commit }}
+          EMSDK_KEEP_DOWNLOADS=1 ./tmp/emsdk/emsdk install ${{ steps.pins.outputs.sdk_version }} ${{ steps.pins.outputs.cmake_tool }} ${{ steps.pins.outputs.ninja_tool }}
+          ./tmp/emsdk/emsdk activate ${{ steps.pins.outputs.sdk_version }} ${{ steps.pins.outputs.cmake_tool }} ${{ steps.pins.outputs.ninja_tool }}
+          node scripts/verify-toolchain.mjs
+
+      - name: Fresh fixed-commit Git consumer
+        run: |
+          . ./tmp/emsdk/emsdk_env.sh
+          node scripts/run-consumer-gate.mjs \
+            --github-repository "${{ github.repository }}" \
+            --commit "${{ github.sha }}" \
+            --repeat 2
 
   # Cross-runner compile determinism (M1 review supply W3 + build-eng W3):
   # an independent cold build on a different runner instance — no cache

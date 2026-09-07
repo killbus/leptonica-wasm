@@ -5,7 +5,7 @@
  * that consumes it the way a real user would.
  */
 import { load } from "leptonica-wasm";
-import type { Box, SkewResult } from "leptonica-wasm";
+import type { Box, PackedMask } from "leptonica-wasm";
 
 async function main(): Promise<void> {
   const lp = await load();
@@ -21,9 +21,16 @@ async function main(): Promise<void> {
   }
   using pix = lp.fromRGBA(rgba, 16, 16);
   using out = lp.chain(pix).toGray().threshold(128).dilate(3, 3).run();
+  // Compile every new curated chain method through the installed package's
+  // generated declarations without imposing one fixed processing recipe.
+  lp.chain(pix).cleanBackgroundToWhite(1, 70, 190);
+  lp.chain(pix).toGray().sauvolaTiled(4, 0.34, 1, 1);
+  lp.chain(pix).maskOverColorPixels(10, 1);
+  lp.chain(out).selectByArea(3, 4, "gt");
   const boxes: readonly Box[] = out.connComp();
+  const mask: PackedMask = out.toMask();
   const png: Uint8Array = out.toPNG();
-  console.log("consumer ok:", boxes.length, png.length);
+  console.log("consumer ok:", boxes.length, mask.data.length, png.length);
 }
 
 void main();

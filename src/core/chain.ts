@@ -1,7 +1,7 @@
-import type { BlendOp, BitwiseOp, Op } from "../protocol.ts";
+import type { AreaSelection, BlendOp, BitwiseOp, Op } from "../protocol.ts";
 import { OP_DEPTH_RULES, type Depth } from "../protocol.ts";
-import type { Leptonica, Pix } from "./types.ts";
-import type { PixHandle } from "leptonica-wasm/leptonica.mjs";
+import { nativeHandleFor, nativeModuleFor, type Leptonica, type Pix } from "./types.ts";
+import type { CuratedModule, PixHandle } from "leptonica-wasm/leptonica.mjs";
 
 /**
  * Chain builder (design §5.1: builder IS the protocol).
@@ -84,6 +84,52 @@ export class ChainBuilder {
     return this.#record(
       { op: "sauvola", whsize, ...(factor !== undefined ? { factor } : {}) },
     );
+  }
+
+  cleanBackgroundToWhite(gamma: number, black: number, white: number): this {
+    if (!Number.isFinite(gamma) || gamma <= 0) {
+      throw new RangeError(`cleanBackgroundToWhite: gamma must be finite and > 0, got ${gamma}`);
+    }
+    if (!isInt32(black) || !isInt32(white) || black >= white || white > 200) {
+      throw new RangeError(`cleanBackgroundToWhite: require int32 black < white <= 200, got ${black}/${white}`);
+    }
+    return this.#record({ op: "cleanBackgroundToWhite", gamma, black, white });
+  }
+
+  sauvolaTiled(whsize: number, factor: number, nx: number, ny: number): this {
+    if (!isInt32(whsize) || whsize < 2) {
+      throw new RangeError(`sauvolaTiled: whsize must be an int32 >= 2, got ${whsize}`);
+    }
+    if (!Number.isFinite(factor) || factor < 0) {
+      throw new RangeError(`sauvolaTiled: factor must be finite and >= 0, got ${factor}`);
+    }
+    if (!isInt32(nx) || nx < 1 || !isInt32(ny) || ny < 1) {
+      throw new RangeError(`sauvolaTiled: nx and ny must be positive int32 values, got ${nx}x${ny}`);
+    }
+    return this.#record({ op: "sauvolaTiled", whsize, factor, nx, ny });
+  }
+
+  selectByArea(thresholdArea: number, connectivity: 4 | 8, relation: AreaSelection): this {
+    if (!Number.isFinite(thresholdArea) || thresholdArea < 0 || !Number.isFinite(Math.fround(thresholdArea))) {
+      throw new RangeError(`selectByArea: thresholdArea must be a finite non-negative float32, got ${thresholdArea}`);
+    }
+    if (connectivity !== 4 && connectivity !== 8) {
+      throw new RangeError(`selectByArea: connectivity must be 4 or 8, got ${connectivity}`);
+    }
+    if (relation !== "lt" && relation !== "gt" && relation !== "lte" && relation !== "gte") {
+      throw new RangeError(`selectByArea: relation must be lt, gt, lte, or gte, got ${relation}`);
+    }
+    return this.#record({ op: "selectByArea", thresholdArea, connectivity, relation });
+  }
+
+  maskOverColorPixels(thresholdDiff: number, minDistance: number): this {
+    if (!isInt32(thresholdDiff) || thresholdDiff < 0 || thresholdDiff > 255) {
+      throw new RangeError(`maskOverColorPixels: thresholdDiff must be an int32 in [0,255], got ${thresholdDiff}`);
+    }
+    if (!isInt32(minDistance) || minDistance < 1) {
+      throw new RangeError(`maskOverColorPixels: minDistance must be a positive int32, got ${minDistance}`);
+    }
+    return this.#record({ op: "maskOverColorPixels", thresholdDiff, minDistance });
   }
 
   deskew(reduction: 1 | 2 | 4 = 2): this {
@@ -222,7 +268,7 @@ export class ChainBuilder {
  * failure paths (design §5.2 run-failure cleanup).
  */
 export function runChain(lp: Leptonica, src: Pix, ops: readonly Op[]): Pix {
-  const M = lp.module;
+  const M = nativeModuleFor(lp);
   let current = src;
   /** Handles created mid-chain that must be destroyed before returning. */
   const intermediates: Pix[] = [];
@@ -249,20 +295,25 @@ export function runChain(lp: Leptonica, src: Pix, ops: readonly Op[]): Pix {
   }
 }
 
-function applyOp(lp: import("./types.ts").Leptonica, M: import("./types.ts").Leptonica["module"], src: Pix, op: Op): PixHandle {
-  const h = src.handle;
-  const must = (next: unknown, name: string): PixHandle => {
-    if (next === null || next === undefined) {
-      throw new Error(`op ${name} returned null`);
-    }
-    return next as PixHandle;
-  };
-  switch (op.op) {
+function applyOp(lp: Leptonica, M: CuratedModule, src: Pix, op: Op): PixHandle {
+  return lp.callNative(`op:${op.op}`, () => {
+    const h = nativeHandleFor(src);
+    const must = (next: unknown, name: string): PixHandle => {
+      if (next === null || next === undefined) {
+        throw new Error(`op ${name} returned null`);
+      }
+      return next as PixHandle;
+    };
+    switch (op.op) {
     case "toGray":
       return must(op.weights ? M.toGrayWeighted(h, ...op.weights) : M.toGray(h), "toGray");
     case "threshold": return must(M.threshold(h, op.level), "threshold");
     case "otsu": return must(M.otsu(h, op.tile ?? 16, op.factor ?? 0.1), "otsu");
     case "sauvola": return must(M.sauvola(h, op.whsize, op.factor ?? 0.34), "sauvola");
+    case "cleanBackgroundToWhite": return must(M.cleanBackgroundToWhite(h, op.gamma, op.black, op.white), "cleanBackgroundToWhite");
+    case "sauvolaTiled": return must(M.sauvolaTiled(h, op.whsize, op.factor, op.nx, op.ny), "sauvolaTiled");
+    case "selectByArea": return must(M.selectByArea(h, op.thresholdArea, op.connectivity, op.relation), "selectByArea");
+    case "maskOverColorPixels": return must(M.maskOverColorPixels(h, op.thresholdDiff, op.minDistance), "maskOverColorPixels");
     case "deskew": return must(M.deskew(h, op.reduction ?? 2), "deskew");
     case "rotate": return must(M.rotate(h, op.angle, op.quality ?? "area"), "rotate");
     case "scale": return must(M.scale(h, op.fx, op.fy ?? op.fx), "scale");
@@ -275,21 +326,29 @@ function applyOp(lp: import("./types.ts").Leptonica, M: import("./types.ts").Lep
     case "close": return must(M.morphClose(h, op.w, op.h), "close");
     case "or": {
       const other = lp.resolveOperand(op.other, "or");
-      return must(M.bitwiseOr(h, other.handle), "or");
+      return must(M.bitwiseOr(h, nativeHandleFor(other)), "or");
     }
     case "and": {
       const other = lp.resolveOperand(op.other, "and");
-      return must(M.bitwiseAnd(h, other.handle), "and");
+      return must(M.bitwiseAnd(h, nativeHandleFor(other)), "and");
     }
     case "xor": {
       const other = lp.resolveOperand(op.other, "xor");
-      return must(M.bitwiseXor(h, other.handle), "xor");
+      return must(M.bitwiseXor(h, nativeHandleFor(other)), "xor");
     }
     case "blend": {
       const other = lp.resolveOperand(op.other, "blend");
-      return must(M.blend(h, other.handle, op.frac), "blend");
+      return must(M.blend(h, nativeHandleFor(other), op.frac), "blend");
     }
     case "addBorder": return must(M.addBorder(h, op.t, op.val ?? 0), "addBorder");
-    case "sobel": return must(M.sobel(h, op.orientation ?? "all"), "sobel");
-  }
+      case "sobel": return must(M.sobel(h, op.orientation ?? "all"), "sobel");
+    }
+  });
+}
+
+const INT32_MIN = -2_147_483_648;
+const INT32_MAX = 2_147_483_647;
+
+function isInt32(value: number): boolean {
+  return Number.isInteger(value) && value >= INT32_MIN && value <= INT32_MAX;
 }

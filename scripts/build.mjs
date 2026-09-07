@@ -1,20 +1,18 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { extractExportedFunctions, renderLooseDts } from "./gen-exports.mjs";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const depsRoot = join(repoRoot, "tmp", "deps");
-const buildRoot = join(repoRoot, "tmp", "build");
 const downloadsRoot = join(repoRoot, "tmp", "downloads");
-const installRoot = join(buildRoot, "install");
 const versions = JSON.parse(readFileSync(join(repoRoot, "vendor", "versions.json"), "utf8"));
 
 function usage() {
-  console.error("usage: node build.mjs [--full-abi] [--variant <pN>] [--outdir <dir>] [--jobs <n>] [--opt <O0|O1|O2|O3|Os|Oz>]");
+  console.error("usage: node build.mjs [--full-abi | --test-instrumentation] [--variant <pN>] [--outdir <dir>] [--jobs <n>] [--opt <O0|O1|O2|O3|Os|Oz>]");
 }
 
 function run(cmd, args, opts = {}) {
@@ -53,7 +51,8 @@ function ensureSource(name, pin) {
   writeFileSync(marker, pin.commit + "\n");
 }
 
-const depConfigs = [
+function createDepConfigs(installRoot, testInstrumentation) {
+  return [
   {
     name: "zlib",
     extra: ["-DZLIB_BUILD_SHARED=OFF", "-DZLIB_BUILD_TESTING=OFF"],
@@ -84,6 +83,7 @@ const depConfigs = [
   {
     name: "leptonica",
     extra: [
+      ...(testInstrumentation ? ["-DCMAKE_C_FLAGS=-DLEPTONICA_INTERCEPT_ALLOC"] : []),
       "-DENABLE_WEBP=OFF",
       "-DENABLE_OPENJPEG=OFF",
       "-DENABLE_GIF=OFF",
@@ -96,9 +96,10 @@ const depConfigs = [
       `-DJPEG_INCLUDE_DIR=${join(installRoot, "include")}`,
     ],
   },
-];
+  ];
+}
 
-function buildDep(dep, jobs, pin) {
+function buildDep(dep, jobs, pin, buildRoot, installRoot) {
   const buildDir = join(buildRoot, dep.name);
   const doneMarker = join(buildDir, ".done");
   // The marker records the inputs that produced this compiled tree. Checking
@@ -155,7 +156,7 @@ function nmDefinedSymbols(archivePath) {
   return defined;
 }
 
-function writeFullAbiExports(outDir) {
+function writeFullAbiExports(outDir, buildRoot, installRoot) {
   const headerPath = join(depsRoot, "leptonica", "src", "allheaders.h");
   const names = extractExportedFunctions(readFileSync(headerPath, "utf8"));
   const defined = nmDefinedSymbols(join(installRoot, "lib", "libleptonica.a"));
@@ -174,7 +175,7 @@ function writeFullAbiExports(outDir) {
   return exportsPath;
 }
 
-function linkOutputs({ exportsPath, generatedIncludeDir, outDir, fullAbi, optLevel, productLock }) {
+function linkOutputs({ exportsPath, generatedIncludeDir, outDir, fullAbi, optLevel, productLock, testInstrumentation, installRoot }) {
   mkdirSync(outDir, { recursive: true });
   const emccArgs = [
     "cpp/bindings.cpp",
@@ -205,6 +206,9 @@ function linkOutputs({ exportsPath, generatedIncludeDir, outDir, fullAbi, optLev
   if (productLock === 1) {
     emccArgs.push("-DPRODUCT_LOCK", `-I${generatedIncludeDir}`);
   }
+  if (testInstrumentation) {
+    emccArgs.push("-DLEPTONICA_WASM_TEST_INSTRUMENTATION");
+  }
   if (fullAbi) {
     emccArgs.push("-Wl,--whole-archive", "-lleptonica", "-Wl,--no-whole-archive", `-sEXPORTED_FUNCTIONS=@${resolve(exportsPath)}`);
   } else {
@@ -228,13 +232,15 @@ function linkOutputs({ exportsPath, generatedIncludeDir, outDir, fullAbi, optLev
 }
 
 function parseArgs(argv) {
-  const opts = { fullAbi: false, outDir: "dist", jobs: 0, optLevel: "O3", variant: "p0" };
+  const opts = { fullAbi: false, testInstrumentation: false, outDir: "dist", jobs: 0, optLevel: "O3", variant: "p0" };
   let outDirGiven = false;
   let optGiven = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--full-abi") {
       opts.fullAbi = true;
+    } else if (arg === "--test-instrumentation") {
+      opts.testInstrumentation = true;
     } else if (arg === "--variant") {
       const value = argv[i + 1] ?? "";
       if (!/^p(?:0|[1-9][0-9]*)$/.test(value)) {
@@ -280,16 +286,29 @@ function parseArgs(argv) {
     console.error("--opt conflicts with --full-abi: full-abi requires -O2 (see linkOutputs comment)");
     process.exit(2);
   }
+  if (opts.fullAbi && opts.testInstrumentation) {
+    console.error("--test-instrumentation cannot be combined with --full-abi");
+    process.exit(2);
+  }
   // Without an explicit --outdir, full-abi must not silently overwrite the
   // default-mode artifacts in dist/ (M1 review, build-eng N2).
   if (opts.fullAbi && !outDirGiven) {
     opts.outDir = "dist/full-abi";
+  } else if (opts.testInstrumentation && !outDirGiven) {
+    opts.outDir = "dist-instrumented";
   }
   opts.outDir = resolve(opts.outDir);
+  if (opts.testInstrumentation) {
+    const productionDist = resolve(repoRoot, "dist");
+    if (opts.outDir === productionDist || opts.outDir.startsWith(productionDist + sep)) {
+      console.error("--test-instrumentation output must be outside the production dist tree");
+      process.exit(2);
+    }
+  }
   return opts;
 }
 
-function prepareVariant(variant) {
+function prepareVariant(variant, buildRoot) {
   const variantFile = join(repoRoot, "variants", `${variant}.json`);
   if (!existsSync(variantFile)) {
     throw new Error(`variant config not found: variants/${variant}.json`);
@@ -360,7 +379,15 @@ function writeOpaqueBuildInfo(outDir, buildInfo) {
 
 const startedAt = Date.now();
 const opts = parseArgs(process.argv.slice(2));
-const variantState = prepareVariant(opts.variant);
+// Instrumented Leptonica is compiled with a different allocator ABI. Keep its
+// object files and install tree physically separate from production so neither
+// flavor can silently reuse the other's static libraries.
+const buildRoot = opts.testInstrumentation
+  ? resolve(repoRoot, "tmp/build-instrumented")
+  : resolve(repoRoot, "tmp/build");
+const installRoot = join(buildRoot, "install");
+const depConfigs = createDepConfigs(installRoot, opts.testInstrumentation);
+const variantState = prepareVariant(opts.variant, buildRoot);
 try {
   const buildInfo = opaqueBuildInfo(variantState.productLock);
   // A normal developer build must not inherit provenance from an earlier
@@ -372,12 +399,12 @@ try {
   }
   const fetchMs = Date.now() - fetchStartedAt;
   for (const dep of depConfigs) {
-    buildDep(dep, opts.jobs, versions[dep.name]);
+    buildDep(dep, opts.jobs, versions[dep.name], buildRoot, installRoot);
   }
   let exportsPath = null;
   let exportedFunctions = null;
   if (opts.fullAbi) {
-    exportsPath = writeFullAbiExports(opts.outDir);
+    exportsPath = writeFullAbiExports(opts.outDir, buildRoot, installRoot);
     exportedFunctions = readFileSync(exportsPath, "utf8").split("\n").filter((line) => line.length > 0).length;
   }
   const linkStartedAt = Date.now();
@@ -388,9 +415,11 @@ try {
     fullAbi: opts.fullAbi,
     optLevel: opts.optLevel,
     productLock: variantState.productLock,
+    testInstrumentation: opts.testInstrumentation,
+    installRoot,
   });
   const report = {
-    mode: opts.fullAbi ? "full-abi" : "default",
+    mode: opts.fullAbi ? "full-abi" : opts.testInstrumentation ? "test-instrumentation" : "default",
     // Provenance fields (M1 review, build-eng N4): the report must identify
     // which inputs produced it — trend comparisons and the M6 manifest need
     // pin + sdk + optimization level attached to every measurement. Private

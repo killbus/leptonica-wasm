@@ -1,8 +1,15 @@
 #include <emscripten.h>
 #include <emscripten/bind.h>
 #include <emscripten/val.h>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <limits>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include "allheaders.h"
 // class_<PIX> needs the complete Pix type for typeid and its (unused) raw
 // destructor; the definition lives in leptonica's internal header, which is
@@ -10,7 +17,120 @@
 #include "pix_internal.h"
 
 using emscripten::val;
-using emscripten::typed_memory_view;
+
+#ifdef LEPTONICA_WASM_TEST_INSTRUMENTATION
+/* Test-only allocator instrumentation. Leptonica is compiled with
+ * LEPTONICA_INTERCEPT_ALLOC in the isolated instrumented build, so every
+ * LEPT_* allocation (including PIX structs and raster data) passes through
+ * these definitions. The production build does not compile or export any of
+ * this surface. */
+struct alignas(std::max_align_t) TestAllocationHeader {
+  size_t size;
+};
+
+static size_t testLiveBlocks = 0;
+static size_t testLiveBytes = 0;
+static size_t testAllocationAttempts = 0;
+static int64_t testFailAfter = -1;
+static std::string testNamedFault;
+
+static bool shouldFailTestAllocation() {
+  ++testAllocationAttempts;
+  if (testFailAfter < 0) return false;
+  if (testFailAfter == 0) {
+    testFailAfter = -1;  // one-shot: a sweep can continue after the failure
+    return true;
+  }
+  --testFailAfter;
+  return false;
+}
+
+static void *allocateTestBlock(size_t size, bool zero) {
+  if (shouldFailTestAllocation() ||
+      size > std::numeric_limits<size_t>::max() - sizeof(TestAllocationHeader)) return nullptr;
+  const size_t total = sizeof(TestAllocationHeader) + size;
+  auto *header = static_cast<TestAllocationHeader *>(std::malloc(total));
+  if (!header) return nullptr;
+  header->size = size;
+  void *data = header + 1;
+  if (zero && size > 0) std::memset(data, 0, size);
+  ++testLiveBlocks;
+  testLiveBytes += size;
+  return data;
+}
+
+extern "C" void *leptonica_malloc(size_t size) {
+  return allocateTestBlock(size, false);
+}
+
+extern "C" void *leptonica_calloc(size_t count, size_t size) {
+  if (count != 0 && size > std::numeric_limits<size_t>::max() / count) return nullptr;
+  return allocateTestBlock(count * size, true);
+}
+
+extern "C" void leptonica_free(void *ptr) {
+  if (!ptr) return;
+  auto *header = static_cast<TestAllocationHeader *>(ptr) - 1;
+  --testLiveBlocks;
+  testLiveBytes -= header->size;
+  std::free(header);
+}
+
+extern "C" void *leptonica_realloc(void *ptr, size_t size) {
+  if (!ptr) return leptonica_malloc(size);
+  if (size == 0) {
+    leptonica_free(ptr);
+    return nullptr;
+  }
+  if (shouldFailTestAllocation() ||
+      size > std::numeric_limits<size_t>::max() - sizeof(TestAllocationHeader)) return nullptr;
+  auto *oldHeader = static_cast<TestAllocationHeader *>(ptr) - 1;
+  const size_t oldSize = oldHeader->size;
+  auto *newHeader = static_cast<TestAllocationHeader *>(
+    std::realloc(oldHeader, sizeof(TestAllocationHeader) + size));
+  if (!newHeader) return nullptr;
+  newHeader->size = size;
+  testLiveBytes = testLiveBytes - oldSize + size;
+  return newHeader + 1;
+}
+
+static bool consumeTestFault(const char *name) {
+  if (testNamedFault != name) return false;
+  testNamedFault.clear();
+  return true;
+}
+
+static val testAllocationStatsValue() {
+  val out = val::object();
+  out.set("liveBlocks", static_cast<double>(testLiveBlocks));
+  out.set("liveBytes", static_cast<double>(testLiveBytes));
+  out.set("allocationAttempts", static_cast<double>(testAllocationAttempts));
+  return out;
+}
+
+static void testArmAllocationFailure(int successfulAllocationsBeforeFailure) {
+  if (successfulAllocationsBeforeFailure < 0) {
+    throw std::invalid_argument("allocation failure index must be >= 0");
+  }
+  testFailAfter = successfulAllocationsBeforeFailure;
+}
+
+static void testArmFault(std::string name) {
+  if (name != "copyJsBytesToWasm" && name != "copyWasmBytesToJs" &&
+      name != "sauvola.partial" && name != "sauvolaTiled.partial" &&
+      name != "fatalTrap") {
+    throw std::invalid_argument("unknown test fault");
+  }
+  testNamedFault = std::move(name);
+}
+
+static void testClearFaults() {
+  testFailAfter = -1;
+  testNamedFault.clear();
+}
+#else
+static bool consumeTestFault(const char *) { return false; }
+#endif
 
 #ifdef PRODUCT_LOCK
 #include "generated_domain.inc"
@@ -55,18 +175,41 @@ static void enforceAuthorizedHost() {
 static void enforceAuthorizedHost() {}
 #endif
 
-/* Copy a C heap buffer into a freshly-allocated JS Uint8Array, then free
- * the C allocation. The TS layer used to wrap these buffers in
- * typed_memory_view and copy on the JS side — but the view only ALIASES
- * the wasm heap, so the C-side allocation (pixWriteMemPng/Jpeg lept_malloc,
- * toRGBA lept_calloc) leaked on every successful call. M4 review B4:
- * measured +68MB RSS after 60 extractions of a 512x512 image; long-lived
- * sync instances accumulate the same way M5 worker sessions will. */
+/* JS exceptions must not cross a C++ frame while that frame owns native
+ * storage. These helpers contain allocation/view failures and return a
+ * status or a null handle, allowing C++ to release PIX/buffer ownership on
+ * every path. */
+EM_JS(int, copyJsBytesToWasm, (EM_VAL source_handle, uint8_t *dest, size_t size, int force_fail), {
+  try {
+    if (force_fail) return 0;
+    const source = Emval.toValue(source_handle);
+    if (!ArrayBuffer.isView(source) || source.byteLength !== size) return 0;
+    const bytes = new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
+    HEAPU8.set(bytes, dest);
+    return 1;
+  } catch (_) {
+    return 0;
+  }
+});
+
+EM_JS(EM_VAL, copyWasmBytesToJs, (const uint8_t *source, size_t size, int force_fail), {
+  try {
+    if (force_fail) return Emval.toHandle(null);
+    const out = new Uint8Array(size);
+    out.set(HEAPU8.subarray(source, source + size));
+    return Emval.toHandle(out);
+  } catch (_) {
+    return Emval.toHandle(null);
+  }
+});
+
+/* Copy a C heap buffer into a freshly allocated JS Uint8Array, then free
+ * the native allocation regardless of whether JS allocation/copy succeeds. */
 static val copyToJs(uint8_t *data, size_t size) {
-  val out = val::global("Uint8Array").new_(val(size));
-  out.call<void>("set", val(typed_memory_view<unsigned char>(size, data)));
+  EM_VAL handle = copyWasmBytesToJs(
+    data, size, consumeTestFault("copyWasmBytesToJs") ? 1 : 0);
   lept_free(data);
-  return out;
+  return val::take_ownership(handle);
 }
 
 /* ------------------------------------------------------------------ */
@@ -77,8 +220,9 @@ static val copyToJs(uint8_t *data, size_t size) {
 /* ------------------------------------------------------------------ */
 
 PIX *fromRGBA(val data, int w, int h) {
+  if (consumeTestFault("fatalTrap")) __builtin_trap();
   if (w <= 0 || h <= 0 || w > 0x00ffffff / h) return nullptr;
-  if (data["length"].as<size_t>() != (size_t)w * (size_t)h * 4) return nullptr;
+  const size_t bytes = (size_t)w * (size_t)h * 4;
   PIX *pix = pixCreateNoInit(w, h, 32);
   if (!pix) return nullptr;
   pixSetSpp(pix, 4);
@@ -86,8 +230,14 @@ PIX *fromRGBA(val data, int w, int h) {
     pixDestroy(&pix);
     return nullptr;
   }
-  const size_t bytes = (size_t)pixGetWpl(pix) * h * 4;
-  val(typed_memory_view<unsigned char>(bytes, reinterpret_cast<unsigned char *>(pixGetData(pix)))).call<void>("set", data);
+  if (!copyJsBytesToWasm(
+        data.as_handle(),
+        reinterpret_cast<unsigned char *>(pixGetData(pix)),
+        bytes,
+        consumeTestFault("copyJsBytesToWasm") ? 1 : 0)) {
+    pixDestroy(&pix);
+    return nullptr;
+  }
   if (pixEndianByteSwap(pix) != 0) {
     pixDestroy(&pix);
     return nullptr;
@@ -181,8 +331,69 @@ PIX *otsu(PIX *pix, int tile, float factor) {
 PIX *sauvola(PIX *pix, int whsize, float factor) {
   if (!pix) return nullptr;
   PIX *pixd = nullptr;
-  if (pixSauvolaBinarize(pix, whsize, factor, 1, nullptr, nullptr, nullptr, &pixd) != 0) return nullptr;
+  int result = pixSauvolaBinarize(pix, whsize, factor, 1, nullptr, nullptr, nullptr, &pixd);
+  if (result == 0 && consumeTestFault("sauvola.partial")) result = 1;
+  if (result != 0) {
+    pixDestroy(&pixd);
+    return nullptr;
+  }
   return pixd;
+}
+
+PIX *cleanBackgroundToWhite(PIX *pix, float gamma, int blackval, int whiteval) {
+  if (!pix || pixGetColormap(pix)) return nullptr;
+  const int depth = pixGetDepth(pix);
+  if ((depth != 8 && depth != 32) || !std::isfinite(gamma) || gamma <= 0.0f ||
+      blackval >= whiteval || whiteval > 200) return nullptr;
+  return pixCleanBackgroundToWhite(pix, nullptr, nullptr, gamma, blackval, whiteval);
+}
+
+PIX *sauvolaTiled(PIX *pix, int whsize, float factor, int nx, int ny) {
+  if (!pix || pixGetDepth(pix) != 8 || pixGetColormap(pix) || whsize < 2 ||
+      !std::isfinite(factor) || factor < 0.0f || nx < 1 || ny < 1) return nullptr;
+  int w = 0, h = 0;
+  pixGetDimensions(pix, &w, &h, nullptr);
+  const int minDimension = L_MIN(w, h);
+  if (minDimension < 7 || whsize > (minDimension - 3) / 2) return nullptr;
+  const int minTileDimension = whsize + 2;  // safe: whsize <= (minDimension - 3) / 2
+  if (w / nx < minTileDimension || h / ny < minTileDimension) return nullptr;
+  PIX *pixd = nullptr;
+  int result = pixSauvolaBinarizeTiled(pix, whsize, factor, nx, ny, nullptr, &pixd);
+  if (result == 0 && consumeTestFault("sauvolaTiled.partial")) result = 1;
+  if (result != 0) {
+    pixDestroy(&pixd);
+    return nullptr;
+  }
+  return pixd;
+}
+
+PIX *selectByArea(PIX *pix, float thresholdArea, int connectivity, val relation) {
+  if (!pix || pixGetDepth(pix) != 1 || !std::isfinite(thresholdArea) || thresholdArea < 0 ||
+      (connectivity != 4 && connectivity != 8)) return nullptr;
+  const std::string rel = relation.as<std::string>();
+  int type = 0;
+  if (rel == "lt") type = L_SELECT_IF_LT;
+  else if (rel == "gt") type = L_SELECT_IF_GT;
+  else if (rel == "lte") type = L_SELECT_IF_LTE;
+  else if (rel == "gte") type = L_SELECT_IF_GTE;
+  else return nullptr;
+  l_int32 changed = 0;
+  return pixSelectByArea(pix, thresholdArea, connectivity, type, &changed);
+}
+
+PIX *maskOverColorPixels(PIX *pix, int thresholdDiff, int minDistance) {
+  if (!pix || pixGetDepth(pix) != 32 || pixGetColormap(pix) ||
+      thresholdDiff < 0 || thresholdDiff > 255 || minDistance < 1) return nullptr;
+  const int minDimension = L_MIN(pixGetWidth(pix), pixGetHeight(pix));
+  const int maxFittingDistance = minDimension / 2 + minDimension % 2;
+  if (minDistance > maxFittingDistance) {
+    // Leptonica's default asymmetric erosion boundary treats pixels outside
+    // the image as OFF. A centered (2 * minDistance - 1) brick larger than
+    // either image axis therefore cannot fit at any output pixel. Return the
+    // equivalent empty mask without constructing an enormous SEL.
+    return pixCreate(pixGetWidth(pix), pixGetHeight(pix), 1);
+  }
+  return pixMaskOverColorPixels(pix, thresholdDiff, minDistance);
 }
 
 PIX *deskew(PIX *pix, int reduction) {
@@ -378,6 +589,28 @@ val toRGBA(PIX *pix) {
   return copyToJs(out, n * 4);
 }
 
+val toMask(PIX *pix) {
+  if (!pix || pixGetDepth(pix) != 1) return val::null();
+  const int w = pixGetWidth(pix);
+  const int h = pixGetHeight(pix);
+  if (w <= 0 || h <= 0) return val::null();
+  const size_t stride = ((size_t)w + 7u) / 8u;
+  if (stride > std::numeric_limits<size_t>::max() / (size_t)h) return val::null();
+  const size_t size = stride * (size_t)h;
+  auto *out = static_cast<l_uint8 *>(lept_calloc(size, 1));
+  if (!out) return val::null();
+  l_uint32 *data = pixGetData(pix);
+  const int wpl = pixGetWpl(pix);
+  for (int y = 0; y < h; ++y) {
+    l_uint32 *line = data + (size_t)y * wpl;
+    l_uint8 *row = out + (size_t)y * stride;
+    for (int x = 0; x < w; ++x) {
+      if (GET_DATA_BIT(line, x)) row[x >> 3] |= (l_uint8)(0x80u >> (x & 7));
+    }
+  }
+  return copyToJs(out, size);
+}
+
 EMSCRIPTEN_BINDINGS(leptonica_wasm) {
   // Fail before registering any Embind surface for a locked browser build.
   enforceAuthorizedHost();
@@ -392,6 +625,10 @@ EMSCRIPTEN_BINDINGS(leptonica_wasm) {
   emscripten::function("threshold", &threshold, emscripten::allow_raw_pointers());
   emscripten::function("otsu", &otsu, emscripten::allow_raw_pointers());
   emscripten::function("sauvola", &sauvola, emscripten::allow_raw_pointers());
+  emscripten::function("cleanBackgroundToWhite", &cleanBackgroundToWhite, emscripten::allow_raw_pointers());
+  emscripten::function("sauvolaTiled", &sauvolaTiled, emscripten::allow_raw_pointers());
+  emscripten::function("selectByArea", &selectByArea, emscripten::allow_raw_pointers());
+  emscripten::function("maskOverColorPixels", &maskOverColorPixels, emscripten::allow_raw_pointers());
   emscripten::function("deskew", &deskew, emscripten::allow_raw_pointers());
   emscripten::function("rotate", &rotate, emscripten::allow_raw_pointers());
   emscripten::function("scale", &scale, emscripten::allow_raw_pointers());
@@ -416,4 +653,11 @@ EMSCRIPTEN_BINDINGS(leptonica_wasm) {
   emscripten::function("toPNG", &toPNG, emscripten::allow_raw_pointers());
   emscripten::function("toJPEG", &toJPEG, emscripten::allow_raw_pointers());
   emscripten::function("toRGBA", &toRGBA, emscripten::allow_raw_pointers());
+  emscripten::function("toMask", &toMask, emscripten::allow_raw_pointers());
+#ifdef LEPTONICA_WASM_TEST_INSTRUMENTATION
+  emscripten::function("testAllocationStats", &testAllocationStatsValue);
+  emscripten::function("testArmAllocationFailure", &testArmAllocationFailure);
+  emscripten::function("testArmFault", &testArmFault);
+  emscripten::function("testClearFaults", &testClearFaults);
+#endif
 }
