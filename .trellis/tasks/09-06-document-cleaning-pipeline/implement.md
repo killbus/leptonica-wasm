@@ -171,13 +171,13 @@ runtime surface. Static and simulated-runtime coverage also verifies that
 Leptonica.close() continues destroying remaining Pix values after an ordinary
 destructor error before rethrowing the first failure.
 
-The 2026-09-07 lightweight run passed typecheck, 66 tests, release-contract
+The 2026-09-07 lightweight run passed typecheck, 67 tests, release-contract
 tests, task validation, and `git diff --check`. Five artifact-dependent files
 containing 58 tests skipped because `dist`/`dist-instrumented` are absent; those
-tests are unverified, not passing. The focused fatal/transfer/instrumentation
-suite passed 28 tests. The generated declaration script also cannot complete without the
-CI-produced full-ABI module, although a declaration-only emit from the normal
-Node typecheck configuration confirmed private Pix/RemotePix constructors.
+tests are unverified, not passing. The generated declaration script also cannot
+complete without the CI-produced full-ABI module, although a declaration-only
+emit from the normal Node typecheck configuration confirmed private
+Pix/RemotePix constructors.
 
 Do not treat M4's review gate as passed until the target CI build executes the
 instrumented trap/resource cases. The browser fatal-retirement test is now
@@ -199,6 +199,24 @@ poison a fresh module instance. It does not claim detection of an arbitrary DOM
 Worker that exits silently without an error or terminal message.
 Allocation-stage, multipage, repeated-worker, and production-cross-check cases
 remain incomplete.
+
+A 2026-09-07 target-level source audit traced the complete injected path rather
+than relying only on the test names. `testArmFault("fatalTrap")` is compiled
+only in the isolated instrumentation flavor and causes the next curated
+`fromRGBA()` call to execute `__builtin_trap()`. The resulting
+`WebAssembly.RuntimeError` crosses the single trap-aware native boundary, which
+poisons every live wrapper and abandons the heap without destructor re-entry.
+The worker catches that same runtime trap, emits an explicit session-fatal
+control response, and records a terminal error before processing any later
+queued request. On the client, a fatal response is authoritative even for a
+stale request id: `markTerminated()` poisons proxies, rejects the entire pending
+map, and then invokes the adapter teardown through an idempotent gate. The
+browser case posts both loads synchronously before awaiting either one, bounds
+their settlement, checks one production `Worker.terminate()` call, probes the
+worker-side terminal gate with physical termination deliberately delayed, and
+loads a pixel through a separate clean module. No additional runtime change was
+justified by this audit; execution of that exact chain in target Chromium is
+still CI-only.
 
 The first CI run from commit `06166cd9fecbc89efe5a2ea7b32253354ea42657`
 stopped before Playwright because the curated symbol-map gate found
@@ -240,13 +258,34 @@ CI run `34092410049` from commit
 `e90eee2b9eb2717753273729cf540ed59326f97f` falsified that first isolation
 attempt before the symbol gate: defining `pixDisplay()` directly in
 `bindings.o` conflicted with the strong definition in
-`libleptonica.a(writefile.c.o)`. The pending revision instead defines
+`libleptonica.a(writefile.c.o)`. The subsequent revision instead defines
 `__wrap_pixDisplay()` and passes `-Wl,--wrap=pixDisplay` only for curated
 links. This leaves the upstream symbol definition untouched, prevents the
 debug-only undefined reference from forcing archive extraction, and avoids a
 duplicate definition if `writefile.c.o` is independently needed. Full-ABI
-builds omit both halves of the wrapper. A clean CI link and the existing
-symbol-map gate must still prove decoder-path absence in the resulting WASM.
+builds omit both halves of the wrapper.
+
+CI run `34094334788` from commit
+`5f2762008cd47468a9e96a6ae78be569a9b05e42` proved that both default links now
+complete, so the duplicate-definition failure is fixed. It also falsified the
+claim that `pixDisplay` was the sole extraction edge: the default export gate
+still found `jpeg_read_header` and stopped the job before full ABI, runtime,
+consumer, bundler, and Playwright steps. The authenticated job log names only
+that surviving forbidden symbol; it does not identify the archive member or
+undefined reference that extracted it.
+
+The current diagnostic revision adds an opt-in
+`--link-diagnostics` build argument. Its output is restricted to
+`tmp/link-diagnostics/`, passes lld `--why-extract`, traces `pixRead` and
+`jpeg_read_header`, and uploads the extraction report from CI even when the
+export gate fails. The report is outside `dist`, package files, release
+tarballs, and hash manifests. The current upstream wasm lld option table and
+tests contain both `--why-extract=` and `--trace-symbol`; the exact pinned
+emsdk 6.0.9 binary is intentionally not installed locally, so target-toolchain
+acceptance and report contents still require CI execution. Until that evidence
+exists, no additional wrapper or source substitution is justified. In
+particular, the repository does not yet wrap `pixRead` or weaken
+`scripts/check-exports.mjs`.
 
 A local Vite preflight also found that Vite 7.2 does not resolve this
 repository's own bare package self-reference from the nested `tests/e2e` dev
@@ -270,27 +309,35 @@ absent locally.
 | One fatal response settles every concurrent pending request | Unit coverage passes; the browser case requires both promises to reject within 2 seconds | Locally simulated; target-browser proof pending |
 | Fatal retirement tears down once and blocks later dispatch/WASM re-entry | Unit coverage passes; browser test separately checks production teardown and a delayed physical-termination terminal gate | Locally simulated; target-browser proof pending |
 | A fresh Worker/module remains usable after another instance traps | Browser test creates a separate clean instance and checks a 1x1 load | CI-only proof pending |
-| Curated build remains decode-free after preserving `toJPEG()` | Compression-only JPEG path plus curated-only `--wrap=pixDisplay` isolation are present; full ABI omits both wrapper parts | Compile/link/symbol-map proof pending; direct strong-definition attempt failed in run `34092410049` |
+| Curated build remains decode-free after preserving `toJPEG()` | Compression-only JPEG path plus curated-only `--wrap=pixDisplay` isolation are present; run `34094334788` linked both default builds but still found `jpeg_read_header` | Not achieved; extraction diagnostics are prepared but require CI execution |
 | Recoverable JPEG allocation and destination-growth failures leave no tracked native blocks | Instrumented allocation sweep and named growth fault are present | Target-WASM execution pending |
 | General-purpose binding boundary is preserved | No `documentClean`, pdfhow profile, fixed operation order, output policy, or deskew policy appears in the package API | Proven by current source inspection |
-| Feasible local contracts pass without a native/WASM rebuild | Typecheck, 66 tests, release contract, task validation, 28 focused tests, syntax checks, and `git diff --check` pass | Proven locally; 58 artifact-dependent tests remain skipped/unverified |
+| Feasible local contracts pass without a native/WASM rebuild | Full Vitest reports 67 passed and 58 skipped; focused fatal/transfer/instrumentation coverage reports 30 passed; typecheck, release contract, task validation, and `git diff --check` pass | Proven locally for source-only coverage; artifact-dependent tests remain skipped/unverified |
 
-Remote PR #12 now points at `e90eee2b9eb2717753273729cf540ed59326f97f`.
-Its CI run `34092410049` failed while linking both default builds because the
-first curated-display isolation attempt created a duplicate `pixDisplay`
-definition. The default export gate, instrumented suite, consumer and bundler
-gates, and Playwright test therefore did not run. The linker-wrap correction
-is intentionally uncommitted under the current no-commit/no-push constraint,
-so no remote run can yet test it.
+The latest completed remote evidence at this checkpoint is PR #12 commit
+`5f2762008cd47468a9e96a6ae78be569a9b05e42`. Its run `34094334788` built the
+default artifacts successfully, then failed the default export gate on
+`jpeg_read_header`; all later target-WASM and browser evidence remains skipped.
+That run predates the linker-diagnostic revision described above, so it does
+not provide target-toolchain evidence for the new report.
 
-The required independent DBS chatroom review was retried at this audit gate.
-All three `gpt-5.6-sol` dispatches were rejected before instance creation
-because that route is unavailable; no alternate model was substituted and no
-agent-owned goal or review result exists.
-The same three-perspective review was attempted again after the curated-display
-link isolation change, with each instance instructed to create its own goal as
-its first action. The platform again rejected the required model before any
-instance existed, so this remains an explicit outstanding review gate.
+The required independent DBS chatroom review remains partially complete. The
+anti-audit instance has a verified agent-owned goal and reported that 58
+artifact-dependent tests, multipage retention, worker-race cases, and the
+production cross-check remain unproved. The domain-boundary instance later
+confirmed that its first actual action was successful goal creation, so its
+earlier read-only boundary review is also lifecycle-valid. The linker-review
+output still lacks first-action proof and remains excluded. Attempts to run a
+fresh post-diagnostic review on the two verified threads repeatedly ended in
+eastus `gpt-5.6-sol` HTTP 429 stream disconnects before goal activation could
+be confirmed; both uncertain instances were terminated as required. Explicit
+replacement dispatches using the required `gpt-5.6-sol` model were then
+rejected before instance creation because the current agent tool does not
+expose that route. No substitute model was used, and a final post-diagnostic
+multi-perspective review remains an explicit outstanding gate.
+A fresh three-role dispatch attempt during the final fatal-retirement source
+audit failed at the same pre-instance model-validation boundary, so no agent
+could create a goal or produce admissible review output in that attempt.
 
 ## M5: External real-scan comparison (R8)
 

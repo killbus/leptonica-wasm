@@ -12,7 +12,7 @@ const downloadsRoot = join(repoRoot, "tmp", "downloads");
 const versions = JSON.parse(readFileSync(join(repoRoot, "vendor", "versions.json"), "utf8"));
 
 function usage() {
-  console.error("usage: node build.mjs [--full-abi | --test-instrumentation] [--variant <pN>] [--outdir <dir>] [--jobs <n>] [--opt <O0|O1|O2|O3|Os|Oz>]");
+  console.error("usage: node build.mjs [--full-abi | --test-instrumentation] [--variant <pN>] [--outdir <dir>] [--jobs <n>] [--opt <O0|O1|O2|O3|Os|Oz>] [--link-diagnostics <tmp/link-diagnostics/file>]");
 }
 
 function run(cmd, args, opts = {}) {
@@ -175,7 +175,7 @@ function writeFullAbiExports(outDir, buildRoot, installRoot) {
   return exportsPath;
 }
 
-function linkOutputs({ exportsPath, generatedIncludeDir, outDir, fullAbi, optLevel, productLock, testInstrumentation, installRoot }) {
+function linkOutputs({ exportsPath, generatedIncludeDir, outDir, fullAbi, optLevel, productLock, testInstrumentation, installRoot, linkDiagnostics }) {
   mkdirSync(outDir, { recursive: true });
   const emccArgs = [
     "cpp/bindings.cpp",
@@ -222,6 +222,20 @@ function linkOutputs({ exportsPath, generatedIncludeDir, outDir, fullAbi, optLev
   if (testInstrumentation) {
     emccArgs.push("-DLEPTONICA_WASM_TEST_INSTRUMENTATION");
   }
+  if (linkDiagnostics !== null) {
+    mkdirSync(dirname(linkDiagnostics), { recursive: true });
+    rmSync(linkDiagnostics, { force: true });
+    // lld records which undefined reference extracted each archive member.
+    // This is CI diagnosis only: the validated path is under tmp/, outside
+    // every package output and release manifest. The two trace points also
+    // remain in the job log, joining the extraction edge to the suspected
+    // in-memory API boundary and the surviving decoder symbol.
+    emccArgs.push(
+      `-Wl,--why-extract=${linkDiagnostics}`,
+      "-Wl,--trace-symbol=pixRead",
+      "-Wl,--trace-symbol=jpeg_read_header",
+    );
+  }
   if (fullAbi) {
     emccArgs.push("-Wl,--whole-archive", "-lleptonica", "-Wl,--no-whole-archive", `-sEXPORTED_FUNCTIONS=@${resolve(exportsPath)}`);
   } else {
@@ -231,6 +245,9 @@ function linkOutputs({ exportsPath, generatedIncludeDir, outDir, fullAbi, optLev
   // bindings.cpp is C++ (embind, typeid/RTTI): link with the C++ driver so
   // libc++/libc++abi come in; plain emcc leaves __cxxabiv1 symbols undefined.
   run("em++", emccArgs);
+  if (linkDiagnostics !== null && !existsSync(linkDiagnostics)) {
+    throw new Error(`link diagnostics file was not produced: ${linkDiagnostics}`);
+  }
   const wasm = readFileSync(join(outDir, "leptonica.wasm"));
   const js = readFileSync(join(outDir, "leptonica.mjs"));
   const wasmGzip = gzipSync(wasm, { level: 9 });
@@ -245,7 +262,7 @@ function linkOutputs({ exportsPath, generatedIncludeDir, outDir, fullAbi, optLev
 }
 
 function parseArgs(argv) {
-  const opts = { fullAbi: false, testInstrumentation: false, outDir: "dist", jobs: 0, optLevel: "O3", variant: "p0" };
+  const opts = { fullAbi: false, testInstrumentation: false, outDir: "dist", jobs: 0, optLevel: "O3", variant: "p0", linkDiagnostics: null };
   let outDirGiven = false;
   let optGiven = false;
   for (let i = 0; i < argv.length; i++) {
@@ -287,6 +304,14 @@ function parseArgs(argv) {
       opts.optLevel = value;
       optGiven = true;
       i++;
+    } else if (arg === "--link-diagnostics") {
+      const value = argv[i + 1] ?? "";
+      if (value.length === 0) {
+        usage();
+        process.exit(2);
+      }
+      opts.linkDiagnostics = resolve(value);
+      i++;
     } else {
       usage();
       process.exit(2);
@@ -311,6 +336,13 @@ function parseArgs(argv) {
     opts.outDir = "dist-instrumented";
   }
   opts.outDir = resolve(opts.outDir);
+  if (opts.linkDiagnostics !== null) {
+    const diagnosticsRoot = resolve(repoRoot, "tmp/link-diagnostics");
+    if (!opts.linkDiagnostics.startsWith(diagnosticsRoot + sep)) {
+      console.error("--link-diagnostics must name a file under tmp/link-diagnostics");
+      process.exit(2);
+    }
+  }
   if (opts.testInstrumentation) {
     const productionDist = resolve(repoRoot, "dist");
     if (opts.outDir === productionDist || opts.outDir.startsWith(productionDist + sep)) {
@@ -430,6 +462,7 @@ try {
     productLock: variantState.productLock,
     testInstrumentation: opts.testInstrumentation,
     installRoot,
+    linkDiagnostics: opts.linkDiagnostics,
   });
   const report = {
     mode: opts.fullAbi ? "full-abi" : opts.testInstrumentation ? "test-instrumentation" : "default",

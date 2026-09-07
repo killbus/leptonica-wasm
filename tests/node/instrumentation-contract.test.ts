@@ -83,6 +83,44 @@ describe("CI-only native fault instrumentation contract", () => {
     );
   });
 
+  it("captures curated linker extraction evidence outside publishable artifacts", () => {
+    expect(build).toContain("--link-diagnostics");
+    expect(build).toContain("tmp/link-diagnostics");
+    expect(build).toContain("-Wl,--why-extract=");
+    expect(build).toContain("-Wl,--trace-symbol=pixRead");
+    expect(build).toContain("-Wl,--trace-symbol=jpeg_read_header");
+    expect(build).toContain("link diagnostics file was not produced");
+    expect(ci).toContain(
+      "node scripts/build.mjs --link-diagnostics tmp/link-diagnostics/default.tsv",
+    );
+    expect(ci).toContain("name: linker-extraction-diagnostics");
+    expect(ci).toContain("path: tmp/link-diagnostics/default.tsv");
+    expect(ci).toMatch(
+      /name: Upload linker extraction diagnostics[\s\S]*?if: always\(\)[\s\S]*?path: tmp\/link-diagnostics\/default\.tsv/,
+    );
+    expect(packageContract).not.toContain("link-diagnostics");
+
+    const publishablePath = spawnSync(
+      process.execPath,
+      ["scripts/build.mjs", "--link-diagnostics", "dist/linker.tsv"],
+      { encoding: "utf8" },
+    );
+    expect(publishablePath.status).toBe(2);
+    expect(publishablePath.stderr).toContain(
+      "--link-diagnostics must name a file under tmp/link-diagnostics",
+    );
+
+    const escapedPath = spawnSync(
+      process.execPath,
+      ["scripts/build.mjs", "--link-diagnostics", "tmp/link-diagnostics/../escaped.tsv"],
+      { encoding: "utf8" },
+    );
+    expect(escapedPath.status).toBe(2);
+    expect(escapedPath.stderr).toContain(
+      "--link-diagnostics must name a file under tmp/link-diagnostics",
+    );
+  });
+
   it("makes the instrumented runtime suite mandatory in CI", () => {
     expect(ci).toContain("node scripts/build.mjs --test-instrumentation");
     expect(ci).toContain("test -f dist-instrumented/leptonica.mjs");
