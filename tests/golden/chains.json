@@ -531,11 +531,7 @@
         "white": 190
       }
     ],
-    "queries": [
-      {
-        "query": "average"
-      }
-    ]
+    "queries": []
   },
   {
     "name": "sauvola-tiled-four-zones",
