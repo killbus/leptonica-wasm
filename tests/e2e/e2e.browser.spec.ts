@@ -120,10 +120,21 @@ test("a real browser Worker settles every pending request after a target-WASM tr
         ok: boolean;
         fatal?: {
           pending: readonly { status: string; reason: string }[];
+          livePoisoned: boolean;
+          liveError: string;
           laterError: string;
+          postCallsBeforeLater: number;
+          postCallsAfterLater: number;
+          postCallsAfterDrain: number;
           adapterTeardownCalls: number;
           terminalGateTeardownCalls: number;
-          probe: { ok: boolean; fatal: boolean };
+          productionEvidence: { wasmEntries: number; nativeTrapCount: number };
+          terminalEvidence: { wasmEntries: number; nativeTrapCount: number };
+          probe: {
+            ok: boolean;
+            fatal: boolean;
+            evidence: { wasmEntries: number; nativeTrapCount: number };
+          };
         };
         fresh?: { width: number; height: number; depth: number; freshAdapterTeardownCalls: number };
         error?: string;
@@ -139,10 +150,21 @@ test("a real browser Worker settles every pending request after a target-WASM tr
     expect(pending.status).toBe("rejected");
     expect(pending.reason).toContain("fatal WebAssembly trap");
   }
+  expect(result.fatal?.livePoisoned).toBe(true);
+  expect(result.fatal?.liveError).toContain("WorkerSession is terminated");
   expect(result.fatal?.laterError).toContain("WorkerSession is terminated");
+  expect(result.fatal?.postCallsBeforeLater).toBeGreaterThanOrEqual(3);
+  expect(result.fatal?.postCallsAfterLater).toBe(result.fatal?.postCallsBeforeLater);
+  expect(result.fatal?.postCallsAfterDrain).toBe(result.fatal?.postCallsBeforeLater);
   expect(result.fatal?.adapterTeardownCalls).toBe(1);
   expect(result.fatal?.terminalGateTeardownCalls).toBe(1);
-  expect(result.fatal?.probe).toEqual({ ok: false, fatal: true });
+  expect(result.fatal?.productionEvidence).toEqual({ wasmEntries: 2, nativeTrapCount: 1 });
+  expect(result.fatal?.terminalEvidence).toEqual({ wasmEntries: 1, nativeTrapCount: 1 });
+  expect(result.fatal?.probe).toEqual({
+    ok: false,
+    fatal: true,
+    evidence: { wasmEntries: 1, nativeTrapCount: 1 },
+  });
   expect(result.fresh).toEqual({
     width: 1,
     height: 1,

@@ -29,7 +29,9 @@ function newInstrumentedWorker(fault) {
 
 async function openProductionAdapterSession(fault) {
   let worker;
+  let firstFatalMessage;
   let adapterTeardownCalls = 0;
+  let adapterPostCalls = 0;
 
   // Exercise the production browser adapter unchanged. The constructor shim
   // substitutes only the CI-only instrumented Worker entry; createSession()
@@ -37,7 +39,20 @@ async function openProductionAdapterSession(fault) {
   // teardown callback. The wrapped native method proves that callback runs.
   function InstrumentedWorkerForAdapter() {
     worker = newInstrumentedWorker(fault);
+    worker.addEventListener("message", (event) => {
+      if (firstFatalMessage === undefined && event.data?.fatal === true) {
+        firstFatalMessage = event.data;
+      }
+    });
+    const nativePostMessage = worker.postMessage.bind(worker);
     const nativeTerminate = worker.terminate.bind(worker);
+    Object.defineProperty(worker, "postMessage", {
+      configurable: true,
+      value: (message, transfer) => {
+        adapterPostCalls++;
+        nativePostMessage(message, transfer);
+      },
+    });
     Object.defineProperty(worker, "terminate", {
       configurable: true,
       value: () => {
@@ -51,7 +66,13 @@ async function openProductionAdapterSession(fault) {
   globalThis.Worker = InstrumentedWorkerForAdapter;
   try {
     const session = await createBrowserSession();
-    return { session, worker, adapterTeardownCalls: () => adapterTeardownCalls };
+    return {
+      session,
+      worker,
+      firstFatal: () => firstFatalMessage,
+      adapterPostCalls: () => adapterPostCalls,
+      adapterTeardownCalls: () => adapterTeardownCalls,
+    };
   } finally {
     globalThis.Worker = NativeWorker;
   }
@@ -88,6 +109,7 @@ async function openTerminalGateProbeSession() {
     session,
     worker,
     teardownCalls: () => teardownCalls,
+    firstFatal: () => messages.find((message) => message.fatal === true),
     waitForId(id) {
       const found = messages.find((message) => message.id === id);
       if (found !== undefined) return Promise.resolve(found);
@@ -97,26 +119,53 @@ async function openTerminalGateProbeSession() {
 }
 
 async function runFatalRetirement() {
-  const trapped = await openProductionAdapterSession("fatalTrap");
+  const trapped = await openProductionAdapterSession("fatalTrapAfterLoad");
   try {
+    const live = await trapped.session.load(rgbaPixel(), 1, 1);
     const first = trapped.session.load(rgbaPixel(), 1, 1);
     const second = trapped.session.load(rgbaPixel(), 1, 1);
     const settled = await within(Promise.allSettled([first, second]), 2_000, "fatal pending requests");
+    const productionFatal = trapped.firstFatal();
+    if (productionFatal?.fatal !== true) {
+      throw new Error("production adapter did not observe a fatal Worker response");
+    }
 
+    const postCallsBeforeLater = trapped.adapterPostCalls();
+    let liveError = "";
+    try {
+      await live.toRGBA();
+    } catch (error) {
+      liveError = String(error);
+    }
     let laterError = "";
     try {
       await trapped.session.load(rgbaPixel(), 1, 1);
     } catch (error) {
       laterError = String(error);
     }
+    const postCallsAfterLater = trapped.adapterPostCalls();
+
+    // Let delayed Worker error/message tasks drain, then exercise both public
+    // cleanup paths. Fatal retirement must keep physical teardown idempotent.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await trapped.session.close();
+    trapped.session.terminate();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const postCallsAfterDrain = trapped.adapterPostCalls();
 
     return {
       pending: settled.map((result) => ({
         status: result.status,
         reason: result.status === "rejected" ? String(result.reason) : "unexpected fulfillment",
       })),
+      livePoisoned: live.isPoisoned(),
+      liveError,
       laterError,
+      postCallsBeforeLater,
+      postCallsAfterLater,
+      postCallsAfterDrain,
       adapterTeardownCalls: trapped.adapterTeardownCalls(),
+      productionEvidence: productionFatal.testFatalEvidence,
     };
   } finally {
     // Normally the production adapter already terminated it on the fatal
@@ -129,14 +178,19 @@ async function runFatalRetirement() {
 async function runTerminalGateProbe() {
   const trapped = await openTerminalGateProbeSession();
   try {
+    let initialError = "";
     await within(
       trapped.session.load(rgbaPixel(), 1, 1).then(
         () => { throw new Error("fatal trap unexpectedly fulfilled"); },
-        () => undefined,
+        (error) => { initialError = String(error); },
       ),
       2_000,
       "terminal gate trap",
     );
+    const initialFatal = trapped.firstFatal();
+    if (initialFatal?.fatal !== true || !initialError.includes("fatal WebAssembly trap")) {
+      throw new Error(`initial request did not establish fatal retirement: ${initialError}`);
+    }
 
     const probeId = 999_999;
     const probe = within(trapped.waitForId(probeId), 1_000, "post-fatal worker probe");
@@ -145,7 +199,12 @@ async function runTerminalGateProbe() {
     const response = await probe;
     return {
       teardownCalls: trapped.teardownCalls(),
-      probe: { ok: response.ok, fatal: response.fatal === true },
+      initialEvidence: initialFatal?.testFatalEvidence,
+      probe: {
+        ok: response.ok,
+        fatal: response.fatal === true,
+        evidence: response.testFatalEvidence,
+      },
     };
   } finally {
     trapped.worker.terminate();
@@ -174,6 +233,7 @@ window.__fatalE2eResult = (async () => {
       fatal: {
         ...fatal,
         terminalGateTeardownCalls: terminal.teardownCalls,
+        terminalEvidence: terminal.initialEvidence,
         probe: terminal.probe,
       },
       fresh,

@@ -301,6 +301,12 @@ jobs:
           test -f dist-instrumented/leptonica.wasm
           test -f dist-instrumented/leptonica.d.ts
 
+      - name: Generate runtime type and worker artifacts
+        run: |
+          node scripts/gen-types.mjs
+          test -f dist/types/worker/index.js
+          test -f dist/types/worker/worker.mjs
+
       # Freeze the exact production + instrumented artifacts consumed by the
       # independent browser and OOM jobs below. The job output remains true
       # even if a later, unrelated ci step fails.
@@ -333,7 +339,10 @@ jobs:
       # stayed green.
       - name: Consumer fixture
         run: |
-          node scripts/gen-types.mjs
+          . ./tmp/emsdk/emsdk_env.sh
+          emsdk_root="$GITHUB_WORKSPACE/tmp/emsdk/"
+          emcc_path="$(command -v emcc)"
+          test "${emcc_path#"$emsdk_root"}" != "$emcc_path"
           cd tests/consumer
           pnpm install --frozen-lockfile
           pnpm run check

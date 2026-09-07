@@ -176,17 +176,24 @@ describe("pinned source patch supply chain", () => {
     const patch = readFileSync(patchPath, "utf8");
     for (const file of [
       "boxbasic.c",
+      "binarize.c",
+      "conncomp.c",
       "fpix1.c",
       "numabasic.c",
+      "numafunc1.c",
+      "pix1.c",
+      "pix3.c",
       "pixabasic.c",
+      "pixafunc1.c",
       "pixtiling.c",
       "sarray1.c",
       "sel1.c",
       "stack.c",
+      "utils2.c",
     ]) {
       expect(patch).toContain("diff --git a/src/" + file + " b/src/" + file);
     }
-    for (const deferred of ["binarize.c", "colorcontent.c", "conncomp.c", "pixafunc1.c"]) {
+    for (const deferred of ["colorcontent.c"]) {
       expect(patch).not.toContain("a/src/" + deferred);
     }
     expect(patch).toContain("return boxaAddBox(pixa->boxa, box, copyflag);");

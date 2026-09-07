@@ -75,16 +75,123 @@ installation, not a recurrence of the native tool or install-tree link defects.
 `compare`, and `dispatch-builder` were skipped, so run `34145946482` still
 provides no target-WASM browser evidence.
 
+The latest completed run at this checkpoint is head commit
+`468f15cb14b51630ac2c4556f191920a6b005829` (run `34146706412`, September 7,
+2026). It materially advanced the evidence boundary: `release-set`,
+`native-oracle`, and `reproducibility` passed; the main `ci` job passed its
+typecheck, production and full-ABI builds, export checks, smoke tests, goldens,
+normal tests, instrumented target-WASM build, runtime-artifact upload, and
+mutation smoke. It then failed in the consumer fixture when `attw --pack`
+invoked `npm pack`. The log does not expose `npm pack`'s nested stderr, so the
+current diagnosis is based on the workflow boundary: package prepack invokes
+the WASM build, while the fixture ran in a later shell that did not source the
+pinned emsdk environment. The current workflow revision reactivates the pinned
+emsdk immediately before the fixture and checks that `emcc` resolves below the
+checkout's pinned `tmp/emsdk/` tree. This diagnosis and correction have not run
+in CI yet.
+
+Both independent runtime jobs downloaded and verified the frozen artifact.
+`browser-e2e` then stopped at its initial `test -f` guards because the uploaded
+`dist/` lacked the generated `dist/types/worker/index.js` and/or
+`dist/types/worker/worker.mjs`; the log ends before Playwright installation, so
+no Chromium test executed. The current workflow revision runs
+`scripts/gen-types.mjs` and verifies both files before artifact upload. This is
+an artifact-assembly correction, not browser fatal-retirement evidence.
+
+`instrumented-resource-failures` did execute 15 target-WASM cases: 12 passed
+and three failed. The exact retained-resource observations were
+`cleanBackgroundToWhite` failure index 5 (+1 block/+16 bytes),
+`sauvolaTiled` (+2 blocks/+4,148 bytes), and `selectByArea` failure index 0
+(+5 blocks/+640 bytes). The current uncommitted canonical Leptonica patch
+expands recoverable allocation cleanup for those upstream paths; its patch
+SHA-256 is
+`239040d17ba4c177fc905f675055892fa5ccf4ddcc1f1e8a13bc88ca8e24ecf8`, and
+the resulting source-tree SHA-256 is
+`454614820a2f9f32a0fa036c73986cbaf3308ae6d6b9c7e9b8a63fa9088bbec1`.
+Fresh archive applications reproduce that tree locally, but only a new
+instrumented target-WASM CI run can show that the three observed leaks are
+closed.
+The patch also passes the production-equivalent strict preflight
+`git apply --check --whitespace=error-all` against an unmodified 1.87.0 source
+tree. This command and target-tree pairing is the relevant whitespace
+evidence; inspecting added or removed blank lines in the patch text alone is
+not.
+
+The connected-component repair deliberately does not promise transactional
+failure semantics for the public in-place `pixSeedfill4BB()` and
+`pixSeedfill8BB()` primitives. If a later segment allocation fails, the
+caller-owned PIX may already be modified and its caller-owned stack may still
+contain queued segments. Existing internal callers treat NULL as terminal and
+destroy the stack, so the observed document-cleaning leak is covered. Rolling
+back pixels or draining arbitrary caller state would be a separate upstream API
+decision, not a bounded cleanup fix.
+
+A source-level completion audit found that the terminal-gate page originally
+read its captured `messages` array outside the closure that owned it. That
+would have raised `ReferenceError` after the direct probe and prevented the
+Chromium assertion from observing either counter. The probe session now
+exposes a narrow `firstFatal()` accessor, and the source contract rejects the
+old out-of-scope expression. A follow-up adversarial review found a second
+false-positive path: the page accepted any rejection from the first load, so a
+recoverable pre-WASM error could leave the fault armed and let the direct probe
+become the first request that actually trapped. The page now freezes and
+validates both the first fatal response and the session's fatal-retirement
+error before sending the probe. These corrections pass the local syntax and
+unit gates, but they do not convert the still-unexecuted Chromium path into
+runtime evidence.
+
+A further falsification pass found that the production-adapter assertions and
+the native trap counters came from different Worker instances. Both paths
+could therefore pass without proving that the production adapter retired in
+response to the counted native trap. The production-adapter session now
+observes its own raw fatal response alongside the unchanged package adapter.
+Its first load succeeds and creates a live `RemotePix`; the test-only Worker
+then arms the next `fromRGBA` call, so the same Worker records two native-entry
+attempts, one pre-trap breadcrumb, two rejected concurrent requests, a poisoned
+pre-existing proxy, and one physical teardown. The separately delayed Worker
+still establishes the terminal no-reentry gate with one entry and one trap.
+No public API or production protocol field was added.
+
+A final falsification pass found that the production adapter's post counter was
+captured before the deliberate task-drain delay. A deferred post could therefore
+occur after the asserted sample. The page now samples again after delayed tasks
+and both cleanup calls; the browser assertion and a timer-turn unit regression
+require the count to remain unchanged.
+
+The CI-only trap is deliberately injected at the `fromRGBA` entry, and the
+browser page reaches it through `WorkerSession.load()`. That is one
+representative curated-native request path, not a per-operation target-WASM
+test of `run`, `extract`, and `query`. Source inspection establishes the shared
+control structure: chain operations and Pix extraction/query methods enter the
+same `Leptonica.callNative()` retirement boundary, the entire worker request
+switch is covered by one fatal classifier and terminal gate, and the client
+handles a fatal response as session-wide state independently of request type.
+The source-only unit suite also injects a trap through a worker `query` request,
+requires a fatal response, and verifies that a later `extract` request is
+refused by the terminal gate without another query entry.
+This architectural evidence supports a general mechanism claim, while the next
+Chromium run can prove only the concrete `load`/`fromRGBA` path it executes. No
+operation-specific public API or test-only protocol command is added to blur
+that distinction.
+
 ## Evidence required from the next CI run
 
 The browser fatal-retirement claim still requires a single new commit SHA whose
 `browser-e2e` job actually executes, without skips, against the generated
 target-WASM artifact and proves all of the following:
 
-- a real `__builtin_trap()` rejects both concurrent pending requests within the
-  timeout;
+- a real `__builtin_trap()` reached through `load`/`fromRGBA` rejects both
+  concurrent pending requests within the timeout;
+- a test-only native breadcrumb written immediately before `__builtin_trap()`
+  is exactly one; the production-adapter Worker records one successful load
+  plus the trapping entry, while the separate terminal-gate Worker remains at
+  exactly one entry before and after its post-fatal probe;
+- the `RemotePix` created before the production-adapter trap is poisoned and
+  rejects locally without another `Worker.postMessage()`;
 - the production browser adapter invokes physical Worker teardown exactly once;
-- a later client call is rejected without dispatching into the retired Worker;
+- a later client call is rejected without dispatching into the retired Worker,
+  with direct `Worker.postMessage()` counts unchanged across that call and after
+  delayed tasks and cleanup drain;
 - the deliberately delayed-teardown probe receives the Worker terminal response
   and observes no WASM re-entry;
 - a fresh session created through the public `leptonica-wasm/worker`
@@ -100,3 +207,7 @@ broader pipeline or release claims.
 Heavy target-WASM, native-oracle, Chromium, and allocation-sweep execution stays
 in CI. Local checks cover source preparation, contract tests, type checking, and
 release-set validation only.
+No repository-installed `actionlint` or YAML parser is available locally; the
+workflow topology and changed shell fragment are source-tested/syntax-checked,
+while GitHub's workflow parser and runner remain the authoritative execution
+evidence for the YAML revision.

@@ -81,9 +81,25 @@ export class WorkerArena {
   }
 
   #adopt(pix: Pix): { handle: HandleId; width: number; height: number; depth: number } {
+    let width: number;
+    let height: number;
+    let depth: number;
+    try {
+      // Metadata access is native and can fail. Do not publish or retain an
+      // arena handle until all response metadata has been read successfully.
+      width = pix.width;
+      height = pix.height;
+      depth = pix.depth;
+    } catch (error) {
+      // A fatal trap has already poisoned the Pix, making dispose() a no-op;
+      // an ordinary metadata failure still owns a live native handle and must
+      // release it before the request returns an error.
+      pix.dispose();
+      throw error;
+    }
     const handle = this.#nextHandleId++;
     this.#pixes.set(handle, pix);
-    return { handle, width: pix.width, height: pix.height, depth: pix.depth };
+    return { handle, width, height, depth };
   }
 
   #get(handle: HandleId, what: string): Pix {

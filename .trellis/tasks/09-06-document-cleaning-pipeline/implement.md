@@ -40,10 +40,13 @@ DBS review evidence on 2026-09-07:
   first action, included the disconnect/429/transient-5xx recovery policy, and
   reached an explicit completed goal state.
 - Leveson's first-round review rejected an earlier broad patch candidate whose
-  failure behavior was not justified at the general Leptonica boundary. The
-  accepted canonical patch was reduced to recoverable allocation paths in
-  eight foundational containers; its SHA-256 is
-  `2e2070fbc3180114e5300d84e09272d45c283ef657e62cd69a69884db0ae5fd7`.
+  failure behavior was not justified at the general Leptonica boundary. Later
+  target-WASM allocation sweeps exposed additional upstream partial-allocation
+  cleanup paths, so the current canonical patch covers 15 source files without
+  introducing a consumer-specific policy API. Its SHA-256 is
+  `239040d17ba4c177fc905f675055892fa5ccf4ddcc1f1e8a13bc88ca8e24ecf8`; the
+  patched source-tree SHA-256 is
+  `454614820a2f9f32a0fa036c73986cbaf3308ae6d6b9c7e9b8a63fa9088bbec1`.
 - Popper's falsification review showed that a declarative source marker did
   not prove source contents. Liskov's contract review required both build
   callers to share the same source identity semantics without introducing a
@@ -190,13 +193,14 @@ runtime surface. Static and simulated-runtime coverage also verifies that
 Leptonica.close() continues destroying remaining Pix values after an ordinary
 destructor error before rethrowing the first failure.
 
-The 2026-09-07 lightweight run passed typecheck, 89 tests, release-contract
+The latest 2026-09-07 lightweight run passed typecheck, 101 tests,
+release-contract
 tests, task validation, and `git diff --check`. Five artifact-dependent files
 containing 58 tests skipped because `dist`/`dist-instrumented` are absent; those
-tests are unverified, not passing. The generated declaration script also cannot
-complete without the CI-produced full-ABI module, although a declaration-only
-emit from the normal Node typecheck configuration confirmed private
-Pix/RemotePix constructors.
+tests are unverified, not passing. A strict declaration-only emit with
+`stripInternal`, the repository's ambient Emscripten declaration, and no
+generated `dist` artifacts confirms the public `RemotePix` dimensions, private
+`RemotePix` constructor, and argument-bearing `WorkerSession` constructor.
 
 Do not treat M4's review gate as passed until the target CI build executes the
 instrumented trap/resource cases. The browser fatal-retirement test is now
@@ -231,11 +235,12 @@ queued request. On the client, a fatal response is authoritative even for a
 stale request id: `markTerminated()` poisons proxies, rejects the entire pending
 map, and then invokes the adapter teardown through an idempotent gate. The
 browser case posts both loads synchronously before awaiting either one, bounds
-their settlement, checks one production `Worker.terminate()` call, probes the
-worker-side terminal gate with physical termination deliberately delayed, and
-loads a pixel through a separate clean module. No additional runtime change was
-justified by this audit; execution of that exact chain in target Chromium is
-still CI-only.
+their settlement, checks one production `Worker.terminate()` call, records the
+adapter's direct `Worker.postMessage()` count before and after a later rejected
+call and again after delayed tasks drain, probes the worker-side terminal gate
+with physical termination deliberately delayed, and loads a pixel through a
+separate clean module. No additional runtime change was justified by this audit;
+execution of that exact chain in target Chromium is still CI-only.
 
 The first CI run from commit `06166cd9fecbc89efe5a2ea7b32253354ea42657`
 stopped before Playwright because the curated symbol-map gate found
@@ -335,59 +340,130 @@ local resolver probe now reaches `dist/types/worker/index.js`, while complete
 transform and Chromium execution remain CI-only because `dist` is intentionally
 absent locally.
 
+The recoverable-OOM patch passes the production-equivalent
+`git apply --check --whitespace=error-all` preflight against an unmodified
+Leptonica 1.87.0 tree. The public in-place `pixSeedfill4BB()` and
+`pixSeedfill8BB()` primitives remain non-transactional on allocation failure:
+caller-owned PIX data may be partially modified and the caller-owned stack may
+retain queued segments. Current internal callers abort and destroy that stack;
+rollback or draining arbitrary caller state is a separate upstream API choice.
+
+The fatal Worker case now carries two CI-only falsification signals without
+changing production exports or protocol: native/WASM code writes a breadcrumb
+immediately before `__builtin_trap()`, and a test-only module wrapper counts
+entries into `fromRGBA`. The production-adapter Worker first creates one live
+`RemotePix`, arms the next entry, and must report two entries plus one native
+trap on the same fatal response that retires the adapter. The pre-existing
+proxy must be poisoned and reject without another post. The delayed-teardown
+probe independently requires its one entry and one trap to remain unchanged
+after a direct post-fatal message. The production adapter path also drains
+delayed tasks, calls both cleanup methods, and still requires physical teardown
+exactly once.
+
+The final source-level completion audit caught one browser-harness blocker
+before submission: `runTerminalGateProbe()` referenced the probe session's
+private `messages` array outside its lexical scope. A real run would therefore
+have thrown `ReferenceError` after receiving the direct post-fatal response,
+before Playwright could assert the native breadcrumb or zero-reentry counter.
+The session now exposes only a `firstFatal()` accessor, and the source contract
+locks out the stale expression. A follow-up adversarial review then found that
+the first load accepted any rejection: a recoverable pre-WASM error could leave
+the named fault armed and allow the direct probe to become the first call that
+actually trapped, producing matching 1/1 counters without proving post-fatal
+zero re-entry. The harness now captures and validates the first fatal response
+and the session's fatal-retirement rejection before dispatching the probe.
+Syntax checks and the full local Vitest suite pass after both corrections;
+actual Chromium execution remains pending.
+An additional falsification review found that the production adapter's
+`postMessage` counter was sampled before the deliberate task-drain delay, so a
+queued post could occur after the asserted sample. The page now samples again
+after delayed tasks and cleanup, the browser assertion requires that final
+count to remain unchanged, and the local session test verifies the same
+invariant across a timer turn.
+
 ### Current fatal-retirement evidence ledger (2026-09-07)
 
 | Requirement | Current evidence | Status |
 | --- | --- | --- |
-| A real Chromium test uses the production browser adapter and target-WASM trap | `tests/e2e/fatal-page.mjs`, `instrumented-worker.mjs`, and `e2e.browser.spec.ts` are wired into a dedicated Playwright job; Vite resolves the bare test import through the browser/default `./worker` export target; CI freezes the production and instrumented artifacts once, then the browser and OOM jobs consume that same artifact independently | Implemented and locally resolver/topology-checked; Chromium execution pending |
-| One fatal response settles every concurrent pending request | Unit coverage passes; the browser case requires both promises to reject within 2 seconds | Locally simulated; target-browser proof pending |
-| Fatal retirement tears down once and blocks later dispatch/WASM re-entry | Unit coverage passes; browser test separately checks production teardown and a delayed physical-termination terminal gate | Locally simulated; target-browser proof pending |
+| A real Chromium test uses the production browser adapter and target-WASM trap | `tests/e2e/fatal-page.mjs`, `instrumented-worker.mjs`, and `e2e.browser.spec.ts` are wired into a dedicated Playwright job; the CI-only native path writes a pre-trap breadcrumb and a test-only module wrapper counts `fromRGBA` entries without changing public exports or protocol; Vite resolves the bare test import through the browser/default `./worker` export target; CI freezes the production and instrumented artifacts once, then the browser and OOM jobs consume that same artifact independently; run `34146706412` downloaded the artifact but failed its Worker-file guards before Playwright installation | Implemented and locally syntax/topology-checked; Chromium execution still pending |
+| One fatal response settles every concurrent pending request | Unit coverage passes; the browser case first creates a live proxy, then requires both subsequent promises to reject within 2 seconds from the same production Worker whose fatal response carries the native counters | Locally simulated; target-browser proof pending |
+| Fatal retirement tears down once, poisons live handles, and blocks later dispatch/WASM re-entry | Unit coverage passes; browser test checks the pre-existing proxy's poisoned state and local rejection, production teardown after a task-drain window and repeated cleanup calls, unchanged direct `Worker.postMessage()` counts across refused calls and after delayed tasks drain, and a delayed physical-termination terminal gate whose native breadcrumb/module-entry counts remain 1 | Locally simulated; target-browser proof pending |
+| Fatal retirement is request-type independent | Source inspection shows `run`, every extract/query method, metadata access, disposal, and `load` enter the same `Leptonica.callNative()` boundary; `wireWorker` classifies fatal errors around the complete request switch and `WorkerSession` treats a fatal response as session-wide state; a source-only unit injects a query trap and proves a later extract is refused without another query entry | Architectural invariant established locally; real target-WASM injection currently covers only `load`/`fromRGBA`, not per-operation trap execution |
 | A fresh Worker/module remains usable after another instance traps | Browser test creates a separate clean instance and checks a 1x1 load | CI-only proof pending |
 | Curated build remains decode-free after preserving `toJPEG()` | Compression-only JPEG path plus curated-only `--wrap=pixDisplay` isolation are present; run `34094334788` linked both default builds but still found `jpeg_read_header` | Not achieved; extraction diagnostics are prepared but require CI execution |
-| Recoverable JPEG allocation and destination-growth failures leave no tracked native blocks | Instrumented allocation sweep and named growth fault are present | Target-WASM execution pending |
+| Recoverable allocation and JPEG destination-growth failures leave no tracked native blocks | Run `34146706412` executed 15 target-WASM cases: 12 passed, while `cleanBackgroundToWhite` retained +1/+16, `sauvolaTiled` retained +2/+4,148, and `selectByArea` retained +5/+640; the current canonical patch addresses those upstream paths | Not achieved; corrected patch requires a new target-WASM sweep |
 | General-purpose binding boundary is preserved | No `documentClean`, pdfhow profile, fixed operation order, output policy, or deskew policy appears in the package API | Proven by current source inspection |
-| Feasible local contracts pass without a native/WASM rebuild | Full Vitest reports 89 passed and 58 skipped; focused source/cache/package coverage reports 49 passed; typecheck, release contract, task validation, and `git diff --check` pass | Proven locally for source-only coverage; artifact-dependent tests remain skipped/unverified |
+| Feasible local contracts pass without a native/WASM rebuild | Full serial Vitest reports 101 passed and 58 skipped; the current focused fatal/instrumentation/source-patch run reports 41 passed; typecheck, strict declaration emit, release contract, task validation, and `git diff --check` pass | Proven locally for source-only coverage; artifact-dependent tests remain skipped/unverified |
 
 The latest completed remote evidence at this checkpoint is feature commit
-`7a033e142966a60b3889240c71f8651bee41f4fc`, CI run `34117174428` (job
-`101726682649`). Default and full-ABI builds, curated export/method/smoke gates,
-goldens, and the normal target-WASM tests passed. The combined instrumented
-step then found four real recoverable-allocation leaks:
-`cleanBackgroundToWhite` index 4 (+1 block/+200 bytes), `sauvolaTiled` index 6
-(+1/+43,808), `selectByArea` index 0 (+6/+720), and
-`maskOverColorPixels` index 2 (+2/+24). Because that step both built the
-instrumented artifact and ran the independent OOM sweep, GitHub skipped the
-later Playwright step even though the artifact build itself had succeeded.
-The current uncommitted workflow revision separates those concerns at the job
-boundary. The main CI job freezes `dist/` and `dist-instrumented/` immediately
-after the isolated build and exposes an output only when that upload succeeds.
-Dedicated browser and OOM jobs each depend on that output and download the same
-artifact, but use separate runners and timeout budgets, so failure or stalling
-in either runtime gate cannot mask the other. Both jobs are also explicit
-prerequisites of `dispatch-builder`, so a runtime failure cannot race ahead of
-the external release dispatch. This does not waive or hide any leak: the same
-four failures will still fail the workflow until their ownership defects are
-repaired. A new CI run is still required to execute Chromium and close the
-target-browser evidence rows above. The repository's active `main` ruleset was
-read-only checked on 2026-09-07 and currently enforces deletion/non-fast-forward
-protection but no required status checks; PR merge enforcement therefore remains
-an external repository-governance gap rather than a property this workflow can
-prove.
+`468f15cb14b51630ac2c4556f191920a6b005829`, CI run `34146706412`.
+`release-set`, `native-oracle`, and `reproducibility` passed. The main `ci` job
+also passed both production builds, export/smoke gates, goldens, normal tests,
+the instrumented target-WASM build, artifact upload, and mutation smoke before
+the consumer fixture's `attw --pack` path failed. The current workflow
+reactivates the pinned emsdk in that shell; this awaits CI verification.
 
-The final independent DBS chatroom review is complete for this source-only
-submission boundary. Nancy Leveson, Karl Popper, and Barbara Liskov each
-created an agent-owned goal as their first action, included the required
-disconnect/429/transient-5xx recovery policy, inspected the shared archive
-helper and its counterexample tests, and explicitly completed their goals.
-All three reported that the change is ready to submit with no new integrity,
-concurrency, or abstraction-boundary blocker. They agreed that the remaining
-gap around an already damaged archive is availability rather than silent
-integrity: the helper fails closed, and the recorded recovery procedure is to
-remove that cache entry before retrying. Popper and Liskov suggested a fuller
-helper-level damaged-cache recovery regression as a non-blocking follow-up.
-This review does not upgrade the 58 skipped artifact-dependent tests, target
-Chromium, native oracle, target-WASM allocation sweep, multipage retention, or
-consumer/release evidence; those remain explicitly unproved.
+Both separated runtime jobs consumed and identity-checked the frozen artifact.
+The browser job failed its generated Worker-file guards before Playwright was
+installed, so it supplies no Chromium result. The workflow now generates and
+verifies `dist/types/worker/index.js` and `worker.mjs` before upload. The
+resource job genuinely executed 15 cases: 12 passed, while
+`cleanBackgroundToWhite` retained 1 block/16 bytes, `sauvolaTiled` retained 2
+blocks/4,148 bytes, and `selectByArea` retained 5 blocks/640 bytes. The current
+15-file canonical Leptonica patch addresses those observed upstream cleanup
+paths and reproducibly yields patched-tree digest
+`454614820a2f9f32a0fa036c73986cbaf3308ae6d6b9c7e9b8a63fa9088bbec1`, but
+neither its target-WASM leak closure nor the browser fatal-retirement behavior
+is proved until a new CI run executes both jobs. `compare`,
+`fixed-commit-consumer`, and `dispatch-builder` were skipped. The repository's
+active `main` ruleset was read-only checked on 2026-09-07 and currently
+enforces deletion/non-fast-forward protection but no required status checks;
+PR merge enforcement therefore remains an external repository-governance gap
+rather than a property this workflow can prove.
+
+The latest independent DBS chatroom review is complete for this source-only
+boundary. Nancy Leveson's systems-safety audit initially raised a blocking
+claim that the canonical patch failed strict whitespace application. The judge
+replayed the production-equivalent command against the unmodified 1.87.0 tree;
+it exited successfully, so that specific objection was falsified rather than
+carried forward. Her broader warning remains valid: the patch touches general
+Leptonica ownership paths and requires the independent target-WASM sweep. Karl
+Popper's falsifiability audit found that a fatal response alone could not prove
+the native trap or zero post-fatal WASM re-entry; the test now adds the native
+pre-trap breadcrumb and module-entry counter described above. Barbara Liskov's
+replacement-instance audit found no structural abstraction leak because those
+signals are confined to the test macro and CI-only Worker and do not alter the
+published API or production protocol.
+
+A second 2026-09-07 generality audit examined the exact boundary of that
+evidence. Leveson's control-structure review, Popper's alternative-explanation
+search, and Liskov's abstraction review agreed that `load`, `run`, `extract`,
+and `query` converge on the same trap-aware native boundary and top-level Worker
+fatal gate. They also agreed that the unexecuted browser harness injects only at
+`fromRGBA`, so it must not be reported as though real target-WASM traps had been
+independently exercised inside `run`, `extract`, or `query`. The judge therefore
+kept the generic implementation, rejected operation-specific public or protocol
+hooks, and records the narrower runtime-evidence claim above.
+
+A follow-up artifact-identity audit considered whether the two runtime jobs
+must duplicate every Leptonica provenance field from `build-report.json`. The
+pinned `actions/download-artifact` implementation defaults to the current
+repository and current workflow run when no token or run id is supplied, and
+its pinned revision fails on an artifact digest mismatch by default. Together
+with `needs: ci`, the same-SHA downstream checkouts, the producer's strict
+pin/patch/source-tree validation, and the existing report-to-WASM SHA check,
+this is sufficient for the present non-adversarial CI boundary. An independent
+shared verifier of `sourceIdentitySha256` remains a possible defense-in-depth
+improvement, but copying commit, tree, patch-set, and patch-list comparisons
+into both YAML jobs would create a second representation-dependent contract
+without proving that the binary was linked from those sources. The review
+therefore found no additional blocker and made no workflow change.
+
+Judge ruling: the source design is bounded and locally testable, but it is not
+production-proven. The real Chromium job, corrected target-WASM resource sweep,
+consumer fixture, and remaining downstream jobs must run on one new commit SHA
+before any go/ready claim. This review does not upgrade the 58 skipped
+artifact-dependent tests or any CI-only evidence.
 
 ## M5: External real-scan comparison (R8)
 

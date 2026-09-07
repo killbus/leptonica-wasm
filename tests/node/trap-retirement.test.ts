@@ -212,6 +212,37 @@ describe("fatal WebAssembly trap retirement", () => {
     expect(destroyCalls).toBe(1);
   });
 
+  it("releases a Pix when response metadata fails before handle publication", () => {
+    let failWidth = true;
+    let destroyCalls = 0;
+    const lp = new Leptonica(fakeModule({
+      fromRGBA: () => fakeHandle(),
+      pixWidth: () => {
+        if (failWidth) {
+          failWidth = false;
+          throw new Error("recoverable metadata failure");
+        }
+        return 1;
+      },
+      destroyPix: () => { destroyCalls++; },
+    }));
+    const responses: WorkerResponse[] = [];
+    let receive!: (request: WorkerRequest) => void;
+    wireWorker(lp, {
+      post: (response) => responses.push(response),
+      onMessage: (callback) => { receive = callback; },
+    });
+
+    receive({ id: 1, type: "load", buffer: new ArrayBuffer(4), w: 1, h: 1 });
+    expect(responses.at(-1)).toMatchObject({ id: 1, ok: false });
+    expect(destroyCalls).toBe(1);
+
+    receive({ id: 2, type: "load", buffer: new ArrayBuffer(4), w: 1, h: 1 });
+    expect(responses.at(-1)).toMatchObject({ id: 2, ok: true, type: "load" });
+    receive({ id: 3, type: "close" });
+    expect(destroyCalls).toBe(2);
+  });
+
   it("keeps native handles opaque and rejects direct Pix construction", () => {
     const lp = new Leptonica(fakeModule());
     const pix = lp.fromRGBA(new Uint8Array(4), 1, 1);
@@ -270,6 +301,32 @@ describe("fatal WebAssembly trap retirement", () => {
     expect(wasmEntries).toBe(1);
   });
 
+  it("treats a trap from a non-load request as session-fatal", () => {
+    let queryEntries = 0;
+    const lp = new Leptonica(fakeModule({
+      countPixels: () => {
+        queryEntries++;
+        throw new WebAssembly.RuntimeError("unreachable");
+      },
+    }));
+    const responses: WorkerResponse[] = [];
+    let receive!: (request: WorkerRequest) => void;
+    wireWorker(lp, {
+      post: (response) => responses.push(response),
+      onMessage: (cb) => { receive = cb; },
+    });
+
+    receive({ id: 9, type: "load", buffer: new ArrayBuffer(4), w: 1, h: 1 });
+    expect(responses.at(-1)).toMatchObject({ id: 9, ok: true, type: "load", handle: 1 });
+
+    receive({ id: 10, type: "query", handle: 1, query: { query: "countPixels" } });
+    receive({ id: 11, type: "extract", handle: 1, format: "png" });
+
+    expect(responses.at(-2)).toMatchObject({ id: 10, ok: false, fatal: true });
+    expect(responses.at(-1)).toMatchObject({ id: 11, ok: false, fatal: true });
+    expect(queryEntries).toBe(1);
+  });
+
   it("poisons a client session on a fatal response but not on a normal error", async () => {
     const posted: WorkerRequest[] = [];
     let receive!: (response: WorkerResponse) => void;
@@ -298,10 +355,13 @@ describe("fatal WebAssembly trap retirement", () => {
     });
     await expect(fatal).rejects.toThrow(/fatal WebAssembly trap/);
     expect(teardownCalls).toBe(1);
+    const postsAfterFatal = posted.length;
     await expect(session.load(new Uint8Array(4), 1, 1)).rejects.toThrow(
       /WorkerSession is terminated/,
     );
     await expect(session.close()).resolves.toBeUndefined();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(posted).toHaveLength(postsAfterFatal);
   });
 
   it("rejects every pending request when one request reports a fatal trap", async () => {

@@ -56,12 +56,12 @@
     "tag": "1.87.0",
     "commit": "13275a278eb55b5746e33f95fbf5a2c8f604b3ab",
     "sourceTreeSha256": "0bca39eb8c7127ef398ebc9be7946fb47c0db9b1e7394bd752189bdc2b2cf08c",
-    "patchedSourceTreeSha256": "6b1845df90c5de803639c5cff91317590409c9d67203c40a9539138c3a27779f",
+    "patchedSourceTreeSha256": "454614820a2f9f32a0fa036c73986cbaf3308ae6d6b9c7e9b8a63fa9088bbec1",
     "patches": [
       {
         "file": "vendor/patches/leptonica-1.87.0-recoverable-oom.patch",
         "appliesToCommit": "13275a278eb55b5746e33f95fbf5a2c8f604b3ab",
-        "sha256": "2e2070fbc3180114e5300d84e09272d45c283ef657e62cd69a69884db0ae5fd7"
+        "sha256": "239040d17ba4c177fc905f675055892fa5ccf4ddcc1f1e8a13bc88ca8e24ecf8"
       }
     ]
   }

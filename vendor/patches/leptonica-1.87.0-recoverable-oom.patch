@@ -1,5 +1,149 @@
+diff --git a/src/binarize.c b/src/binarize.c
+index a62bd0a..27763be 100644
+--- a/src/binarize.c
++++ b/src/binarize.c
+@@ -610,7 +610,8 @@ pixSauvolaBinarize(PIX       *pixs,
+                    PIX      **ppixd)
+ {
+ l_int32  w, h;
+-PIX     *pixg, *pixsc, *pixm = NULL, *pixms = NULL, *pixth = NULL, *pixd = NULL;
++PIX     *pixg = NULL, *pixsc = NULL, *pixm = NULL, *pixms = NULL;
++PIX     *pixsd = NULL, *pixth = NULL, *pixd = NULL;
+ 
+     if (ppixm) *ppixm = NULL;
+     if (ppixsd) *ppixsd = NULL;
+@@ -639,34 +640,62 @@ PIX     *pixg, *pixsc, *pixm = NULL, *pixms = NULL, *pixth = NULL, *pixd = NULL;
+         pixsc = pixRemoveBorder(pixs, whsize + 1);
+     }
+     if (!pixg || !pixsc)
+-        return ERROR_INT("pixg and pixsc not made", __func__, 1);
++        goto cleanup;
+ 
+         /* All these functions strip off the border pixels. */
+-    if (ppixm || ppixth || ppixd)
++    if (ppixm || ppixsd || ppixth || ppixd) {
+         pixm = pixWindowedMean(pixg, whsize, whsize, 1, 1);
+-    if (ppixsd || ppixth || ppixd)
++        if (!pixm) goto cleanup;
++    }
++    if (ppixsd || ppixth || ppixd) {
+         pixms = pixWindowedMeanSquare(pixg, whsize, whsize, 1);
+-    if (ppixth || ppixd)
+-        pixth = pixSauvolaGetThreshold(pixm, pixms, factor, ppixsd);
++        if (!pixms) goto cleanup;
++    }
++    if (ppixsd || ppixth || ppixd) {
++        pixth = pixSauvolaGetThreshold(pixm, pixms, factor,
++                                      ppixsd ? &pixsd : NULL);
++        if (!pixth) goto cleanup;
++    }
+     if (ppixd) {
+         pixd = pixApplyLocalThreshold(pixsc, pixth);
++        if (!pixd) goto cleanup;
+         pixCopyResolution(pixd, pixs);
+     }
+ 
+-    if (ppixm)
++    if (ppixm) {
+         *ppixm = pixm;
+-    else
+-        pixDestroy(&pixm);
+-    pixDestroy(&pixms);
+-    if (ppixth)
++        pixm = NULL;
++    }
++    if (ppixsd) {
++        *ppixsd = pixsd;
++        pixsd = NULL;
++    }
++    if (ppixth) {
+         *ppixth = pixth;
+-    else
+-        pixDestroy(&pixth);
+-    if (ppixd)
++        pixth = NULL;
++    }
++    if (ppixd) {
+         *ppixd = pixd;
++        pixd = NULL;
++    }
++    pixDestroy(&pixm);
++    pixDestroy(&pixms);
++    pixDestroy(&pixsd);
++    pixDestroy(&pixth);
++    pixDestroy(&pixd);
+     pixDestroy(&pixg);
+     pixDestroy(&pixsc);
+     return 0;
++
++cleanup:
++    pixDestroy(&pixg);
++    pixDestroy(&pixsc);
++    pixDestroy(&pixm);
++    pixDestroy(&pixms);
++    pixDestroy(&pixsd);
++    pixDestroy(&pixth);
++    pixDestroy(&pixd);
++    return ERROR_INT("intermediate pix not made", __func__, 1);
+ }
+ 
+ 
+@@ -739,14 +768,19 @@ PIX        *pixsd = NULL, *pixd = NULL;
+     if (usetab) {
+         tabsize = 1 << 16;
+         tab = (l_float32 *)LEPT_CALLOC(tabsize, sizeof(l_float32));
++        if (!tab)
++            return (PIX *)ERROR_PTR("sqrt table not made", __func__, NULL);
+         for (i = 0; i < tabsize; i++)
+             tab[i] = sqrtf((l_float32)i);
+     }
+ 
+     pixd = pixCreate(w, h, 8);
++    if (!pixd)
++        goto cleanup;
+     if (ppixsd) {
+         pixsd = pixCreate(w, h, 8);
+-        *ppixsd = pixsd;
++        if (!pixsd)
++            goto cleanup;
+     }
+     datam = pixGetData(pixm);
+     datams = pixGetData(pixms);
+@@ -775,8 +809,18 @@ PIX        *pixsd = NULL, *pixd = NULL;
+         }
+     }
+ 
++    if (ppixsd) {
++        *ppixsd = pixsd;
++        pixsd = NULL;
++    }
+     if (usetab) LEPT_FREE(tab);
+     return pixd;
++
++cleanup:
++    if (usetab) LEPT_FREE(tab);
++    pixDestroy(&pixsd);
++    pixDestroy(&pixd);
++    return (PIX *)ERROR_PTR("threshold pix not made", __func__, NULL);
+ }
+ 
+ 
+@@ -804,6 +848,8 @@ PIX       *pixd;
+ 
+     pixGetDimensions(pixs, &w, &h, NULL);
+     pixd = pixCreate(w, h, 1);
++    if (!pixd)
++        return (PIX *)ERROR_PTR("pixd not made", __func__, NULL);
+     datas = pixGetData(pixs);
+     datat = pixGetData(pixth);
+     datad = pixGetData(pixd);
+@@ -1203,4 +1249,3 @@ NUMA      *na1, *na2, *na3;
+         *ppixd = pixThresholdToBinary(pixs, *pthresh);
+     return 0;
+ }
+-
 diff --git a/src/boxbasic.c b/src/boxbasic.c
-index aaffbb1..b5ea22b 100644
+index aaffbb1..7ba6067 100644
 --- a/src/boxbasic.c
 +++ b/src/boxbasic.c
 @@ -191,6 +191,8 @@ BOX  *box;
@@ -20,6 +164,451 @@ index aaffbb1..b5ea22b 100644
      boxa->n = 0;
      boxa->nalloc = n;
      boxa->refcount = 1;
+@@ -497,7 +501,11 @@ BOXA    *boxac;
+             boxc = boxaGetBox(boxa, i, L_COPY);
+         else   /* copy-clone */
+             boxc = boxaGetBox(boxa, i, L_CLONE);
+-        boxaAddBox(boxac, boxc, L_INSERT);
++        if (!boxc || boxaAddBox(boxac, boxc, L_INSERT)) {
++            boxDestroy(&boxc);
++            boxaDestroy(&boxac);
++            return (BOXA *)ERROR_PTR("box not copied", __func__, NULL);
++        }
+     }
+     return boxac;
+ }
+diff --git a/src/conncomp.c b/src/conncomp.c
+index 7d84f1b..0e1aa08 100644
+--- a/src/conncomp.c
++++ b/src/conncomp.c
+@@ -54,7 +54,7 @@
+  *            l_int32   pixSeedfill8()
+  *
+  *      Static stack helper functions for single raster line seedfill:
+- *            static void    pushFillsegBB()
++ *            static l_ok    pushFillsegBB()
+  *            static void    pushFillseg()
+  *            static void    popFillseg()
+  *
+@@ -115,10 +115,10 @@ static l_int32 nextOnPixelInRasterLow(l_uint32 *data, l_int32 w, l_int32 h,
+                                       l_int32 ystart, l_int32 *px, l_int32 *py);
+ 
+     /* Static accessors for FillSegs on a stack */
+-static void pushFillsegBB(L_STACK *stack, l_int32 xleft, l_int32 xright,
+-                          l_int32 y, l_int32 dy, l_int32 ymax,
+-                          l_int32 *pminx, l_int32 *pmaxx,
+-                          l_int32 *pminy, l_int32 *pmaxy);
++static l_ok pushFillsegBB(L_STACK *stack, l_int32 xleft, l_int32 xright,
++                         l_int32 y, l_int32 dy, l_int32 ymax,
++                         l_int32 *pminx, l_int32 *pmaxx,
++                         l_int32 *pminy, l_int32 *pmaxy);
+ static void pushFillseg(L_STACK *stack, l_int32 xleft, l_int32 xright,
+                         l_int32 y, l_int32 dy, l_int32 ymax);
+ static void popFillseg(L_STACK *stack, l_int32 *pxleft, l_int32 *pxright,
+@@ -195,13 +195,13 @@ pixConnCompPixa(PIX     *pixs,
+                 PIXA   **ppixa,
+                 l_int32  connectivity)
+ {
+-l_int32   h, iszero;
++l_int32   h, iszero, failed = TRUE;
+ l_int32   x, y, xstart, ystart;
+-PIX      *pix1, *pix2, *pix3, *pix4;
+-PIXA     *pixa;
+-BOX      *box;
+-BOXA     *boxa;
+-L_STACK  *stack, *auxstack;
++PIX      *pix1 = NULL, *pix2 = NULL, *pix3 = NULL, *pix4 = NULL;
++PIXA     *pixa = NULL;
++BOX      *box = NULL;
++BOXA     *boxa = NULL, *boxac = NULL;
++L_STACK  *stack = NULL, *auxstack = NULL;
+ 
+     if (!ppixa)
+         return (BOXA *)ERROR_PTR("&pixa not defined", __func__, NULL);
+@@ -211,33 +211,36 @@ L_STACK  *stack, *auxstack;
+     if (connectivity != 4 && connectivity != 8)
+         return (BOXA *)ERROR_PTR("connectivity not 4 or 8", __func__, NULL);
+ 
+-    pix1 = pix2 = pix3 = pix4 = NULL;
+-    stack = NULL;
+     pixa = pixaCreate(0);
+-    boxa = NULL;
+-    *ppixa = pixa;
+-    pixZero(pixs, &iszero);
+-    if (iszero)
+-        return boxaCreate(1);  /* return empty boxa and empty pixa */
++    if (!pixa)
++        goto cleanup;
++    if (pixZero(pixs, &iszero))
++        goto cleanup;
++    if (iszero) {
++        boxa = boxaCreate(1);  /* return empty boxa and empty pixa */
++        if (!boxa)
++            goto cleanup;
++        failed = FALSE;
++        goto cleanup;
++    }
+ 
+     pixSetPadBits(pixs, 0);
+     pix1 = pixCopy(NULL, pixs);
+     pix2 = pixCopy(NULL, pixs);
+-    if (!pix1 || !pix2) {
+-        L_ERROR("pix1 or pix2 not made\n", __func__);
+-        pixaDestroy(ppixa);
++    if (!pix1 || !pix2)
+         goto cleanup;
+-    }
+ 
+     h = pixGetHeight(pixs);
+-    if ((stack = lstackCreate(h)) == NULL) {
+-        L_ERROR("stack not made\n", __func__);
+-        pixaDestroy(ppixa);
++    if ((stack = lstackCreate(h)) == NULL)
+         goto cleanup;
+-    }
+     auxstack = lstackCreate(0);
++    if (!auxstack)
++        goto cleanup;
+     stack->auxstack = auxstack;
++    auxstack = NULL;
+     boxa = boxaCreate(0);
++    if (!boxa)
++        goto cleanup;
+ 
+     xstart = 0;
+     ystart = 0;
+@@ -245,21 +248,24 @@ L_STACK  *stack, *auxstack;
+         if (!nextOnPixelInRaster(pix1, xstart, ystart, &x, &y))
+             break;
+ 
+-        if ((box = pixSeedfillBB(pix1, stack, x, y, connectivity)) == NULL) {
+-            boxaDestroy(&boxa);
+-            pixaDestroy(ppixa);
+-            L_ERROR("box not made\n", __func__);
++        box = pixSeedfillBB(pix1, stack, x, y, connectivity);
++        if (!box)
+             goto cleanup;
+-        }
+-        boxaAddBox(boxa, box, L_INSERT);
+ 
+             /* Save the c.c. and remove from pix2 as well */
+         pix3 = pixClipRectangle(pix1, box, NULL);
+         pix4 = pixClipRectangle(pix2, box, NULL);
+-        pixXor(pix3, pix3, pix4);
+-        pixRasterop(pix2, box->x, box->y, box->w, box->h, PIX_SRC ^ PIX_DST,
+-                    pix3, 0, 0);
+-        pixaAddPix(pixa, pix3, L_INSERT);
++        if (!pix3 || !pix4 || !pixXor(pix3, pix3, pix4))
++            goto cleanup;
++        if (pixRasterop(pix2, box->x, box->y, box->w, box->h,
++                        PIX_SRC ^ PIX_DST, pix3, 0, 0))
++            goto cleanup;
++        if (pixaAddPix(pixa, pix3, L_INSERT))
++            goto cleanup;
++        pix3 = NULL;
++        if (boxaAddBox(boxa, box, L_INSERT))
++            goto cleanup;
++        box = NULL;
+         pixDestroy(&pix4);
+ 
+         xstart = x;
+@@ -274,15 +280,30 @@ L_STACK  *stack, *auxstack;
+ #endif  /* DEBUG */
+ 
+         /* Remove old boxa of pixa and replace with a copy */
++    boxac = boxaCopy(boxa, L_COPY);
++    if (!boxac)
++        goto cleanup;
+     boxaDestroy(&pixa->boxa);
+-    pixa->boxa = boxaCopy(boxa, L_COPY);
+-    *ppixa = pixa;
++    pixa->boxa = boxac;
++    boxac = NULL;
++    failed = FALSE;
+ 
+         /* Cleanup, freeing the fillsegs on each stack */
+ cleanup:
++    boxDestroy(&box);
++    pixDestroy(&pix3);
++    pixDestroy(&pix4);
++    boxaDestroy(&boxac);
++    lstackDestroy(&auxstack, TRUE);
+     lstackDestroy(&stack, TRUE);
+     pixDestroy(&pix1);
+     pixDestroy(&pix2);
++    if (failed) {
++        boxaDestroy(&boxa);
++        pixaDestroy(&pixa);
++        return (BOXA *)ERROR_PTR("connected components not made", __func__, NULL);
++    }
++    *ppixa = pixa;
+     return boxa;
+ }
+ 
+@@ -307,22 +328,20 @@ BOXA *
+ pixConnCompBB(PIX     *pixs,
+               l_int32  connectivity)
+ {
+-l_int32   h, iszero;
++l_int32   h, iszero, failed = TRUE;
+ l_int32   x, y, xstart, ystart;
+-PIX      *pix1;
+-BOX      *box;
+-BOXA     *boxa;
+-L_STACK  *stack, *auxstack;
++PIX      *pix1 = NULL;
++BOX      *box = NULL;
++BOXA     *boxa = NULL;
++L_STACK  *stack = NULL, *auxstack = NULL;
+ 
+     if (!pixs || pixGetDepth(pixs) != 1)
+         return (BOXA *)ERROR_PTR("pixs undefined or not 1 bpp", __func__, NULL);
+     if (connectivity != 4 && connectivity != 8)
+         return (BOXA *)ERROR_PTR("connectivity not 4 or 8", __func__, NULL);
+ 
+-    boxa = NULL;
+-    pix1 = NULL;
+-    stack = NULL;
+-    pixZero(pixs, &iszero);
++    if (pixZero(pixs, &iszero))
++        return (BOXA *)ERROR_PTR("empty test failed", __func__, NULL);
+     if (iszero)
+         return boxaCreate(1);  /* return empty boxa */
+ 
+@@ -331,13 +350,16 @@ L_STACK  *stack, *auxstack;
+         return (BOXA *)ERROR_PTR("pix1 not made", __func__, NULL);
+ 
+     h = pixGetHeight(pixs);
+-    if ((stack = lstackCreate(h)) == NULL) {
+-        L_ERROR("stack not made\n", __func__);
++    if ((stack = lstackCreate(h)) == NULL)
+         goto cleanup;
+-    }
+     auxstack = lstackCreate(0);
++    if (!auxstack)
++        goto cleanup;
+     stack->auxstack = auxstack;
++    auxstack = NULL;
+     boxa = boxaCreate(0);
++    if (!boxa)
++        goto cleanup;
+ 
+     xstart = 0;
+     ystart = 0;
+@@ -345,12 +367,12 @@ L_STACK  *stack, *auxstack;
+         if (!nextOnPixelInRaster(pix1, xstart, ystart, &x, &y))
+             break;
+ 
+-        if ((box = pixSeedfillBB(pix1, stack, x, y, connectivity)) == NULL) {
+-            L_ERROR("box not made\n", __func__);
+-            boxaDestroy(&boxa);
++        box = pixSeedfillBB(pix1, stack, x, y, connectivity);
++        if (!box)
+             goto cleanup;
+-        }
+-        boxaAddBox(boxa, box, L_INSERT);
++        if (boxaAddBox(boxa, box, L_INSERT))
++            goto cleanup;
++        box = NULL;
+ 
+         xstart = x;
+         ystart = y;
+@@ -363,10 +385,16 @@ L_STACK  *stack, *auxstack;
+     pixWriteDebug("/tmp/lept/cc/remain.png", pix1, IFF_PNG);
+ #endif  /* DEBUG */
+ 
++    failed = FALSE;
++
+         /* Cleanup, freeing the fillsegs on each stack */
+ cleanup:
++    boxDestroy(&box);
++    lstackDestroy(&auxstack, TRUE);
+     lstackDestroy(&stack, TRUE);
+     pixDestroy(&pix1);
++    if (failed)
++        boxaDestroy(&boxa);
+     return boxa;
+ }
+ 
+@@ -632,8 +660,11 @@ BOX       *box;
+         return (BOX *)ERROR_PTR("pixs undefined or not 1 bpp", __func__, NULL);
+     if (!stack)
+         return (BOX *)ERROR_PTR("stack not defined", __func__, NULL);
+-    if (!stack->auxstack)
++    if (!stack->auxstack) {
+         stack->auxstack = lstackCreate(0);
++        if (!stack->auxstack)
++            return (BOX *)ERROR_PTR("auxstack not made", __func__, NULL);
++    }
+ 
+     pixGetDimensions(pixs, &w, &h, NULL);
+     xmax = w - 1;
+@@ -651,8 +682,11 @@ BOX       *box;
+          * then init b.b. boundaries correctly to seed.  */
+     minx = miny = 100000;
+     maxx = maxy = 0;
+-    pushFillsegBB(stack, x, x, y, 1, ymax, &minx, &maxx, &miny, &maxy);
+-    pushFillsegBB(stack, x, x, y + 1, -1, ymax, &minx, &maxx, &miny, &maxy);
++    if (pushFillsegBB(stack, x, x, y, 1, ymax,
++                      &minx, &maxx, &miny, &maxy) ||
++        pushFillsegBB(stack, x, x, y + 1, -1, ymax,
++                      &minx, &maxx, &miny, &maxy))
++        return (BOX *)ERROR_PTR("seed fill stack init failed", __func__, NULL);
+     minx = maxx = x;
+     miny = maxy = y;
+ 
+@@ -677,19 +711,22 @@ BOX       *box;
+         if (x >= x1)  /* pix at x1 was off and was not cleared */
+             goto skip;
+         xstart = x + 1;
+-        if (xstart < x1 - 1)   /* leak on left? */
++        if (xstart < x1 - 1 &&   /* leak on left? */
+             pushFillsegBB(stack, xstart, x1 - 1, y, -dy,
+-                          ymax, &minx, &maxx, &miny, &maxy);
++                          ymax, &minx, &maxx, &miny, &maxy))
++            return (BOX *)ERROR_PTR("fill segment not added", __func__, NULL);
+ 
+         x = x1 + 1;
+         do {
+             for (; x <= xmax && (GET_DATA_BIT(line, x) == 1); x++)
+                 CLEAR_DATA_BIT(line, x);
+-            pushFillsegBB(stack, xstart, x - 1, y, dy,
+-                          ymax, &minx, &maxx, &miny, &maxy);
+-            if (x > x2 + 1)   /* leak on right? */
++            if (pushFillsegBB(stack, xstart, x - 1, y, dy,
++                              ymax, &minx, &maxx, &miny, &maxy))
++                return (BOX *)ERROR_PTR("fill segment not added", __func__, NULL);
++            if (x > x2 + 1 &&   /* leak on right? */
+                 pushFillsegBB(stack, x2 + 1, x - 1, y, -dy,
+-                              ymax, &minx, &maxx, &miny, &maxy);
++                              ymax, &minx, &maxx, &miny, &maxy))
++                return (BOX *)ERROR_PTR("fill segment not added", __func__, NULL);
+     skip:   for (x++; x <= x2 &&
+                       x <= xmax &&
+                       (GET_DATA_BIT(line, x) == 0); x++)
+@@ -745,8 +782,11 @@ BOX       *box;
+         return (BOX *)ERROR_PTR("pixs undefined or not 1 bpp", __func__, NULL);
+     if (!stack)
+         return (BOX *)ERROR_PTR("stack not defined", __func__, NULL);
+-    if (!stack->auxstack)
++    if (!stack->auxstack) {
+         stack->auxstack = lstackCreate(0);
++        if (!stack->auxstack)
++            return (BOX *)ERROR_PTR("auxstack not made", __func__, NULL);
++    }
+ 
+     pixGetDimensions(pixs, &w, &h, NULL);
+     xmax = w - 1;
+@@ -764,8 +804,11 @@ BOX       *box;
+          * then init b.b. boundaries correctly to seed.  */
+     minx = miny = 100000;
+     maxx = maxy = 0;
+-    pushFillsegBB(stack, x, x, y, 1, ymax, &minx, &maxx, &miny, &maxy);
+-    pushFillsegBB(stack, x, x, y + 1, -1, ymax, &minx, &maxx, &miny, &maxy);
++    if (pushFillsegBB(stack, x, x, y, 1, ymax,
++                      &minx, &maxx, &miny, &maxy) ||
++        pushFillsegBB(stack, x, x, y + 1, -1, ymax,
++                      &minx, &maxx, &miny, &maxy))
++        return (BOX *)ERROR_PTR("seed fill stack init failed", __func__, NULL);
+     minx = maxx = x;
+     miny = maxy = y;
+ 
+@@ -790,19 +833,22 @@ BOX       *box;
+         if (x >= x1 - 1)  /* pix at x1 - 1 was off and was not cleared */
+             goto skip;
+         xstart = x + 1;
+-        if (xstart < x1)   /* leak on left? */
++        if (xstart < x1 &&   /* leak on left? */
+             pushFillsegBB(stack, xstart, x1 - 1, y, -dy,
+-                          ymax, &minx, &maxx, &miny, &maxy);
++                          ymax, &minx, &maxx, &miny, &maxy))
++            return (BOX *)ERROR_PTR("fill segment not added", __func__, NULL);
+ 
+         x = x1;
+         do {
+             for (; x <= xmax && (GET_DATA_BIT(line, x) == 1); x++)
+                 CLEAR_DATA_BIT(line, x);
+-            pushFillsegBB(stack, xstart, x - 1, y, dy,
+-                          ymax, &minx, &maxx, &miny, &maxy);
+-            if (x > x2)   /* leak on right? */
++            if (pushFillsegBB(stack, xstart, x - 1, y, dy,
++                              ymax, &minx, &maxx, &miny, &maxy))
++                return (BOX *)ERROR_PTR("fill segment not added", __func__, NULL);
++            if (x > x2 &&   /* leak on right? */
+                 pushFillsegBB(stack, x2 + 1, x - 1, y, -dy,
+-                              ymax, &minx, &maxx, &miny, &maxy);
++                              ymax, &minx, &maxx, &miny, &maxy))
++                return (BOX *)ERROR_PTR("fill segment not added", __func__, NULL);
+     skip:   for (x++; x <= x2 + 1 &&
+                       x <= xmax &&
+                       (GET_DATA_BIT(line, x) == 0); x++)
+@@ -1058,7 +1104,7 @@ l_uint32  *data, *line;
+  * \param[out]   pmaxx            maximum x
+  * \param[out]   pminy            minimum y
+  * \param[out]   pmaxy            maximum y
+- * \return  void
++ * \return  0 if OK; 1 on error
+  *
+  * <pre>
+  * Notes:
+@@ -1068,7 +1114,7 @@ l_uint32  *data, *line;
+  *          fillsegs if the auxiliary stack is empty.
+  * </pre>
+  */
+-static void
++static l_ok
+ pushFillsegBB(L_STACK  *stack,
+               l_int32   xleft,
+               l_int32   xright,
+@@ -1084,8 +1130,7 @@ FILLSEG  *fseg;
+ L_STACK  *auxstack;
+ 
+     if (!stack) {
+-        L_ERROR("stack not defined\n", __func__);
+-        return;
++        return ERROR_INT("stack not defined", __func__, 1);
+     }
+ 
+     *pminx = L_MIN(*pminx, xleft);
+@@ -1095,8 +1140,7 @@ L_STACK  *auxstack;
+ 
+     if (y + dy >= 0 && y + dy <= ymax) {
+         if ((auxstack = stack->auxstack) == NULL) {
+-            L_ERROR("auxstack not defined\n", __func__);
+-            return;
++            return ERROR_INT("auxstack not defined", __func__, 1);
+         }
+ 
+             /* Get a fillseg to use */
+@@ -1104,12 +1148,19 @@ L_STACK  *auxstack;
+             fseg = (FILLSEG *)lstackRemove(auxstack);
+         else
+             fseg = (FILLSEG *)LEPT_CALLOC(1, sizeof(FILLSEG));
++        if (!fseg)
++            return ERROR_INT("fillseg not made", __func__, 1);
+         fseg->xleft = xleft;
+         fseg->xright = xright;
+         fseg->y = y;
+         fseg->dy = dy;
+-        lstackAdd(stack, fseg);
++        if (lstackAdd(stack, fseg)) {
++            LEPT_FREE(fseg);
++            return ERROR_INT("fillseg not added", __func__, 1);
++        }
+     }
++
++    return 0;
+ }
+ 
+ 
+@@ -1212,5 +1263,6 @@ L_STACK  *auxstack;
+     *pdy = fseg->dy;
+ 
+         /* Save it for re-use */
+-    lstackAdd(auxstack, fseg);
++    if (lstackAdd(auxstack, fseg))
++        LEPT_FREE(fseg);
+ }
 diff --git a/src/fpix1.c b/src/fpix1.c
 index e0616fa..e66973a 100644
 --- a/src/fpix1.c
@@ -34,20 +623,165 @@ index e0616fa..e66973a 100644
      dpixSetWpl(dpix, width);  /* 8 byte words */
      dpix->refcount = 1;
 diff --git a/src/numabasic.c b/src/numabasic.c
-index 5138f98..77c03f4 100644
+index 5138f98..6b8064d 100644
 --- a/src/numabasic.c
 +++ b/src/numabasic.c
-@@ -198,6 +198,8 @@ NUMA  *na;
+@@ -198,6 +198,9 @@ NUMA  *na;
          n = InitialArraySize;
  
      na = (NUMA *)LEPT_CALLOC(1, sizeof(NUMA));
 +    if (!na)
 +        return (NUMA *)ERROR_PTR("numa not made", __func__, NULL);
++    na->refcount = 1;
      if ((na->array = (l_float32 *)LEPT_CALLOC(n, sizeof(l_float32))) == NULL) {
          numaDestroy(&na);
          return (NUMA *)ERROR_PTR("number array not made", __func__, NULL);
+@@ -205,7 +208,6 @@ NUMA  *na;
+ 
+     na->nalloc = n;
+     na->n = 0;
+-    na->refcount = 1;
+     na->startx = 0.0;
+     na->delx = 1.0;
+     return na;
+@@ -1292,6 +1294,7 @@ FILE    *fp;
+ }
+ 
+ 
++
+ /*--------------------------------------------------------------------------*
+  *                     Numaa creation, destruction                          *
+  *--------------------------------------------------------------------------*/
+@@ -1963,4 +1966,3 @@ FILE    *fp;
+ #endif  /* HAVE_FMEMOPEN */
+     return ret;
+ }
+-
+diff --git a/src/numafunc1.c b/src/numafunc1.c
+index c6d2ba1..f50d9fc 100644
+--- a/src/numafunc1.c
++++ b/src/numafunc1.c
+@@ -1194,7 +1194,8 @@ NUMA      *nai;
+     if ((n = numaGetCount(nas)) == 0)
+         return (NUMA *)ERROR_PTR("nas is empty", __func__, NULL);
+ 
+-    nai = numaCreate(n);
++    if ((nai = numaCreate(n)) == NULL)
++        return (NUMA *)ERROR_PTR("nai not made", __func__, NULL);
+     for (i = 0; i < n; i++) {
+         numaGetFValue(nas, i, &fval);
+         ival = 0;
+@@ -1216,7 +1217,10 @@ NUMA      *nai;
+             numaDestroy(&nai);
+             return (NUMA *)ERROR_PTR("invalid type", __func__, NULL);
+         }
+-        numaAddNumber(nai, ival);
++        if (numaAddNumber(nai, ival)) {
++            numaDestroy(&nai);
++            return (NUMA *)ERROR_PTR("indicator not added", __func__, NULL);
++        }
+     }
+ 
+     return nai;
+@@ -3631,4 +3635,3 @@ NUMA   **array;
+ 
+     return nad;
+ }
+-
+diff --git a/src/pix1.c b/src/pix1.c
+index e21f457..fccbfc4 100644
+--- a/src/pix1.c
++++ b/src/pix1.c
+@@ -422,8 +422,10 @@ PIX     *pixd;
+         return (PIX *)ERROR_PTR("pixd not made", __func__, NULL);
+     pixCopySpp(pixd, pixs);
+     pixCopyResolution(pixd, pixs);
+-    pixCopyColormap(pixd, pixs);
+-    pixCopyText(pixd, pixs);
++    if (pixCopyColormap(pixd, pixs) || pixCopyText(pixd, pixs)) {
++        pixDestroy(&pixd);
++        return (PIX *)ERROR_PTR("metadata not copied", __func__, NULL);
++    }
+     pixCopyInputFormat(pixd, pixs);
+     pixSetPadBits(pixd, 0);
+     return pixd;
+@@ -1434,8 +1436,7 @@ pixSetText(PIX         *pix,
+     if (!pix)
+         return ERROR_INT("pix not defined", __func__, 1);
+ 
+-    stringReplace(&pix->text, textstring);
+-    return 0;
++    return stringReplace(&pix->text, textstring);
+ }
+ 
+ 
+@@ -1458,14 +1459,17 @@ pixAddText(PIX         *pix,
+            const char  *textstring)
+ {
+ char  *newstring;
++l_ok   ret;
+ 
+     if (!pix)
+         return ERROR_INT("pix not defined", __func__, 1);
+ 
+     newstring = stringJoin(pixGetText(pix), textstring);
+-    stringReplace(&pix->text, newstring);
++    if (!newstring)
++        return ERROR_INT("newstring not made", __func__, 1);
++    ret = stringReplace(&pix->text, newstring);
+     LEPT_FREE(newstring);
+-    return 0;
++    return ret;
+ }
+ 
+ 
+@@ -1480,8 +1484,7 @@ pixCopyText(PIX        *pixd,
+     if (pixs == pixd)
+         return 0;   /* no-op */
+ 
+-    pixSetText(pixd, pixs->text);
+-    return 0;
++    return pixSetText(pixd, pixs->text);
+ }
+ 
+ 
+diff --git a/src/pix3.c b/src/pix3.c
+index 4de16d3..f4f8cdd 100644
+--- a/src/pix3.c
++++ b/src/pix3.c
+@@ -1861,6 +1861,8 @@ PIX      *pix;
+         return numaCreate(1);
+ 
+     pix = pixaGetPix(pixa, 0, L_CLONE);
++    if (!pix)
++        return (NUMA *)ERROR_PTR("first pix not found", __func__, NULL);
+     d = pixGetDepth(pix);
+     pixDestroy(&pix);
+     if (d != 1)
+@@ -1869,10 +1871,19 @@ PIX      *pix;
+     if ((na = numaCreate(n)) == NULL)
+         return (NUMA *)ERROR_PTR("na not made", __func__, NULL);
+     tab = makePixelSumTab8();
++    if (!tab) {
++        numaDestroy(&na);
++        return (NUMA *)ERROR_PTR("pixel sum table not made", __func__, NULL);
++    }
+     for (i = 0; i < n; i++) {
+         pix = pixaGetPix(pixa, i, L_CLONE);
+-        pixCountPixels(pix, &count, tab);
+-        numaAddNumber(na, count);
++        if (!pix || pixCountPixels(pix, &count, tab) ||
++            numaAddNumber(na, count)) {
++            pixDestroy(&pix);
++            LEPT_FREE(tab);
++            numaDestroy(&na);
++            return (NUMA *)ERROR_PTR("pixel count not added", __func__, NULL);
++        }
+         pixDestroy(&pix);
+     }
+ 
 diff --git a/src/pixabasic.c b/src/pixabasic.c
-index f6dc079..e4e6375 100644
+index f6dc079..8a6f0d9 100644
 --- a/src/pixabasic.c
 +++ b/src/pixabasic.c
 @@ -172,6 +172,8 @@ PIXA  *pixa;
@@ -69,6 +803,160 @@ index f6dc079..e4e6375 100644
  }
  
  
+diff --git a/src/pixafunc1.c b/src/pixafunc1.c
+index f4ed59a..7f6ce7a 100644
+--- a/src/pixafunc1.c
++++ b/src/pixafunc1.c
+@@ -834,10 +834,10 @@ pixSelectByArea(PIX       *pixs,
+                 l_int32    type,
+                 l_int32   *pchanged)
+ {
+-l_int32  w, h, empty, changed, count;
+-BOXA    *boxa;
+-PIX     *pixd;
+-PIXA    *pixas, *pixad;
++l_int32  w, h, empty, changed = FALSE, count;
++BOXA    *boxa = NULL;
++PIX     *pixd = NULL;
++PIXA    *pixas = NULL, *pixad = NULL;
+ 
+     if (!pixs)
+         return (PIX *)ERROR_PTR("pixs not defined", __func__, NULL);
+@@ -855,9 +855,13 @@ PIXA    *pixas, *pixad;
+ 
+         /* Filter components */
+     boxa = pixConnComp(pixs, &pixas, connectivity);
++    if (!boxa || !pixas)
++        goto cleanup;
+     pixad = pixaSelectByArea(pixas, thresh, type, &changed);
+     boxaDestroy(&boxa);
+     pixaDestroy(&pixas);
++    if (!pixad)
++        return (PIX *)ERROR_PTR("components not selected", __func__, NULL);
+ 
+     if (!changed) {
+         pixaDestroy(&pixad);
+@@ -865,20 +869,35 @@ PIXA    *pixas, *pixad;
+     }
+ 
+         /* Render the result */
+-    if (pchanged) *pchanged = TRUE;
+     pixGetDimensions(pixs, &w, &h, NULL);
+     count = pixaGetCount(pixad);
+     if (count == 0) {  /* return empty pix */
+         pixd = pixCreateTemplate(pixs);
+     } else {
+         pixd = pixaDisplay(pixad, w, h);
+-        pixCopyResolution(pixd, pixs);
+-        pixCopyColormap(pixd, pixs);
+-        pixCopyText(pixd, pixs);
+-        pixCopyInputFormat(pixd, pixs);
++        if (!pixd) {
++            pixaDestroy(&pixad);
++            return (PIX *)ERROR_PTR("pixd not made", __func__, NULL);
++        }
++        if (pixCopyResolution(pixd, pixs) ||
++            pixCopyColormap(pixd, pixs) ||
++            pixCopyText(pixd, pixs) ||
++            pixCopyInputFormat(pixd, pixs)) {
++            pixaDestroy(&pixad);
++            pixDestroy(&pixd);
++            return (PIX *)ERROR_PTR("metadata not copied", __func__, NULL);
++        }
+     }
+     pixaDestroy(&pixad);
++    if (!pixd)
++        return (PIX *)ERROR_PTR("pixd not made", __func__, NULL);
++    if (pchanged) *pchanged = TRUE;
+     return pixd;
++
++cleanup:
++    boxaDestroy(&boxa);
++    pixaDestroy(&pixas);
++    return (PIX *)ERROR_PTR("connected components not made", __func__, NULL);
+ }
+ 
+ 
+@@ -914,16 +933,21 @@ PIXA  *pixad;
+ 
+     if (!pixas)
+         return (PIXA *)ERROR_PTR("pixas not defined", __func__, NULL);
++    if (pchanged) *pchanged = FALSE;
+     if (type != L_SELECT_IF_LT && type != L_SELECT_IF_GT &&
+         type != L_SELECT_IF_LTE && type != L_SELECT_IF_GTE)
+         return (PIXA *)ERROR_PTR("invalid type", __func__, NULL);
+ 
+         /* Compute area of each component */
+     na = pixaCountPixels(pixas);
++    if (!na)
++        return (PIXA *)ERROR_PTR("area counts not made", __func__, NULL);
+ 
+         /* Generate indicator array for elements to be saved. */
+     nai = numaMakeThresholdIndicator(na, thresh, type);
+     numaDestroy(&na);
++    if (!nai)
++        return (PIXA *)ERROR_PTR("indicator not made", __func__, NULL);
+ 
+         /* Filter to get output */
+     pixad = pixaSelectWithIndicator(pixas, nai, pchanged);
+@@ -1147,6 +1171,7 @@ BOX     *box;
+ PIX     *pix1;
+ PIXA    *pixad;
+ 
++    if (pchanged) *pchanged = FALSE;
+     if (!pixas)
+         return (PIXA *)ERROR_PTR("pixas not defined", __func__, NULL);
+     if (!na)
+@@ -1154,29 +1179,40 @@ PIXA    *pixad;
+ 
+     nsave = 0;
+     n = numaGetCount(na);
++    if (n != pixaGetCount(pixas))
++        return (PIXA *)ERROR_PTR("array sizes differ", __func__, NULL);
+     for (i = 0; i < n; i++) {
+         numaGetIValue(na, i, &ival);
+         if (ival == 1) nsave++;
+     }
+ 
+     if (nsave == n) {
+-        if (pchanged) *pchanged = FALSE;
+         return pixaCopy(pixas, L_CLONE);
+     }
+-    if (pchanged) *pchanged = TRUE;
+     pixad = pixaCreate(nsave);
++    if (!pixad)
++        return (PIXA *)ERROR_PTR("pixad not made", __func__, NULL);
+     nbox = pixaGetBoxaCount(pixas);
+     for (i = 0; i < n; i++) {
+         numaGetIValue(na, i, &ival);
+         if (ival == 0) continue;
+         pix1 = pixaGetPix(pixas, i, L_CLONE);
+-        pixaAddPix(pixad, pix1, L_INSERT);
++        if (!pix1 || pixaAddPix(pixad, pix1, L_INSERT)) {
++            pixDestroy(&pix1);
++            pixaDestroy(&pixad);
++            return (PIXA *)ERROR_PTR("pix not added", __func__, NULL);
++        }
+         if (nbox == n) {   /* fully populated boxa */
+             box = pixaGetBox(pixas, i, L_CLONE);
+-            pixaAddBox(pixad, box, L_INSERT);
++            if (!box || pixaAddBox(pixad, box, L_INSERT)) {
++                boxDestroy(&box);
++                pixaDestroy(&pixad);
++                return (PIXA *)ERROR_PTR("box not added", __func__, NULL);
++            }
+         }
+     }
+ 
++    if (pchanged) *pchanged = TRUE;
+     return pixad;
+ }
+ 
+@@ -3095,4 +3131,3 @@ PIX     *pix;
+     }
+     return 0;
+ }
+-
 diff --git a/src/pixtiling.c b/src/pixtiling.c
 index 82a3098..b81153d 100644
 --- a/src/pixtiling.c
@@ -83,18 +971,27 @@ index 82a3098..b81153d 100644
      pt->xoverlap = xoverlap;
      pt->yoverlap = yoverlap;
 diff --git a/src/sarray1.c b/src/sarray1.c
-index 5436c06..34ab2e5 100644
+index 5436c06..a3ab46a 100644
 --- a/src/sarray1.c
 +++ b/src/sarray1.c
-@@ -174,6 +174,8 @@ SARRAY  *sa;
+@@ -174,6 +174,9 @@ SARRAY  *sa;
          n = InitialPtrArraySize;
  
      sa = (SARRAY *)LEPT_CALLOC(1, sizeof(SARRAY));
 +    if (!sa)
 +        return (SARRAY *)ERROR_PTR("sarray not made", __func__, NULL);
++    sa->refcount = 1;
      if ((sa->array = (char **)LEPT_CALLOC(n, sizeof(char *))) == NULL) {
          sarrayDestroy(&sa);
          return (SARRAY *)ERROR_PTR("ptr array not made", __func__, NULL);
+@@ -181,7 +184,6 @@ SARRAY  *sa;
+ 
+     sa->nalloc = n;
+     sa->n = 0;
+-    sa->refcount = 1;
+     return sa;
+ }
+ 
 diff --git a/src/sel1.c b/src/sel1.c
 index bddf1f7..6fbea01 100644
 --- a/src/sel1.c
@@ -148,3 +1045,29 @@ index 7f84f07..69695d2 100644
      lstack->array = (void **)LEPT_CALLOC(n, sizeof(void *));
      if (!lstack->array) {
          lstackDestroy(&lstack, FALSE);
+diff --git a/src/utils2.c b/src/utils2.c
+index e05abc3..41cb0e4 100644
+--- a/src/utils2.c
++++ b/src/utils2.c
+@@ -343,15 +343,15 @@ l_ok
+ stringReplace(char       **pdest,
+               const char  *src)
+ {
++char  *copy = NULL;
++
+     if (!pdest)
+         return ERROR_INT("pdest not defined", __func__, 1);
+ 
+-    if (*pdest)
+-        LEPT_FREE(*pdest);
++    if (src && (copy = stringNew(src)) == NULL)
++        return ERROR_INT("copy not made", __func__, 1);
+ 
+-    if (src)
+-        *pdest = stringNew(src);
+-    else
+-        *pdest = NULL;
++    LEPT_FREE(*pdest);
++    *pdest = copy;
+     return 0;
+ }

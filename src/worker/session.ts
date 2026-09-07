@@ -42,11 +42,11 @@ export interface SessionOptions {
 export class RemotePix {
   /** @internal — session backref for request dispatch. */
   readonly #session: WorkerSession;
-  /** @internal */
+  /** Width in pixels. */
   readonly width: number;
-  /** @internal */
+  /** Height in pixels. */
   readonly height: number;
-  /** @internal */
+  /** Bit depth of the remote Pix. */
   readonly depth: number;
   #poisoned = false;
 
@@ -55,7 +55,7 @@ export class RemotePix {
       new RemotePix(session, id, width, height, depth, remotePixConstructionToken);
   }
 
-  /** @internal — constructed by WorkerSession only. */
+  /** Constructed by WorkerSession only. */
   private constructor(
     session: WorkerSession,
     id: HandleId,
@@ -193,7 +193,7 @@ export class WorkerSession {
   #terminated = false;
   #terminationReason: Error | null = null;
 
-  /** @internal — created by createSession(). */
+  /** Transport-level constructor used by the browser and Node adapters. */
   constructor(
     post: (msg: WorkerRequest, transfer?: Transferable[]) => void,
     onMessage: (cb: (r: WorkerResponse) => void) => void,

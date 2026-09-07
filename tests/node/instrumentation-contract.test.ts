@@ -25,6 +25,17 @@ function workflowJob(name: string): string {
   return nextJob === -1 ? ci.slice(start) : ci.slice(start, start + startMarker.length + nextJob);
 }
 
+function workflowStep(job: string, name: string): string {
+  const startMarker = `      - name: ${name}`;
+  const start = job.indexOf(startMarker);
+  expect(start, `missing workflow step ${name}`).toBeGreaterThan(-1);
+  const remainder = job.slice(start + startMarker.length);
+  const nextStep = remainder.search(/^      - name:/m);
+  return nextStep === -1
+    ? job.slice(start)
+    : job.slice(start, start + startMarker.length + nextStep);
+}
+
 describe("CI-only native fault instrumentation contract", () => {
   it("uses an explicit isolated build flavor", () => {
     expect(build).toContain("--test-instrumentation");
@@ -66,8 +77,10 @@ describe("CI-only native fault instrumentation contract", () => {
     expect(bindings).toContain("testArmFault");
     expect(bindings).toContain('consumeTestFault("jpeg.destinationGrow")');
     expect(bindings).toContain('consumeTestFault("fatalTrap")');
+    expect(bindings).toContain("testRecordFatalTrap");
+    expect(bindings).toContain("__leptonicaWasmFatalTrapCount");
     expect(executableBindings).toMatch(
-      /consumeTestFault\("fatalTrap"\)[\s\S]*?__builtin_trap\(\)/,
+      /consumeTestFault\("fatalTrap"\)[\s\S]*?testRecordFatalTrap\(\)[\s\S]*?__builtin_trap\(\)/,
     );
   });
 
@@ -156,11 +169,32 @@ describe("CI-only native fault instrumentation contract", () => {
     expect(ci).toContain("tests/node/fault-injection.test.ts");
     expect(browserFaultWorker).toContain('../../dist-instrumented/leptonica.mjs');
     expect(browserFaultWorker).toContain('testArmFault("fatalTrap")');
-    expect(browserFaultWorker).toContain("wireWorker(new Leptonica(module), surface)");
+    expect(browserFaultWorker).toContain('ctx.name === "fatalTrapAfterLoad"');
+    expect(browserFaultWorker).toContain("testFatalEvidence");
+    expect(browserFaultWorker).toContain("nativeTrapCount");
+    expect(browserFaultWorker).toContain("wasmEntries++");
+    expect(browserFaultWorker).toContain("wireWorker(new Leptonica(countedModule), surface)");
     expect(browserSpec).toContain("target-WASM trap");
+    expect(browserSpec).toContain("nativeTrapCount: 1");
+    expect(browserSpec).toContain("wasmEntries: 1");
     expect(browserFaultPage).toContain("createSession as createBrowserSession");
     expect(browserFaultPage).toContain('from "leptonica-wasm/worker"');
     expect(browserFaultPage).toContain("const session = await createBrowserSession()");
+    expect(browserFaultPage).toContain("firstFatal: () => firstFatalMessage");
+    expect(browserFaultPage).toContain("const productionFatal = trapped.firstFatal()");
+    expect(browserFaultPage).toContain("productionEvidence: productionFatal.testFatalEvidence");
+    expect(browserFaultPage).toContain('openProductionAdapterSession("fatalTrapAfterLoad")');
+    expect(browserFaultPage).toContain("livePoisoned: live.isPoisoned()");
+    expect(browserFaultPage).toContain("const postCallsAfterDrain = trapped.adapterPostCalls()");
+    expect(browserSpec).toContain("postCallsAfterDrain");
+    expect(browserFaultPage).toContain("firstFatal: () => messages.find");
+    expect(browserFaultPage).toContain("const initialFatal = trapped.firstFatal()");
+    expect(browserFaultPage).not.toContain("const initialFatal = messages.find");
+    const initialFatalGate = browserFaultPage.indexOf("if (initialFatal?.fatal !== true");
+    const terminalProbe = browserFaultPage.indexOf("const probeId = 999_999");
+    expect(initialFatalGate).toBeGreaterThan(-1);
+    expect(terminalProbe).toBeGreaterThan(initialFatalGate);
+    expect(browserFaultPage).toContain('initialError.includes("fatal WebAssembly trap")');
     expect(browserFaultPage).toContain("const fresh = await openProductionAdapterSession()");
     expect(browserFaultPage).toContain("freshAdapterTeardownCalls");
     expect(browserFaultPage).toContain("adapterTeardownCalls");
@@ -176,29 +210,37 @@ describe("CI-only native fault instrumentation contract", () => {
   });
 
   it("runs browser fatal-retirement and OOM evidence in independent artifact-consuming jobs", () => {
-    const buildStep = ci.indexOf("- name: Build instrumented target-WASM");
-    const uploadStep = ci.indexOf("- name: Upload runtime build artifacts");
+    const ciJob = workflowJob("ci");
+    const buildStep = ciJob.indexOf("- name: Build instrumented target-WASM");
+    const genTypesStep = ciJob.indexOf("- name: Generate runtime type and worker artifacts");
+    const uploadStep = ciJob.indexOf("- name: Upload runtime build artifacts");
     const browserJob = ci.indexOf("  browser-e2e:");
     const browserStep = ci.indexOf("- name: E2E (browser output and fatal retirement)");
     const resourceJob = ci.indexOf("  instrumented-resource-failures:");
     const resourceStep = ci.indexOf("- name: Instrumented resource-failure suite");
 
     expect(buildStep).toBeGreaterThan(-1);
-    expect(uploadStep).toBeGreaterThan(buildStep);
+    expect(genTypesStep).toBeGreaterThan(buildStep);
+    expect(uploadStep).toBeGreaterThan(genTypesStep);
     expect(browserJob).toBeGreaterThan(uploadStep);
     expect(browserStep).toBeGreaterThan(browserJob);
     expect(resourceJob).toBeGreaterThan(browserStep);
     expect(resourceStep).toBeGreaterThan(resourceJob);
-    expect(ci.slice(buildStep, uploadStep)).toContain(
+    expect(workflowStep(ciJob, "Build instrumented target-WASM")).toContain(
       "node scripts/build.mjs --test-instrumentation",
     );
-    const uploadBlock = ci.slice(uploadStep, browserJob);
-    expect(workflowJob("ci")).toMatch(
+    const genTypesBlock = workflowStep(ciJob, "Generate runtime type and worker artifacts");
+    expect(genTypesBlock).toContain("node scripts/gen-types.mjs");
+    expect(genTypesBlock).toContain("test -f dist/types/worker/index.js");
+    expect(genTypesBlock).toContain("test -f dist/types/worker/worker.mjs");
+    const uploadBlock = workflowStep(ciJob, "Upload runtime build artifacts");
+    expect(ciJob).toMatch(
       /^      runtime_builds_ready: \$\{\{ steps\.upload_runtime_builds\.outcome == 'success' \}\}$/m,
     );
     expect(uploadBlock).toContain("id: upload_runtime_builds");
     expect(uploadBlock).toContain("name: runtime-builds");
-    expect(uploadBlock).toContain("dist-instrumented");
+    expect(uploadBlock).toMatch(/^            dist$/m);
+    expect(uploadBlock).toMatch(/^            dist-instrumented$/m);
     const artifactGuard =
       /^    if: \$\{\{ !cancelled\(\) && needs\.ci\.outputs\.runtime_builds_ready == 'true' \}\}$/m;
     const browserBlock = workflowJob("browser-e2e");
@@ -229,6 +271,21 @@ describe("CI-only native fault instrumentation contract", () => {
     const dispatchBuilder = workflowJob("dispatch-builder");
     expect(dispatchBuilder).toContain("- browser-e2e");
     expect(dispatchBuilder).toContain("- instrumented-resource-failures");
+  });
+
+  it("restores the Emscripten environment before the consumer package check", () => {
+    const ciJob = workflowJob("ci");
+    const consumerStep = workflowStep(ciJob, "Consumer fixture");
+    const emsdkActivation = consumerStep.indexOf(". ./tmp/emsdk/emsdk_env.sh");
+    const emccGuard = consumerStep.indexOf('emcc_path="$(command -v emcc)"');
+    const pinnedEmccGuard = consumerStep.indexOf("emsdk_root");
+    const consumerCheck = consumerStep.indexOf("pnpm run check");
+
+    expect(emsdkActivation).toBeGreaterThan(-1);
+    expect(emccGuard).toBeGreaterThan(emsdkActivation);
+    expect(pinnedEmccGuard).toBeGreaterThan(emsdkActivation);
+    expect(consumerStep).toContain('test "${emcc_path#"$emsdk_root"}" != "$emcc_path"');
+    expect(consumerCheck).toBeGreaterThan(emccGuard);
   });
 
   it("resolves the browser E2E import to the package's default worker export", async () => {

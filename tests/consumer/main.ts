@@ -6,6 +6,20 @@
  */
 import { load } from "leptonica-wasm";
 import type { Box, PackedMask } from "leptonica-wasm";
+import { RemotePix, WorkerSession } from "leptonica-wasm/worker";
+
+function checkWorkerDeclarations(pix: RemotePix): void {
+  const dimensions: readonly [number, number, number] = [pix.width, pix.height, pix.depth];
+  void dimensions;
+
+  if (false) {
+    // @ts-expect-error RemotePix construction is owner-controlled.
+    new RemotePix();
+    // @ts-expect-error WorkerSession requires adapter transport callbacks.
+    new WorkerSession();
+  }
+}
+void checkWorkerDeclarations;
 
 async function main(): Promise<void> {
   const lp = await load();

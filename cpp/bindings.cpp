@@ -160,6 +160,14 @@ static void testClearFaults() {
   testFailAfter = -1;
   testNamedFault.clear();
 }
+
+static void testRecordFatalTrap() {
+  EM_ASM({
+    const root = globalThis;
+    root.__leptonicaWasmFatalTrapCount =
+      (Number(root.__leptonicaWasmFatalTrapCount) || 0) + 1;
+  });
+}
 #else
 static bool consumeTestFault(const char *) { return false; }
 #endif
@@ -252,7 +260,15 @@ static val copyToJs(uint8_t *data, size_t size) {
 /* ------------------------------------------------------------------ */
 
 PIX *fromRGBA(val data, int w, int h) {
-  if (consumeTestFault("fatalTrap")) __builtin_trap();
+  if (consumeTestFault("fatalTrap")) {
+#ifdef LEPTONICA_WASM_TEST_INSTRUMENTATION
+    // Test-only breadcrumb written by native/WASM code immediately before
+    // the unrecoverable trap. The browser harness reads it without calling
+    // back into the retired module.
+    testRecordFatalTrap();
+#endif
+    __builtin_trap();
+  }
   if (w <= 0 || h <= 0 || w > 0x00ffffff / h) return nullptr;
   const size_t bytes = (size_t)w * (size_t)h * 4;
   PIX *pix = pixCreateNoInit(w, h, 32);
