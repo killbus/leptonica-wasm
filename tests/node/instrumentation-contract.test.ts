@@ -70,25 +70,30 @@ describe("CI-only native fault instrumentation contract", () => {
     expect(executableBindings).toMatch(/\bjpeg_destroy_compress\s*\(/);
   });
 
-  it("cuts desktop debug display from curated links without changing full ABI", () => {
+  it("cuts desktop-only debug and file sinks from curated links without changing full ABI", () => {
     expect(build).toMatch(
-      /if \(!fullAbi\) \{[\s\S]*?"-DLEPTONICA_WASM_CURATED_NO_DISPLAY"[\s\S]*?"-Wl,--wrap=pixDisplay"[\s\S]*?\}/,
+      /if \(!fullAbi\) \{[\s\S]*?"-DLEPTONICA_WASM_CURATED_NO_DESKTOP_IO"[\s\S]*?"-Wl,--wrap=pixDisplay"[\s\S]*?"-Wl,--wrap=convertFilesToPdf"[\s\S]*?"-Wl,--wrap=pixaConvertToPdf"[\s\S]*?"-Wl,--wrap=pixaReadFiles"[\s\S]*?\}/,
     );
-    expect(bindings).toContain('#ifdef LEPTONICA_WASM_CURATED_NO_DISPLAY');
+    expect(bindings).toContain('#ifdef LEPTONICA_WASM_CURATED_NO_DESKTOP_IO');
     expect(executableBindings).toMatch(
       /extern \"C\" l_ok __wrap_pixDisplay\(PIX \*, l_int32, l_int32\) \{\s*return 0;\s*\}/,
     );
-    expect(executableBindings).not.toMatch(
-      /extern \"C\" l_ok pixDisplay\(PIX \*, l_int32, l_int32\)/,
+    expect(executableBindings).toMatch(
+      /extern \"C\" l_ok __wrap_convertFilesToPdf\(const char \*, const char \*, l_int32, l_float32,\s*l_int32, l_int32, const char \*, const char \*\) \{\s*return 1;\s*\}/,
     );
-  });
-
-  it("gives curated links section-level dead-code isolation without disabling codecs", () => {
-    expect(build).toContain('"-ffunction-sections"');
-    expect(build).toContain('"-fdata-sections"');
-    expect(build).toMatch(
-      /if \(!fullAbi\) \{[\s\S]*?"-Wl,--gc-sections"[\s\S]*?\}/,
+    expect(executableBindings).toMatch(
+      /extern \"C\" l_ok __wrap_pixaConvertToPdf\(PIXA \*, l_int32, l_float32, l_int32, l_int32,\s*const char \*, const char \*\) \{\s*return 1;\s*\}/,
     );
+    expect(executableBindings).toMatch(
+      /extern \"C\" PIXA \*__wrap_pixaReadFiles\(const char \*, const char \*\) \{\s*return nullptr;\s*\}/,
+    );
+    expect(executableBindings).not.toMatch(/extern \"C\" l_ok pixDisplay\(/);
+    expect(executableBindings).not.toMatch(/extern \"C\" l_ok convertFilesToPdf\(/);
+    expect(executableBindings).not.toMatch(/extern \"C\" l_ok pixaConvertToPdf\(/);
+    expect(executableBindings).not.toMatch(/extern \"C\" PIXA \*pixaReadFiles\(/);
+    expect(build).not.toContain('"-Wl,--gc-sections"');
+    expect(build).not.toContain('"-ffunction-sections"');
+    expect(build).not.toContain('"-fdata-sections"');
     expect(build).not.toContain('"-DENABLE_PNG=OFF"');
     expect(build).not.toContain('"-DENABLE_JPEG=OFF"');
   });

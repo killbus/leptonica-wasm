@@ -22,16 +22,30 @@
 
 using emscripten::val;
 
-#ifdef LEPTONICA_WASM_CURATED_NO_DISPLAY
-/* The curated Web surface has no display operation, while several upstream
- * algorithms retain runtime-only pixDisplay() debug branches. The curated
- * linker wraps those references with this inert implementation, preventing
- * the debug-only edge from extracting writefile.o (and its generic decode
- * graph) from libleptonica.a. Naming the wrapper separately also avoids a
- * duplicate definition if writefile.o is needed for another symbol. Full-ABI
- * builds omit both the wrapper and linker option. */
+#ifdef LEPTONICA_WASM_CURATED_NO_DESKTOP_IO
+/* The curated Web surface accepts in-memory pixels and has no display, file
+ * enumeration, or PDF debug-output operations. Several upstream algorithms
+ * retain calls to these desktop helpers behind runtime-only debug branches.
+ * Static archives are extracted at translation-unit granularity, so resolving
+ * those unreachable calls would otherwise pull generic file decoders into the
+ * default artifact. Full-ABI builds omit these wrappers and retain the exact
+ * upstream surface and behavior. */
 extern "C" l_ok __wrap_pixDisplay(PIX *, l_int32, l_int32) {
   return 0;
+}
+
+extern "C" l_ok __wrap_convertFilesToPdf(const char *, const char *, l_int32, l_float32,
+                                           l_int32, l_int32, const char *, const char *) {
+  return 1;
+}
+
+extern "C" l_ok __wrap_pixaConvertToPdf(PIXA *, l_int32, l_float32, l_int32, l_int32,
+                                          const char *, const char *) {
+  return 1;
+}
+
+extern "C" PIXA *__wrap_pixaReadFiles(const char *, const char *) {
+  return nullptr;
 }
 #endif
 

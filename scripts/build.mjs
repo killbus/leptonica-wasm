@@ -52,18 +52,6 @@ function ensureSource(name, pin) {
 }
 
 function createDepConfigs(installRoot, testInstrumentation) {
-  // Several Leptonica source files contain unrelated public algorithms and
-  // desktop/debug I/O helpers in the same translation unit.  Static archive
-  // extraction works at object-file granularity, so a curated algorithm can
-  // otherwise make an unrelated decoder graph available to the final link.
-  // Preserve every upstream function for the full-ABI build, but give lld
-  // section-level granularity so curated links can discard functions that are
-  // not reachable from the binding surface.
-  const leptonicaCFlags = [
-    "-ffunction-sections",
-    "-fdata-sections",
-    ...(testInstrumentation ? ["-DLEPTONICA_INTERCEPT_ALLOC"] : []),
-  ].join(" ");
   return [
   {
     name: "zlib",
@@ -95,7 +83,7 @@ function createDepConfigs(installRoot, testInstrumentation) {
   {
     name: "leptonica",
     extra: [
-      `-DCMAKE_C_FLAGS=${leptonicaCFlags}`,
+      ...(testInstrumentation ? ["-DCMAKE_C_FLAGS=-DLEPTONICA_INTERCEPT_ALLOC"] : []),
       "-DENABLE_WEBP=OFF",
       "-DENABLE_OPENJPEG=OFF",
       "-DENABLE_GIF=OFF",
@@ -219,21 +207,18 @@ function linkOutputs({ exportsPath, generatedIncludeDir, outDir, fullAbi, optLev
     emccArgs.push("-DPRODUCT_LOCK", `-I${generatedIncludeDir}`);
   }
   if (!fullAbi) {
-    // Curated browser/worker builds do not expose Leptonica's desktop debug
-    // display API. Some otherwise useful algorithms call pixDisplay() behind
-    // runtime-only debug branches; resolving that symbol from writefile.c
-    // pulls generic image I/O and JPEG decoding into the default artifact.
-    // Linker wrapping avoids defining pixDisplay twice if writefile.c is
-    // independently required. The full-ABI escape hatch deliberately keeps
-    // upstream behavior and does not enable either half of the wrapper.
+    // Curated browser/worker builds expose only in-memory operations. Some
+    // useful upstream algorithms retain desktop display, file-enumeration, and
+    // PDF-output calls behind runtime-only debug branches. Resolve those calls
+    // to bounded wrappers so their translation units cannot pull the generic
+    // decoder graph into the default artifact. Full ABI deliberately omits
+    // both the wrappers and linker options, preserving upstream behavior.
     emccArgs.push(
-      "-DLEPTONICA_WASM_CURATED_NO_DISPLAY",
+      "-DLEPTONICA_WASM_CURATED_NO_DESKTOP_IO",
       "-Wl,--wrap=pixDisplay",
-      // Archive extraction may still inspect an object that contains a dead
-      // reference, but section GC keeps that unrelated function and the codec
-      // graph it names out of the curated artifact. Full ABI deliberately
-      // omits this option and exports the complete upstream surface.
-      "-Wl,--gc-sections",
+      "-Wl,--wrap=convertFilesToPdf",
+      "-Wl,--wrap=pixaConvertToPdf",
+      "-Wl,--wrap=pixaReadFiles",
     );
   }
   if (testInstrumentation) {
