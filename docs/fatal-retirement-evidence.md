@@ -220,11 +220,25 @@ and adds a real-Git regression test that still detects tracked edits, ordinary
 untracked source, and unknown `dist-*` directories. The secret scan for the
 same head completed successfully.
 
-## Evidence required from the replacement CI run
+The next candidate, commit
+`37755e913465e86375e09154b8ccc2a10f1bb3c6` (run `34172195859`, September 8,
+2026), repeated the runtime evidence successfully. `release-set`,
+`native-oracle`, `reproducibility`, both builds, exports, smoke, goldens,
+target-WASM tests, bundler checks, determinism, packaging, `browser-e2e`, and
+all 15 `instrumented-resource-failures` cases passed. The secret scan run
+`34172195864` also passed. The main job then failed in `Fresh tarball consumer`
+because its textual lockfile guard rejected pnpm's legitimate relative
+`file:` identities for the exact candidate tarball. That is a consumer-gate
+validator defect, not a runtime or packaging failure. `compare` and
+`dispatch-builder` were skipped as downstream jobs; `fixed-commit-consumer` is
+intentionally skipped on pull requests.
 
-Run `34169822640` proves the following browser and resource properties for
-commit `66066516835dcbe4c72a86189a7100a358687760`; the replacement run must repeat
-them on the final correction commit so every required gate shares one SHA:
+## Evidence required from the next final-head CI run
+
+Run `34172195859` proves the following browser and resource properties for
+commit `37755e913465e86375e09154b8ccc2a10f1bb3c6`; the next run must repeat them
+on the final lockfile-validator correction so every required gate shares one
+SHA:
 
 - a real `__builtin_trap()` reached through `load`/`fromRGBA` rejects both
   concurrent pending requests within the timeout;
@@ -246,15 +260,17 @@ them on the final correction commit so every required gate shares one SHA:
 `instrumented-resource-failures` is a separate gate. Its result must be reported
 independently: a passing browser fatal-retirement test cannot prove allocation
 failure cleanup, and a resource-sweep failure does not erase valid browser
-retirement evidence. The replacement main `ci`, fixed-commit consumer,
-`compare`, and `dispatch-builder` must all reach terminal success before making
-broader pipeline or release claims.
+retirement evidence. The next main `ci`, `compare`, and `dispatch-builder` must
+reach terminal success before making broader pipeline claims. The
+`fixed-commit-consumer` job is expected to skip on a pull request because the
+head commit is not yet reachable from `main`; it remains a post-merge/release
+gate and must not be reported as PR-head evidence.
 
 Heavy target-WASM, native-oracle, Chromium, and allocation-sweep execution stays
 in CI. Local checks cover source preparation, contract tests, type checking, and
 release-set validation only.
 
-The bounded correction was checked locally on September 7, 2026:
+The provenance correction was checked locally on September 7, 2026:
 
 - `pnpm test`: 102 passed and 58 artifact-dependent cases skipped;
 - `pnpm run typecheck`: passed for both Node and web configurations;
@@ -265,9 +281,23 @@ The bounded correction was checked locally on September 7, 2026:
   retained the private `RemotePix` constructor and public read-only dimensions;
 - `git diff --check`: passed.
 
-These source-only checks do not replace the explicitly outstanding replacement
+These source-only checks do not replace the explicitly outstanding final-head
 CI run. No local native, target-WASM, or Chromium build was performed.
-No repository-installed `actionlint` or YAML parser is available locally; the
-workflow topology and changed shell fragment are source-tested/syntax-checked,
-while GitHub's workflow parser and runner remain the authoritative execution
-evidence for the YAML revision.
+
+On September 8, 2026, the consumer-gate correction added a pinned direct
+`yaml@2.8.1` development dependency and replaced substring filtering with
+fail-closed structural validation of pnpm lockfile version 9. The validator
+binds the root importer, package key, resolution tarball, and snapshot key to
+one exact tarball or Git identity. Tarball validation recomputes SHA-512 from
+the actual candidate bytes and requires an exact SRI match. The parser rejects
+aliases, duplicate keys, warnings, malformed YAML, and every explicit YAML tag;
+the validator also rejects directory resolutions and any additional `file:`,
+`link:`, or `workspace:` source. Filesystem containment uses canonical identities
+so a symlink alias cannot escape or falsely trigger the consumer/worktree
+boundary. A local integration test generates a real tarball and lockfile with
+pnpm 10.34.5, while independent one-field mutations cover importer, package,
+resolution, snapshot, extra-identity, malicious-key, and candidate-byte cases.
+Full source-only validation at this checkpoint reports 107 tests passed and 58
+artifact-dependent tests skipped; Node/web type checking, release-contract
+tests, Trellis task validation, and `git diff --check` also pass. Final-head CI
+remains outstanding.

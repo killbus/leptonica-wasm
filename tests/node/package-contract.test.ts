@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
+import { stringify } from "yaml";
 import { describe, expect, it } from "vitest";
 import { EXPECTED_EXPORTS, validatePackageContract } from "../../scripts/check-package-contract.mjs";
 import { generateHashManifest } from "../../scripts/gen-hash-manifest.mjs";
@@ -13,6 +14,8 @@ import {
   isRetryableNetworkError,
   retryAfterMilliseconds,
   retryWithBackoff,
+  validateConsumerLockfile,
+  validateInstalledPackageRoot,
   verifyBrowserBundleLayout,
   writeConsumer,
 } from "../../scripts/run-consumer-gate.mjs";
@@ -265,6 +268,235 @@ describe("fixed-commit consumer identity", () => {
 });
 
 describe("independent consumer gate", () => {
+  function tarballFixture(consumerRoot: string, tarball: string): any {
+    const absoluteLocator = `file:${resolve(tarball).replaceAll("\\", "/")}`;
+    const relativeLocator = `file:${relative(consumerRoot, tarball).replaceAll("\\", "/")}`;
+    const key = `leptonica-wasm@${relativeLocator}`;
+    return {
+      lockfileVersion: "9.0",
+      importers: {
+        ".": { dependencies: { "leptonica-wasm": { specifier: absoluteLocator, version: relativeLocator } } },
+      },
+      packages: {
+        [key]: {
+          resolution: {
+            integrity: `sha512-${createHash("sha512").update(readFileSync(tarball)).digest("base64")}`,
+            tarball: relativeLocator,
+          },
+        },
+      },
+      snapshots: { [key]: {} },
+    };
+  }
+
+  function gitFixture(repository: string, commit: string): any {
+    const specifier = `git+https://github.com/${repository}.git#${commit}`;
+    const tarball = `https://codeload.github.com/${repository}/tar.gz/${commit}`;
+    const key = `leptonica-wasm@${tarball}`;
+    return {
+      lockfileVersion: "9.0",
+      importers: { ".": { dependencies: { "leptonica-wasm": { specifier, version: tarball } } } },
+      packages: { [key]: { resolution: { gitHosted: true, tarball } } },
+      snapshots: { [key]: {} },
+    };
+  }
+
+  function renameOnlyKey(section: Record<string, unknown>, suffix: string): void {
+    const key = Object.keys(section)[0]!;
+    section[key + suffix] = section[key];
+    delete section[key];
+  }
+
+  it("binds all pnpm tarball identities to the exact candidate", () => {
+    const root = mkdtempSync(join(tmpdir(), "leptonica-lock-contract-"));
+    const consumerRoot = join(root, "consumer");
+    const tarball = join(root, "candidate", "leptonica-wasm-0.1.1.tgz");
+    mkdirSync(consumerRoot);
+    mkdirSync(dirname(tarball));
+    writeFileSync(tarball, "fixture");
+    const base = tarballFixture(consumerRoot, tarball);
+    expect(() => validateConsumerLockfile(stringify(base), { consumerRoot, tarball })).not.toThrow();
+    expect(() => validateConsumerLockfile(stringify(base), {
+      consumerRoot, tarball, repository: "owner/repository", commit: "a".repeat(40),
+    })).toThrow("select exactly one lockfile source");
+
+    const mutations = [
+      (value: any) => { value.importers["."].dependencies["leptonica-wasm"].specifier += ".bak"; },
+      (value: any) => { value.importers["."].dependencies["leptonica-wasm"].version += "?query"; },
+      (value: any) => { renameOnlyKey(value.packages, ".bak"); },
+      (value: any) => { (Object.values(value.packages)[0] as any).resolution.tarball += "#fragment"; },
+      (value: any) => { (Object.values(value.packages)[0] as any).resolution.integrity = `sha512-${"A".repeat(88)}`; },
+      (value: any) => { renameOnlyKey(value.snapshots, ".bak"); },
+      (value: any) => {
+        const snapshotKey = Object.keys(value.snapshots)[0]!;
+        value.snapshots[snapshotKey] = null;
+      },
+      (value: any) => {
+        const packageKey = Object.keys(value.packages)[0]!;
+        value.packages[packageKey + "-extra"] = structuredClone(value.packages[packageKey]);
+      },
+      (value: any) => {
+        const snapshotKey = Object.keys(value.snapshots)[0]!;
+        value.snapshots[snapshotKey + "-extra"] = {};
+      },
+    ];
+    for (const mutate of mutations) {
+      const changed = structuredClone(base);
+      mutate(changed);
+      expect(() => validateConsumerLockfile(stringify(changed), { consumerRoot, tarball })).toThrow();
+    }
+    writeFileSync(tarball, "mutated candidate");
+    expect(() => validateConsumerLockfile(stringify(base), { consumerRoot, tarball })).toThrow(
+      "invalid candidate tarball resolution",
+    );
+  });
+
+  it("fails closed on extra local locators and deceptive YAML", () => {
+    const root = mkdtempSync(join(tmpdir(), "leptonica-lock-adversarial-"));
+    const consumerRoot = join(root, "consumer");
+    const tarball = join(root, "candidate", "leptonica-wasm-0.1.1.tgz");
+    mkdirSync(consumerRoot);
+    mkdirSync(dirname(tarball));
+    writeFileSync(tarball, "fixture");
+    const base = tarballFixture(consumerRoot, tarball);
+    for (const locator of ["file:/tmp/evil.tgz", "file:../../evil.tgz", "link:../../evil", "workspace:*"]) {
+      const changed = structuredClone(base);
+      changed.importers["."].dependencies.evil = { specifier: locator, version: locator };
+      expect(() => validateConsumerLockfile(stringify(changed), { consumerRoot, tarball })).toThrow(
+        "unexpected local dependency",
+      );
+    }
+    for (const locator of ["file:/tmp/evil.tgz", "link:../../evil", "workspace:*"]) {
+      const changed = structuredClone(base);
+      changed.packages[`evil@${locator}`] = { resolution: {} };
+      expect(() => validateConsumerLockfile(stringify(changed), { consumerRoot, tarball })).toThrow(
+        "unexpected local dependency",
+      );
+    }
+    const directoryResolution = structuredClone(base);
+    (Object.values(directoryResolution.packages)[0] as any).resolution.directory = "../../src";
+    expect(() => validateConsumerLockfile(stringify(directoryResolution), { consumerRoot, tarball })).toThrow(
+      "directory resolution",
+    );
+    const valid = stringify(base);
+    const commentSpoof = structuredClone(base);
+    commentSpoof.importers["."].dependencies["leptonica-wasm"].specifier = "file:/tmp/evil.tgz";
+    expect(() => validateConsumerLockfile(`${stringify(commentSpoof)}\n# file:${tarball}\n`, { consumerRoot, tarball })).toThrow(
+      "does not bind the exact candidate tarball",
+    );
+    expect(() => validateConsumerLockfile(`${valid}\n# file:${tarball}\nlockfileVersion: '9.0'\n`, { consumerRoot, tarball })).toThrow(
+      "invalid YAML",
+    );
+    expect(() => validateConsumerLockfile("lockfileVersion: '9.0'\nimporters: &x {}\npackages: *x\nsnapshots: {}\n", { consumerRoot, tarball })).toThrow(
+      "invalid YAML",
+    );
+    expect(() => validateConsumerLockfile("lockfileVersion: [", { consumerRoot, tarball })).toThrow(
+      "invalid YAML",
+    );
+    expect(() => validateConsumerLockfile("lockfileVersion: !unknown '9.0'", { consumerRoot, tarball })).toThrow(
+      "invalid YAML",
+    );
+    const binaryLocator = valid.replace(
+      "      leptonica-wasm:\n",
+      "      evil:\n        specifier: !!binary ZmlsZTovdG1wL2V2aWw=\n        version: 1.0.0\n      leptonica-wasm:\n",
+    );
+    expect(() => validateConsumerLockfile(binaryLocator, { consumerRoot, tarball })).toThrow(
+      "invalid YAML",
+    );
+    expect(() => validateConsumerLockfile(valid.replace("packages:\n", "packages: !!map\n"), { consumerRoot, tarball })).toThrow(
+      "invalid YAML",
+    );
+
+    const tarballAlias = join(root, "candidate-alias.tgz");
+    symlinkSync(tarball, tarballAlias);
+    expect(() => validateConsumerLockfile(valid, { consumerRoot, tarball: tarballAlias })).toThrow(
+      "regular non-symlink",
+    );
+  });
+
+  it("binds fixed Git locks to the exact repository and commit", () => {
+    const repository = "owner/repository";
+    const commit = "a".repeat(40);
+    const valid = gitFixture(repository, commit);
+    expect(() => validateConsumerLockfile(stringify(valid), { repository, commit })).not.toThrow();
+
+    const mutations = [
+      (value: any) => { value.importers["."].dependencies["leptonica-wasm"].specifier = `git+https://github.com/other/repository.git#${commit}`; },
+      (value: any) => { value.importers["."].dependencies["leptonica-wasm"].specifier = `git+https://github.com/${repository}.git#${"b".repeat(40)}`; },
+      (value: any) => { value.importers["."].dependencies["leptonica-wasm"].version = value.importers["."].dependencies["leptonica-wasm"].version.replace(repository, "other/repository"); },
+      (value: any) => { value.importers["."].dependencies["leptonica-wasm"].version = value.importers["."].dependencies["leptonica-wasm"].version.replace(commit, "b".repeat(40)); },
+      (value: any) => { renameOnlyKey(value.packages, ".bak"); },
+      (value: any) => { (Object.values(value.packages)[0] as any).resolution.tarball = (Object.values(value.packages)[0] as any).resolution.tarball.replace(commit, "b".repeat(40)); },
+      (value: any) => { (Object.values(value.packages)[0] as any).resolution.gitHosted = false; },
+      (value: any) => { renameOnlyKey(value.snapshots, ".bak"); },
+      (value: any) => {
+        const packageKey = Object.keys(value.packages)[0]!;
+        value.packages[packageKey + "-extra"] = structuredClone(value.packages[packageKey]);
+      },
+      (value: any) => {
+        const snapshotKey = Object.keys(value.snapshots)[0]!;
+        value.snapshots[snapshotKey + "-extra"] = {};
+      },
+    ];
+    for (const mutate of mutations) {
+      const changed = structuredClone(valid);
+      mutate(changed);
+      expect(() => validateConsumerLockfile(stringify(changed), { repository, commit })).toThrow();
+    }
+
+    const wrongCommit = stringify(gitFixture(repository, "b".repeat(40)));
+    expect(() => validateConsumerLockfile(`${wrongCommit}\n# ${commit}\n`, { repository, commit })).toThrow();
+  });
+
+  it("keeps installed package roots inside only the independent consumer", () => {
+    const root = mkdtempSync(join(tmpdir(), "leptonica-consumer-boundary-"));
+    const consumerRoot = join(root, "deep", "consumer");
+    const consumerAlias = join(root, "consumer-alias");
+    const installedRoot = join(consumerRoot, "node_modules/.pnpm/leptonica-wasm");
+    const outsideRoot = join(root, "outside/leptonica-wasm");
+    mkdirSync(installedRoot, { recursive: true });
+    mkdirSync(outsideRoot, { recursive: true });
+    symlinkSync(consumerRoot, consumerAlias, "dir");
+    expect(() => validateInstalledPackageRoot(process.cwd(), consumerRoot)).toThrow("worktree");
+    expect(() => validateInstalledPackageRoot(join(process.cwd(), "src"), consumerRoot)).toThrow("worktree");
+    expect(() => validateInstalledPackageRoot(join(consumerAlias, "node_modules/.pnpm/leptonica-wasm"), consumerAlias)).not.toThrow();
+    expect(() => validateInstalledPackageRoot(consumerRoot, consumerRoot)).toThrow("escaped");
+    expect(() => validateInstalledPackageRoot(outsideRoot, consumerRoot)).toThrow("escaped");
+
+    const prefixSibling = mkdtempSync(process.cwd() + "-copy-");
+    try {
+      expect(() => validateInstalledPackageRoot(prefixSibling, dirname(process.cwd()))).not.toThrow();
+    } finally {
+      rmSync(prefixSibling, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts a lockfile generated by pnpm 10.34.5 from a real local tarball", () => {
+    const root = mkdtempSync(join(tmpdir(), "leptonica-real-lock-"));
+    const sourceRoot = join(root, "source");
+    const artifactRoot = join(root, "artifact");
+    const consumerRoot = join(root, "consumer");
+    mkdirSync(sourceRoot);
+    mkdirSync(artifactRoot);
+    mkdirSync(consumerRoot);
+    writeFileSync(join(sourceRoot, "package.json"), JSON.stringify({ name: "leptonica-wasm", version: "0.1.1" }));
+    const packed = spawnSync("npm", ["pack", "--ignore-scripts", "--pack-destination", artifactRoot], {
+      cwd: sourceRoot, encoding: "utf8",
+    });
+    expect(packed.status, packed.stderr).toBe(0);
+    const tarball = join(artifactRoot, packed.stdout.trim().split(/\r?\n/).at(-1)!);
+    writeFileSync(join(consumerRoot, "package.json"), JSON.stringify({
+      name: "consumer", private: true, dependencies: { "leptonica-wasm": `file:${tarball}` },
+    }));
+    const installed = spawnSync("corepack", ["pnpm@10.34.5", "install", "--lockfile-only", "--ignore-scripts"], {
+      cwd: consumerRoot, encoding: "utf8",
+    });
+    expect(installed.status, installed.stderr).toBe(0);
+    expect(() => validateConsumerLockfile(readFileSync(join(consumerRoot, "pnpm-lock.yaml"), "utf8"), {
+      consumerRoot, tarball,
+    })).not.toThrow();
+  }, 30_000);
+
   it("pins its compiler and browser bundler without resolving back to the worktree", () => {
     const root = mkdtempSync(join(tmpdir(), "leptonica-consumer-fixture-"));
     const commit = "a".repeat(40);

@@ -505,6 +505,34 @@ consumer fixture, and remaining downstream jobs must run on one new commit SHA
 before any go/ready claim. This review does not upgrade the 58 skipped
 artifact-dependent tests or any CI-only evidence.
 
+The subsequent candidate commit
+`37755e913465e86375e09154b8ccc2a10f1bb3c6` ran as CI `34172195859` on
+2026-09-08. It passed release-set, native-oracle, reproducibility, both
+production builds, exports, smoke, goldens, target-WASM tests, bundling,
+determinism, package creation, real Chromium fatal retirement, and all 15
+instrumented resource-failure cases. Secret scan `34172195864` passed. The main
+job failed only in `Fresh tarball consumer`: the existing textual lockfile
+guard treated pnpm's expected relative references to the selected tarball as a
+worktree dependency. `compare` and `dispatch-builder` therefore skipped; the
+PR-only `fixed-commit-consumer` skip is expected by design.
+
+A new DBS security/falsification review rejected a proposed substring
+exception because comments, unrelated local locators, and wrong Git identities
+could spoof it. The accepted correction uses pinned `yaml@2.8.1` to parse pnpm
+lockfile version 9 with duplicate-key, alias, warning, and explicit-tag
+rejection. It binds the root importer dependency plus every package, resolution,
+and snapshot identity to the exact selected source; for tarballs it also binds `resolution.integrity`
+to the candidate file's actual SHA-512 bytes. It rejects every additional
+local or directory source, canonicalizes filesystem identities before boundary
+checks, and verifies the installed package is inside the independent consumer
+but outside this worktree. Its test matrix includes real pnpm 10.34.5 tarball
+generation plus one-field-at-a-time tarball/Git identity mutations, adversarial
+YAML tags and mapping keys, additional identities, local locators, and canonical
+path/symlink cases. Final local validation reports 107 tests passed and 58
+artifact-dependent tests skipped; Node/web type checking, release-contract
+tests, Trellis task validation, and `git diff --check` pass. A final-head
+same-SHA CI run remains outstanding and has not yet started.
+
 ## M5: External real-scan comparison (R8)
 
 - [ ] Obtain a rights-cleared corpus and record storage/upload permissions.

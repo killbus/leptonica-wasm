@@ -17,5 +17,10 @@ export function retryWithBackoff<T>(
     now?: () => number;
   },
 ): Promise<T>;
+export function validateConsumerLockfile(
+  lock: string,
+  options: { consumerRoot?: string; tarball?: string; repository?: string; commit?: string },
+): void;
+export function validateInstalledPackageRoot(packageRoot: string, consumerRoot: string): void;
 export function writeConsumer(root: string, sourceSpec: string, onlyBuiltDependency?: string): void;
 export function verifyBrowserBundleLayout(outputRoot: string): void;

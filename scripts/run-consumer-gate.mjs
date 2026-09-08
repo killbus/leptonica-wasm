@@ -1,11 +1,14 @@
+import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
+import { parseDocument, visit } from "yaml";
 import { validatePackageContract } from "./check-package-contract.mjs";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const canonicalRepoRoot = realpathSync(repoRoot);
 
 export const CONSUMER_TOOL_VERSIONS = Object.freeze({
   "@types/node": "26.4.1",
@@ -264,10 +267,203 @@ export function verifyBrowserBundleLayout(outputRoot) {
   if (unexpected.length > 0) throw new Error(`browser bundle leaked package-manager paths: ${unexpected.join(", ")}`);
 }
 
+function normalizedPath(path) {
+  return resolve(path).replaceAll("\\", "/");
+}
+
+function isRecord(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function requireRecord(value, label) {
+  if (!isRecord(value)) throw new Error(`consumer lockfile is missing ${label}`);
+  return value;
+}
+
+function requireOwn(record, key, label) {
+  if (!Object.hasOwn(record, key)) throw new Error(`consumer lockfile is missing ${label}`);
+  return record[key];
+}
+
+function lockPath(parts) {
+  return JSON.stringify(parts);
+}
+
+function parsePnpmLockfile(lock) {
+  const document = parseDocument(lock, { strict: true, uniqueKeys: true });
+  if (document.errors.length > 0) {
+    throw new Error(`consumer lockfile is invalid YAML: ${document.errors[0].message}`);
+  }
+  if (document.warnings.length > 0) {
+    throw new Error(`consumer lockfile is invalid YAML: ${document.warnings[0].message}`);
+  }
+  try {
+    visit(document, {
+      Alias() {
+        throw new Error("YAML aliases are not allowed");
+      },
+      Node(_key, node) {
+        if (node.tag) throw new Error("explicit YAML tags are not allowed");
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`consumer lockfile is invalid YAML: ${message}`);
+  }
+  let parsed;
+  try {
+    parsed = document.toJS({ maxAliasCount: 0 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`consumer lockfile is invalid YAML: ${message}`);
+  }
+  const root = requireRecord(parsed, "root mapping");
+  if (root.lockfileVersion !== "9.0") {
+    throw new Error(`consumer lockfile has unsupported version: ${String(root.lockfileVersion)}`);
+  }
+  return root;
+}
+
+function assertOnlyExpectedLocalLocators(root, allowedValues, allowedKeys) {
+  const worktree = normalizedPath(canonicalRepoRoot);
+  const inspect = (value, path) => {
+    if (typeof value === "string") {
+      const allowed = allowedValues.get(lockPath(path));
+      const normalized = value.replaceAll("\\", "/");
+      if ((/(?:file|link|workspace):/.test(value) || normalized.includes(worktree)) && value !== allowed) {
+        throw new Error("consumer lockfile contains an unexpected local dependency");
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((entry, index) => inspect(entry, [...path, index]));
+      return;
+    }
+    if (!isRecord(value)) return;
+    for (const [key, entry] of Object.entries(value)) {
+      const childPath = [...path, key];
+      const allowed = allowedKeys.get(lockPath(childPath));
+      if (/(?:file|link|workspace):/.test(key) && key !== allowed) {
+        throw new Error("consumer lockfile contains an unexpected local dependency");
+      }
+      if (key === "directory" && path.at(-1) === "resolution") {
+        throw new Error("consumer lockfile contains a directory resolution");
+      }
+      inspect(entry, childPath);
+    }
+  };
+  inspect(root, []);
+}
+
+function requireSinglePackageIdentity(section, expectedKey, label) {
+  const matching = Object.keys(section).filter((key) => key.startsWith("leptonica-wasm@"));
+  if (matching.length !== 1 || matching[0] !== expectedKey) {
+    throw new Error(`consumer lockfile has an unexpected ${label} identity`);
+  }
+  return requireOwn(section, expectedKey, `${label} entry`);
+}
+
+function sha512Integrity(path) {
+  return `sha512-${createHash("sha512").update(readFileSync(path)).digest("base64")}`;
+}
+
+/** Verify that pnpm resolved leptonica-wasm from exactly the requested immutable source. */
+export function validateConsumerLockfile(lock, options) {
+  if ((options.tarball ? 1 : 0) + (options.repository ? 1 : 0) !== 1) {
+    throw new Error("select exactly one lockfile source");
+  }
+  const root = parsePnpmLockfile(lock);
+  const importers = requireRecord(root.importers, "importers");
+  const rootImporter = requireRecord(requireOwn(importers, ".", "root importer"), "root importer");
+  const dependencies = requireRecord(rootImporter.dependencies, "root importer dependencies");
+  const dependency = requireRecord(
+    requireOwn(dependencies, "leptonica-wasm", "leptonica-wasm dependency"),
+    "leptonica-wasm dependency",
+  );
+  const packages = requireRecord(root.packages, "packages");
+  const snapshots = requireRecord(root.snapshots, "snapshots");
+  const allowedValues = new Map();
+  const allowedKeys = new Map();
+
+  if (options.tarball) {
+    if (!options.consumerRoot) throw new Error("consumerRoot is required for tarball lockfile validation");
+    const candidate = resolve(options.tarball);
+    const candidateStat = lstatSync(candidate);
+    if (!candidate.endsWith(".tgz") || candidateStat.isSymbolicLink() || !candidateStat.isFile()) {
+      throw new Error("candidate tarball must be a regular non-symlink .tgz file");
+    }
+    if (normalizedPath(realpathSync(candidate)) !== normalizedPath(candidate)) {
+      throw new Error("candidate tarball path must be canonical");
+    }
+    const absoluteLocator = `file:${normalizedPath(candidate)}`;
+    const consumerRoot = realpathSync(resolve(options.consumerRoot));
+    const relativeLocator = `file:${relative(consumerRoot, candidate).replaceAll("\\", "/")}`;
+    const expectedKey = `leptonica-wasm@${relativeLocator}`;
+    if (dependency.specifier !== absoluteLocator || dependency.version !== relativeLocator) {
+      throw new Error("consumer lockfile does not bind the exact candidate tarball");
+    }
+    const packageEntry = requireRecord(
+      requireSinglePackageIdentity(packages, expectedKey, "package"),
+      "candidate package",
+    );
+    requireRecord(requireSinglePackageIdentity(snapshots, expectedKey, "snapshot"), "candidate snapshot");
+    const resolution = requireRecord(packageEntry.resolution, "candidate package resolution");
+    if (
+      resolution.tarball !== relativeLocator
+      || resolution.integrity !== sha512Integrity(candidate)
+    ) {
+      throw new Error("consumer lockfile has an invalid candidate tarball resolution");
+    }
+    allowedValues.set(lockPath(["importers", ".", "dependencies", "leptonica-wasm", "specifier"]), absoluteLocator);
+    allowedValues.set(lockPath(["importers", ".", "dependencies", "leptonica-wasm", "version"]), relativeLocator);
+    allowedValues.set(lockPath(["packages", expectedKey, "resolution", "tarball"]), relativeLocator);
+    allowedKeys.set(lockPath(["packages", expectedKey]), expectedKey);
+    allowedKeys.set(lockPath(["snapshots", expectedKey]), expectedKey);
+  } else if (options.repository && options.commit) {
+    gitDependencyId(options.repository, options.commit);
+    const specifier = `git+https://github.com/${options.repository}.git#${options.commit}`;
+    const tarball = `https://codeload.github.com/${options.repository}/tar.gz/${options.commit}`;
+    const expectedKey = `leptonica-wasm@${tarball}`;
+    if (dependency.specifier !== specifier || dependency.version !== tarball) {
+      throw new Error("consumer lockfile does not bind the fixed Git source");
+    }
+    const packageEntry = requireRecord(requireSinglePackageIdentity(packages, expectedKey, "package"), "Git package");
+    requireRecord(requireSinglePackageIdentity(snapshots, expectedKey, "snapshot"), "Git snapshot");
+    const resolution = requireRecord(packageEntry.resolution, "Git package resolution");
+    if (resolution.gitHosted !== true || resolution.tarball !== tarball) {
+      throw new Error("consumer lockfile has an invalid fixed Git resolution");
+    }
+  } else {
+    throw new Error("select exactly one lockfile source");
+  }
+
+  assertOnlyExpectedLocalLocators(root, allowedValues, allowedKeys);
+}
+
+export function validateInstalledPackageRoot(packageRoot, consumerRoot) {
+  const canonicalPackageRoot = realpathSync(packageRoot);
+  const canonicalConsumerRoot = realpathSync(consumerRoot);
+  const relativeToRepo = relative(canonicalRepoRoot, canonicalPackageRoot);
+  if (relativeToRepo === "" || (!relativeToRepo.startsWith(`..${sep}`) && !isAbsolute(relativeToRepo))) {
+    throw new Error(`consumer resolved back into the worktree: ${canonicalPackageRoot}`);
+  }
+  const relativeToConsumer = relative(canonicalConsumerRoot, canonicalPackageRoot);
+  if (
+    relativeToConsumer === ""
+    || relativeToConsumer === ".."
+    || relativeToConsumer.startsWith(`..${sep}`)
+    || isAbsolute(relativeToConsumer)
+  ) {
+    throw new Error(`consumer package root escaped the consumer directory: ${canonicalPackageRoot}`);
+  }
+}
+
 function verifyInstalled(root, options) {
   const packageLink = join(root, "node_modules", "leptonica-wasm");
   const packageRoot = realpathSync(packageLink);
-  if (packageRoot.startsWith(repoRoot + sep)) throw new Error(`consumer resolved back into the worktree: ${packageRoot}`);
+  validateInstalledPackageRoot(packageRoot, root);
   const contractErrors = validatePackageContract(packageRoot, {
     requireManifest: true,
     expectedCommit: options.commit,
@@ -275,8 +471,7 @@ function verifyInstalled(root, options) {
   });
   if (contractErrors.length > 0) throw new Error(contractErrors.join("\n"));
   const lock = readFileSync(join(root, "pnpm-lock.yaml"), "utf8");
-  if (lock.includes("file:../..") || lock.includes(repoRoot)) throw new Error("consumer lockfile contains a worktree dependency");
-  if (options.commit && !lock.includes(options.commit)) throw new Error("consumer lockfile does not contain the fixed Git commit");
+  validateConsumerLockfile(lock, { ...options, consumerRoot: root });
 
   run("pnpm", ["exec", "tsc", "node-main.ts", "--ignoreConfig", "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", "--lib", "ESNext,DOM", "--types", "node", "--strict", "--skipLibCheck", "false", "--outDir", "out"], root);
   run("pnpm", ["exec", "tsc", "browser.ts", "browser-full-abi.ts", "--ignoreConfig", "--target", "ES2022", "--module", "ESNext", "--moduleResolution", "Bundler", "--lib", "ESNext,DOM", "--strict", "--skipLibCheck", "false", "--noEmit"], root);
