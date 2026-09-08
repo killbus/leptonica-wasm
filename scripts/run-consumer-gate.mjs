@@ -562,11 +562,20 @@ export function verifyBrowserBundleLayout(outputRoot) {
   const root = resolve(outputRoot);
   const installedDist = resolve(dirname(root), "node_modules/leptonica-wasm/dist");
   const expectations = [
-    { file: "main.mjs", asset: "worker.mjs", requireWorkerSink: true },
-    { file: "worker.mjs", asset: "leptonica.wasm", installedAsset: "leptonica.wasm" },
-    { file: "full-abi/main.mjs", asset: "leptonica.wasm", installedAsset: "full-abi/leptonica.wasm" },
+    {
+      file: "main.mjs",
+      assets: [
+        { asset: "worker.mjs", requireWorkerSink: true },
+        { asset: "leptonica.wasm", installedAsset: "leptonica.wasm" },
+      ],
+    },
+    { file: "worker.mjs", assets: [{ asset: "leptonica.wasm", installedAsset: "leptonica.wasm" }] },
+    {
+      file: "full-abi/main.mjs",
+      assets: [{ asset: "leptonica.wasm", installedAsset: "full-abi/leptonica.wasm" }],
+    },
   ];
-  for (const { file, asset, installedAsset, requireWorkerSink } of expectations) {
+  for (const { file, assets } of expectations) {
     const entry = join(root, file);
     if (!existsSync(entry) || !lstatSync(entry).isFile()) throw new Error(`browser bundle entry is missing: ${file}`);
     const source = readFileSync(entry, "utf8");
@@ -577,7 +586,10 @@ export function verifyBrowserBundleLayout(outputRoot) {
       throw new Error(`${file} mutates the global ${constructorMutation} constructor`);
     }
     const { references, workerConstructors } = collectBrowserAssetReferences(parsed, scopeInfo);
-    const expectedTarget = resolve(dirname(entry), asset);
+    const expectedAssets = assets.map((expectation) => ({
+      ...expectation,
+      target: resolve(dirname(entry), expectation.asset),
+    }));
     const resolvedReferences = references.map(({ node, reference, workerSink }) => {
       if (reference === undefined) {
         throw new Error(`${file} contains a non-static browser asset URL`);
@@ -586,32 +598,39 @@ export function verifyBrowserBundleLayout(outputRoot) {
       if (target === undefined) {
         throw new Error(`${file} contains a disallowed browser asset URL ${reference}`);
       }
-      if (target !== expectedTarget) {
+      const expected = expectedAssets.find((candidate) => candidate.target === target);
+      if (expected === undefined) {
         throw new Error(`${file} references unexpected browser asset ${reference}`);
       }
-      return { node, reference, target, workerSink };
+      return { node, reference, target, workerSink, expected };
     });
-    if (resolvedReferences.length === 0) {
-      throw new Error(`${file} does not retain a resolvable ${asset} URL`);
+    for (const expected of expectedAssets) {
+      const matching = resolvedReferences.filter(({ target }) => target === expected.target);
+      if (matching.length === 0) {
+        throw new Error(`${file} does not retain a resolvable ${expected.asset} URL`);
+      }
+      if (!existsSync(expected.target) || !lstatSync(expected.target).isFile()) {
+        throw new Error(`${file} references missing browser asset ${matching[0].reference}`);
+      }
+      if (expected.installedAsset !== undefined) {
+        const installed = join(installedDist, expected.installedAsset);
+        if (!existsSync(installed) || !lstatSync(installed).isFile()) {
+          throw new Error(`installed package asset is missing: ${expected.installedAsset}`);
+        }
+        if (!readFileSync(expected.target).equals(readFileSync(installed))) {
+          throw new Error(`${relative(root, expected.target).replaceAll("\\", "/")} differs from installed package asset`);
+        }
+      }
     }
-    if (requireWorkerSink === true) {
+    const workerAsset = expectedAssets.find(({ requireWorkerSink }) => requireWorkerSink === true);
+    if (workerAsset !== undefined) {
       const connected = new Set(
-        resolvedReferences.filter(({ workerSink }) => workerSink).map(({ node }) => node),
+        resolvedReferences
+          .filter(({ workerSink, target }) => workerSink && target === workerAsset.target)
+          .map(({ node }) => node),
       );
       if (connected.size === 0 || workerConstructors.some((worker) => !connected.has(worker.arguments[0]))) {
-        throw new Error(`${file} does not retain a resolvable ${asset} URL in every Worker resource sink`);
-      }
-    }
-    if (!existsSync(expectedTarget) || !lstatSync(expectedTarget).isFile()) {
-      throw new Error(`${file} references missing browser asset ${resolvedReferences[0].reference}`);
-    }
-    if (installedAsset !== undefined) {
-      const installed = join(installedDist, installedAsset);
-      if (!existsSync(installed) || !lstatSync(installed).isFile()) {
-        throw new Error(`installed package asset is missing: ${installedAsset}`);
-      }
-      if (!readFileSync(expectedTarget).equals(readFileSync(installed))) {
-        throw new Error(`${relative(root, expectedTarget).replaceAll("\\", "/")} differs from installed package asset`);
+        throw new Error(`${file} does not retain a resolvable ${workerAsset.asset} URL in every Worker resource sink`);
       }
     }
   }

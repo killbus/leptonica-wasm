@@ -357,9 +357,15 @@ Final local source-only validation reports 146 tests passed
 and 58 artifact-dependent tests skipped; the focused package, trap-retirement,
 and instrumentation set reports 99/99. Node/web type checking, release-contract
 tests, Trellis task validation,
-and `git diff --check` also pass. These verifier changes do not yet have
-final-diff CI evidence; one workflow run with `compare` and `dispatch-builder`
-succeeding on the same synthetic merge SHA also remains outstanding.
+and `git diff --check` also pass. CI `34188160101` then passed both real-browser
+fatal-retirement cases, all 15 instrumented resource-failure cases, both WASM
+variants, package tests, bundler checks, determinism, and release packing. Its
+fresh-tarball consumer exposed one further verifier overconstraint: the bundled
+main entry legitimately retains both the Worker URL and the curated WASM URL.
+The corrected contract now requires that exact two-asset set for `main.mjs`,
+keeps every Worker sink bound to `worker.mjs`, and still rejects every other
+resource URL. The required release evidence is one replacement workflow run
+with all downstream jobs succeeding on the same synthetic merge SHA.
 
 ## Final DBS cross-audit ruling
 

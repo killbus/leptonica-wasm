@@ -574,8 +574,13 @@ shape and for normal close. Final local validation therefore reports 146 tests
 passed and 58 artifact-dependent tests skipped; the focused package,
 trap-retirement, and instrumentation set reports 99/99. Node/web type
 checking, release-contract tests, Trellis task validation, and `git diff --check`
-pass. A final-diff workflow run with all required jobs on the same synthetic
-merge SHA remains outstanding and has not yet started.
+pass. CI `34188160101` subsequently passed the real-browser fatal-retirement
+case, all 15 instrumented resource-failure cases, both WASM builds and smoke
+checks, tests, bundler checks, determinism, and release packing. Its fresh
+tarball consumer caught an overconstrained `main.mjs` rule because the real
+bundle retains both the Worker URL and the curated WASM URL. The replacement
+gate must accept that exact two-asset set while continuing to reject all other
+resource URLs, then complete all downstream jobs on one synthetic merge SHA.
 
 ## M5: External real-scan comparison (R8)
 

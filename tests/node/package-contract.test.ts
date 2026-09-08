@@ -319,7 +319,10 @@ describe("independent consumer gate", () => {
     mkdirSync(join(packageDist, "full-abi"), { recursive: true });
     writeFileSync(
       join(root, "main.mjs"),
-      mainSource + (includeWorkerReference ? 'new Worker(new URL("./worker.mjs", import.meta.url));\n' : ""),
+      mainSource + (includeWorkerReference
+        ? 'new Worker(new URL("./worker.mjs", import.meta.url));\n'
+          + 'new URL("leptonica.wasm", import.meta.url);\n'
+        : ""),
     );
     writeFileSync(join(root, "worker.mjs"), 'new URL("leptonica.wasm", import.meta.url);\n');
     writeFileSync(join(root, "full-abi/main.mjs"), 'new URL("leptonica.wasm", import.meta.url);\n');
@@ -541,6 +544,11 @@ describe("independent consumer gate", () => {
     );
   });
 
+  it("accepts the curated WASM URL retained beside the Worker entry", () => {
+    const root = browserBundleFixture("leptonica-browser-main-assets-", "");
+    expect(() => verifyBrowserBundleLayout(root)).not.toThrow();
+  });
+
   it("fails when an emitted browser URL has no matching packaged asset", () => {
     const root = browserBundleFixture("leptonica-browser-layout-", "");
     rmSync(join(root, "full-abi/leptonica.wasm"));
@@ -705,7 +713,8 @@ describe("independent consumer gate", () => {
   it("accepts leading and trailing ASCII URL whitespace with browser semantics", () => {
     const root = browserBundleFixture(
       "leptonica-browser-ascii-url-whitespace-",
-      `new Worker(new URL(${JSON.stringify(" \t./worker.mjs\r\n")}, import.meta.url));\n`,
+      `new Worker(new URL(${JSON.stringify(" \t./worker.mjs\r\n")}, import.meta.url));\n`
+        + 'new URL("leptonica.wasm", import.meta.url);\n',
       false,
     );
     expect(() => verifyBrowserBundleLayout(root)).not.toThrow();
