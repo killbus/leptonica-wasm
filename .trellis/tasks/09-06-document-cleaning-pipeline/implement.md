@@ -678,6 +678,25 @@ one-second child exits and that a streamed HTTP 503 failure remains retryable.
 A subsequent CI run must establish whether streaming also removes the external
 SIGTERM cause; regardless, it restores bounded memory and actionable logs.
 
+PR #13 CI run `34208376325` made the external SIGTERM diagnosable. Its
+`fixed-commit-consumer` job `102003996333` emitted a recursively deepening
+sequence of `pnpm-install$ pnpm install` lifecycle invocations before exit 143.
+pnpm 10.34.5 prepares a Git-hosted dependency below its configured store and,
+because this source package has `prepack` and no built default entry, runs the
+package manager there before `prepack`. The consumer gate had placed that store
+inside the temporary consumer workspace, so every prepared source tree found
+the outer `pnpm-workspace.yaml` while walking upward and re-entered the same
+consumer install. Each attempt now owns sibling `consumer/` and `store/`
+directories under one cleanup root. This keeps pnpm's Git preparation tree
+outside the workspace-discovery ancestry while preserving one bounded cleanup
+boundary. A failing-first regression fixes that directory invariant. A serial
+package-lifecycle audit independently confirmed the root-cause chain and found
+no blocking cleanup, lockfile, package-root, or keep-mode regression. Current
+lightweight evidence is 162 tests passed with 58 artifact-dependent tests
+skipped, focused package contracts 87/87, node/web type checking, release-set
+contract tests, workflow YAML parsing, and `git diff --check`. The corrected
+fixed-commit consumer still requires a fresh GitHub CI run before merge.
+
 ## M5: External real-scan comparison (R8)
 
 - [ ] Obtain a rights-cleared corpus and record storage/upload permissions.

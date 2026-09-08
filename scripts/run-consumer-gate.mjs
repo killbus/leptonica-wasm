@@ -329,6 +329,16 @@ export function consumerWorkspaceYaml(onlyBuiltDependency) {
   return ["onlyBuiltDependencies:", ...allowed.map((name) => "  - \"" + name + "\""), ""].join("\n");
 }
 
+export function consumerAttemptPaths(ownerRoot) {
+  // pnpm prepares Git-hosted dependencies below the store and runs their
+  // package manager there. Keep that tree outside the consumer workspace so
+  // workspace discovery cannot recurse into the outer consumer install.
+  return {
+    consumerRoot: join(ownerRoot, "consumer"),
+    store: join(ownerRoot, "store"),
+  };
+}
+
 export function writeConsumer(root, sourceSpec, onlyBuiltDependency) {
   writeFileSync(join(root, "package.json"), JSON.stringify({
     name: "leptonica-wasm-independent-consumer",
@@ -967,18 +977,19 @@ function verifyInstalled(root, options) {
 
 async function runOnce(options, attempt) {
   const root = mkdtempSync(join(tmpdir(), `leptonica-consumer-${attempt}-`));
+  const { consumerRoot, store } = consumerAttemptPaths(root);
   const runConsumer = async () => {
-    const store = join(root, "store");
+    mkdirSync(consumerRoot);
     mkdirSync(store);
     const sourceSpec = options.tarball
       ? `file:${options.tarball}`
       : `git+https://github.com/${options.repository}.git#${options.commit}`;
     const allow = options.repository ? gitDependencyId(options.repository, options.commit) : undefined;
-    writeConsumer(root, sourceSpec, allow);
+    writeConsumer(consumerRoot, sourceSpec, allow);
     const installArgs = ["install", "--store-dir", store, "--config.confirmModulesPurge=false"];
     if (options.tarball) installArgs.push("--ignore-scripts");
     await retryWithBackoff(
-      () => runStreamingCommand("pnpm", installArgs, root, { ...process.env, CI: "true" }),
+      () => runStreamingCommand("pnpm", installArgs, consumerRoot, { ...process.env, CI: "true" }),
       {
         onRetry: ({ attempt: retryAttempt, delayMs, error }) => {
           const message = error instanceof Error ? error.message : String(error);
@@ -986,7 +997,7 @@ async function runOnce(options, attempt) {
         },
       },
     );
-    verifyInstalled(root, options);
+    verifyInstalled(consumerRoot, options);
   };
   if (options.keep) {
     try {

@@ -24,6 +24,7 @@ export function runStreamingCommand(
   },
 ): Promise<void>;
 export function consumerWorkspaceYaml(onlyBuiltDependency?: string): string;
+export function consumerAttemptPaths(ownerRoot: string): { consumerRoot: string; store: string };
 export function gitDependencyId(repository: string, commit: string): string;
 export function isRetryableNetworkError(error: unknown): boolean;
 export function retryAfterMilliseconds(error: unknown, now?: number): number;

@@ -10,6 +10,7 @@ import { generateHashManifest } from "../../scripts/gen-hash-manifest.mjs";
 import {
   CONSUMER_COMMAND_MAX_BUFFER_BYTES,
   CONSUMER_TOOL_VERSIONS,
+  consumerAttemptPaths,
   consumerCommandSpawnOptions,
   consumerWorkspaceYaml,
   gitDependencyId,
@@ -859,6 +860,15 @@ describe("independent consumer gate", () => {
 });
 
 describe("consumer install retry policy", () => {
+  it("keeps the pnpm store outside the consumer workspace", () => {
+    const ownerRoot = join(tmpdir(), "leptonica-consumer-1-layout");
+    const { consumerRoot, store } = consumerAttemptPaths(ownerRoot);
+
+    expect(consumerRoot).toBe(join(ownerRoot, "consumer"));
+    expect(store).toBe(join(ownerRoot, "store"));
+    expect(relative(consumerRoot, store).startsWith("..")).toBe(true);
+  });
+
   it("retries transient recursive cleanup races", () => {
     let receivedPath;
     let receivedOptions;
