@@ -1,0 +1,5 @@
+{"file":".trellis/spec/build-ci/execution-discipline.md","reason":"CI-only heavy work, source pins, release privacy, pnpm policy, retry and inline execution constraints"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Shared contracts across native bindings, core, worker protocol, generated declarations and installed consumers"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Reuse ownership and algorithm implementations; avoid duplicated normalization and package assembly logic"}
+{"file":"docs/release-set-contract.md","reason":"Preserve source-owned release identities and opaque builder-facing payloads"}
+{"file":".trellis/tasks/09-06-document-cleaning-pipeline/research-baseline.md","reason":"Pinned handoff, current-source findings, upstream API bounds and pnpm Git preparation evidence"}

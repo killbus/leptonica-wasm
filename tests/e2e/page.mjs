@@ -18,6 +18,22 @@ function gradient(w, h) {
   return rgba;
 }
 
+function maskPattern(w = 9, h = 3) {
+  const rgba = new Uint8Array(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const foreground = y === 0 || (y === 1 && x % 2 === 0);
+      const value = foreground ? 0 : 255;
+      const i = (y * w + x) * 4;
+      rgba[i] = value;
+      rgba[i + 1] = value;
+      rgba[i + 2] = value;
+      rgba[i + 3] = 255;
+    }
+  }
+  return rgba;
+}
+
 const OPS = [
   { op: "toGray" },
   { op: "otsu", tile: 16 },
@@ -31,7 +47,21 @@ async function runChain() {
     const out = await session.run(src, OPS);
     const png = await out.toPNG();
     const count = await out.countPixels();
-    return { png: b64(png), count };
+    const maskSrc = await session.load(maskPattern(), 9, 3);
+    const maskPix = await session.run(maskSrc, [{ op: "toGray" }, { op: "threshold", level: 128 }]);
+    const mask = await maskPix.toMask();
+    return {
+      png: b64(png),
+      count,
+      mask: b64(mask.data),
+      maskMeta: {
+        width: mask.width,
+        height: mask.height,
+        strideBytes: mask.strideBytes,
+        bitOrder: mask.bitOrder,
+        foregroundBit: mask.foregroundBit,
+      },
+    };
   } finally {
     await session.close();
   }

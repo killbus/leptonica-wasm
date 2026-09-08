@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { generateRgba, generateSlantRgba } from '../../scripts/generate-rgba.mjs'
+import { generateNamedRgba } from '../../scripts/generate-rgba.mjs'
 import type { Op, Query } from '../../src/protocol.ts'
 
 /*
@@ -30,7 +30,7 @@ const distPresent = existsSync(resolve('dist/leptonica.wasm'))
 // that predates them. Restrict this suite to the chains whose goldens
 // actually exist rather than failing ENOENT on chains the fixture dir
 // never carried (CI's guard step pins the full set).
-const allChains: { name: string; width: number; height: number; input?: string; ops: Op[]; queries: Query[] }[] = JSON.parse(
+const allChains: { name: string; width: number; height: number; input?: string; expectedPixelCount?: number; ops: Op[]; queries: Query[] }[] = JSON.parse(
   readFileSync(join('tests/golden/chains.json'), 'utf8'),
 )
 const chains = allChains.filter(
@@ -63,8 +63,7 @@ async function playChain(w: number, h: number, ops: readonly Op[], queries: read
   const factory = (await import(pathToFileURL(jsPath).href)).default
   const L = await factory({ wasmBinary: readFileSync(wasmPath) })
 
-  const gen = input === 'slant' ? generateSlantRgba : generateRgba
-  let pix: unknown = L.fromRGBA(gen(w, h), w, h)
+  let pix: unknown = L.fromRGBA(generateNamedRgba(input, w, h), w, h)
   if (pix === null) throw new Error('fromRGBA returned null')
 
   const mustPix = (next: unknown, op: string): void => {
@@ -80,6 +79,10 @@ async function playChain(w: number, h: number, ops: readonly Op[], queries: read
       case 'threshold': mustPix(L.threshold(pix, op.level), 'threshold'); break
       case 'otsu': mustPix(L.otsu(pix, op.tile ?? 16, op.factor ?? 0.1), 'otsu'); break
       case 'sauvola': mustPix(L.sauvola(pix, op.whsize, op.factor ?? 0.34), 'sauvola'); break
+      case 'cleanBackgroundToWhite': mustPix(L.cleanBackgroundToWhite(pix, op.gamma, op.black, op.white), 'cleanBackgroundToWhite'); break
+      case 'sauvolaTiled': mustPix(L.sauvolaTiled(pix, op.whsize, op.factor, op.nx, op.ny), 'sauvolaTiled'); break
+      case 'selectByArea': mustPix(L.selectByArea(pix, op.thresholdArea, op.connectivity, op.relation), 'selectByArea'); break
+      case 'maskOverColorPixels': mustPix(L.maskOverColorPixels(pix, op.thresholdDiff, op.minDistance), 'maskOverColorPixels'); break
       case 'deskew': mustPix(L.deskew(pix, op.reduction ?? 2), 'deskew'); break
       case 'rotate': mustPix(L.rotate(pix, op.angle, op.quality ?? 'area'), 'rotate'); break
       case 'scale': mustPix(L.scale(pix, op.fx, op.fy ?? op.fx), 'scale'); break
@@ -175,6 +178,10 @@ describe.skipIf(!goldensPresent || !distPresent)('golden chains (oracle comparis
     }
     if (queryKinds.has('average')) {
       expect(Math.abs(got.averageValue - goldenJson.average)).toBeLessThanOrEqual(CONF_TOL)
+    }
+    if (chain.expectedPixelCount !== undefined) {
+      expect(goldenJson.pixelCount, `native fixture semantics for '${chain.name}'`).toBe(chain.expectedPixelCount)
+      expect(got.pixelCount, `wasm fixture semantics for '${chain.name}'`).toBe(chain.expectedPixelCount)
     }
   })
 

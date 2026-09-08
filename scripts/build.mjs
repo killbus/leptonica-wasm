@@ -1,20 +1,27 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { extractExportedFunctions, renderLooseDts } from "./gen-exports.mjs";
+import {
+  dependencyBuildIdentitySha256,
+  dependencySourceSetSha256,
+  commandVersion,
+  readDependencyBuildCache,
+  withDependencyBuildLock,
+  writeDependencyBuildCache,
+} from "./dependency-cache.mjs";
+import { prepareSourceTreeFromArchive, resolveSourcePatchSet, sourceProvenance } from "./source-patches.mjs";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const depsRoot = join(repoRoot, "tmp", "deps");
-const buildRoot = join(repoRoot, "tmp", "build");
 const downloadsRoot = join(repoRoot, "tmp", "downloads");
-const installRoot = join(buildRoot, "install");
 const versions = JSON.parse(readFileSync(join(repoRoot, "vendor", "versions.json"), "utf8"));
 
 function usage() {
-  console.error("usage: node build.mjs [--full-abi] [--variant <pN>] [--outdir <dir>] [--jobs <n>] [--opt <O0|O1|O2|O3|Os|Oz>]");
+  console.error("usage: node build.mjs [--full-abi | --test-instrumentation] [--variant <pN>] [--outdir <dir>] [--jobs <n>] [--opt <O0|O1|O2|O3|Os|Oz>] [--link-diagnostics <tmp/link-diagnostics/file>]");
 }
 
 function run(cmd, args, opts = {}) {
@@ -30,30 +37,26 @@ function ghSlug(repo) {
 }
 
 function ensureSource(name, pin) {
-  const srcDir = join(depsRoot, name);
-  const marker = join(srcDir, ".pin-commit");
-  if (existsSync(marker) && readFileSync(marker, "utf8").trim() === pin.commit && existsSync(join(srcDir, "CMakeLists.txt"))) {
-    return;
-  }
-  rmSync(srcDir, { recursive: true, force: true });
-  mkdirSync(srcDir, { recursive: true });
+  const source = resolveSourcePatchSet(name, pin, repoRoot);
+  const srcDir = join(depsRoot, `${name}-${source.sourceIdentitySha256}`);
   const archive = join(downloadsRoot, `${name}-${pin.commit}.tar.gz`);
-  if (!existsSync(archive)) {
-    mkdirSync(downloadsRoot, { recursive: true });
-    // Download to a .part temp first, then rename into place. A truncated
-    // archive must not persist under the final name: existsSync() above
-    // would skip re-download on later runs and every build would fail at
-    // untar until the file is deleted by hand (M1 review, build-eng N2).
-    const partial = `${archive}.part`;
-    run("curl", ["-fsSL", "--retry", "3", "-o", partial, `https://codeload.github.com/${ghSlug(pin.repo)}/tar.gz/${pin.commit}`]);
-    if (!existsSync(partial)) throw new Error(`curl did not produce ${partial}`);
-    renameSync(partial, archive);
-  }
-  run("tar", ["-xzf", archive, "--strip-components=1", "-C", srcDir]);
-  writeFileSync(marker, pin.commit + "\n");
+  prepareSourceTreeFromArchive({
+    source,
+    sourceDir: srcDir,
+    archive,
+    download(candidate) {
+      mkdirSync(downloadsRoot, { recursive: true });
+      run("curl", ["-fsSL", "--retry", "3", "-o", candidate, `https://codeload.github.com/${ghSlug(pin.repo)}/tar.gz/${pin.commit}`]);
+    },
+    extract(archiveToExtract, stagingDir) {
+      run("tar", ["-xzf", archiveToExtract, "--strip-components=1", "-C", stagingDir]);
+    },
+  });
+  return Object.freeze({ ...source, sourceDir: srcDir });
 }
 
-const depConfigs = [
+function createDepConfigs(installRoot, testInstrumentation) {
+  return [
   {
     name: "zlib",
     extra: ["-DZLIB_BUILD_SHARED=OFF", "-DZLIB_BUILD_TESTING=OFF"],
@@ -84,6 +87,7 @@ const depConfigs = [
   {
     name: "leptonica",
     extra: [
+      ...(testInstrumentation ? ["-DCMAKE_C_FLAGS=-DLEPTONICA_INTERCEPT_ALLOC"] : []),
       "-DENABLE_WEBP=OFF",
       "-DENABLE_OPENJPEG=OFF",
       "-DENABLE_GIF=OFF",
@@ -96,23 +100,12 @@ const depConfigs = [
       `-DJPEG_INCLUDE_DIR=${join(installRoot, "include")}`,
     ],
   },
-];
+  ];
+}
 
-function buildDep(dep, jobs, pin) {
-  const buildDir = join(buildRoot, dep.name);
-  const doneMarker = join(buildDir, ".done");
-  // The marker records the inputs that produced this compiled tree. Checking
-  // existence alone is not enough (M1 review, build-eng W1): after a pin bump
-  // ensureSource() re-fetches sources but a stale .done would silently skip
-  // recompilation and link the OLD library into the new build. Pin commit and
-  // configure flags must both invalidate.
-  // Toolchain is an input too: an emsdk bump with unchanged dep pins must not
-  // reuse .a files compiled by the old emcc (design §3: deps cache is keyed
-  // by versions.json + toolchain; this marker is the same guard for restored
-  // trees).
-  const doneKey = JSON.stringify([pin.commit, dep.extra, versions.emsdk?.commit]);
-  if (existsSync(doneMarker) && readFileSync(doneMarker, "utf8") === doneKey) return;
-  const srcDir = join(depsRoot, dep.name);
+function buildDep(dep, jobs, source, dependencyBuildRoot, installRoot) {
+  const buildDir = join(dependencyBuildRoot, dep.name);
+  const srcDir = source.sourceDir;
   mkdirSync(buildDir, { recursive: true });
   // No CMAKE_POLICY_VERSION_MINIMUM: all four dep trees declare
   // cmake_minimum_required >= 3.10 (zlib 3.12...3.31 / libpng 3.14...4.2 /
@@ -138,7 +131,66 @@ function buildDep(dep, jobs, pin) {
   const ninjaArgs = ["ninja", "install"];
   if (jobs > 0) ninjaArgs.push(`-j${jobs}`);
   run("emmake", ninjaArgs, { cwd: buildDir });
-  writeFileSync(doneMarker, doneKey);
+}
+
+function createDependencyBuildInput(depConfigs, dependencySources) {
+  return {
+    schemaVersion: 1,
+    toolchain: {
+      pinned: versions.emsdk ?? null,
+      emccVersion: commandVersion("emcc"),
+      cmakeVersion: commandVersion("cmake"),
+      ninjaVersion: commandVersion("ninja"),
+    },
+    environment: Object.fromEntries([
+      "CFLAGS",
+      "CXXFLAGS",
+      "CPPFLAGS",
+      "LDFLAGS",
+      "EMCC_CFLAGS",
+    ].map((name) => [name, process.env[name] ?? null])),
+    dependencies: depConfigs.map((dep) => ({
+      name: dep.name,
+      sourceIdentitySha256: dependencySources.get(dep.name).sourceIdentitySha256,
+      configure: dep.extra,
+    })),
+  };
+}
+
+function buildDependencies(depConfigs, dependencySources, jobs, dependencyBuildRoot, installRoot, buildIdentitySha256) {
+  const marker = join(dependencyBuildRoot, ".done.json");
+  const cached = readDependencyBuildCache({
+    marker,
+    installRoot,
+    buildIdentitySha256,
+    label: "dependency",
+  });
+  if (cached) return cached;
+
+  return withDependencyBuildLock({
+    lock: `${dependencyBuildRoot}.lock`,
+    label: "dependency",
+  }, () => {
+    const rechecked = readDependencyBuildCache({
+      marker,
+      installRoot,
+      buildIdentitySha256,
+      label: "dependency",
+    });
+    if (rechecked) return rechecked;
+
+    rmSync(dependencyBuildRoot, { recursive: true, force: true });
+    mkdirSync(dependencyBuildRoot, { recursive: true });
+    for (const dep of depConfigs) {
+      buildDep(dep, jobs, dependencySources.get(dep.name), dependencyBuildRoot, installRoot);
+    }
+    return writeDependencyBuildCache({
+      marker,
+      installRoot,
+      buildIdentitySha256,
+      label: "dependency",
+    });
+  });
 }
 
 function nmDefinedSymbols(archivePath) {
@@ -155,8 +207,8 @@ function nmDefinedSymbols(archivePath) {
   return defined;
 }
 
-function writeFullAbiExports(outDir) {
-  const headerPath = join(depsRoot, "leptonica", "src", "allheaders.h");
+function writeFullAbiExports(outDir, buildRoot, installRoot, leptonicaSourceDir) {
+  const headerPath = join(leptonicaSourceDir, "src", "allheaders.h");
   const names = extractExportedFunctions(readFileSync(headerPath, "utf8"));
   const defined = nmDefinedSymbols(join(installRoot, "lib", "libleptonica.a"));
   const filtered = names.filter((name) => defined.has(name.slice(1)));
@@ -174,7 +226,7 @@ function writeFullAbiExports(outDir) {
   return exportsPath;
 }
 
-function linkOutputs({ exportsPath, generatedIncludeDir, outDir, fullAbi, optLevel, productLock }) {
+function linkOutputs({ exportsPath, generatedIncludeDir, outDir, fullAbi, optLevel, productLock, testInstrumentation, installRoot, leptonicaSourceDir, linkDiagnostics }) {
   mkdirSync(outDir, { recursive: true });
   const emccArgs = [
     "cpp/bindings.cpp",
@@ -199,11 +251,43 @@ function linkOutputs({ exportsPath, generatedIncludeDir, outDir, fullAbi, optLev
     `-I${join(installRoot, "include")}`,
     // bindings.cpp includes leptonica's internal pix_internal.h (struct Pix
     // definition), which is not part of the installed header set.
-    `-I${join(depsRoot, "leptonica", "src")}`,
+    `-I${join(leptonicaSourceDir, "src")}`,
     `-L${join(installRoot, "lib")}`,
   ];
   if (productLock === 1) {
     emccArgs.push("-DPRODUCT_LOCK", `-I${generatedIncludeDir}`);
+  }
+  if (!fullAbi) {
+    // Curated browser/worker builds expose only in-memory operations. Some
+    // useful upstream algorithms retain desktop display, file-enumeration, and
+    // PDF-output calls behind runtime-only debug branches. Resolve those calls
+    // to bounded wrappers so their translation units cannot pull the generic
+    // decoder graph into the default artifact. Full ABI deliberately omits
+    // both the wrappers and linker options, preserving upstream behavior.
+    emccArgs.push(
+      "-DLEPTONICA_WASM_CURATED_NO_DESKTOP_IO",
+      "-Wl,--wrap=pixDisplay",
+      "-Wl,--wrap=convertFilesToPdf",
+      "-Wl,--wrap=pixaConvertToPdf",
+      "-Wl,--wrap=pixaReadFiles",
+    );
+  }
+  if (testInstrumentation) {
+    emccArgs.push("-DLEPTONICA_WASM_TEST_INSTRUMENTATION");
+  }
+  if (linkDiagnostics !== null) {
+    mkdirSync(dirname(linkDiagnostics), { recursive: true });
+    rmSync(linkDiagnostics, { force: true });
+    // lld records which undefined reference extracted each archive member.
+    // This is CI diagnosis only: the validated path is under tmp/, outside
+    // every package output and release manifest. The two trace points also
+    // remain in the job log, joining the extraction edge to the suspected
+    // in-memory API boundary and the surviving decoder symbol.
+    emccArgs.push(
+      `-Wl,--why-extract=${linkDiagnostics}`,
+      "-Wl,--trace-symbol=pixRead",
+      "-Wl,--trace-symbol=jpeg_read_header",
+    );
   }
   if (fullAbi) {
     emccArgs.push("-Wl,--whole-archive", "-lleptonica", "-Wl,--no-whole-archive", `-sEXPORTED_FUNCTIONS=@${resolve(exportsPath)}`);
@@ -214,6 +298,9 @@ function linkOutputs({ exportsPath, generatedIncludeDir, outDir, fullAbi, optLev
   // bindings.cpp is C++ (embind, typeid/RTTI): link with the C++ driver so
   // libc++/libc++abi come in; plain emcc leaves __cxxabiv1 symbols undefined.
   run("em++", emccArgs);
+  if (linkDiagnostics !== null && !existsSync(linkDiagnostics)) {
+    throw new Error(`link diagnostics file was not produced: ${linkDiagnostics}`);
+  }
   const wasm = readFileSync(join(outDir, "leptonica.wasm"));
   const js = readFileSync(join(outDir, "leptonica.mjs"));
   const wasmGzip = gzipSync(wasm, { level: 9 });
@@ -228,13 +315,15 @@ function linkOutputs({ exportsPath, generatedIncludeDir, outDir, fullAbi, optLev
 }
 
 function parseArgs(argv) {
-  const opts = { fullAbi: false, outDir: "dist", jobs: 0, optLevel: "O3", variant: "p0" };
+  const opts = { fullAbi: false, testInstrumentation: false, outDir: "dist", jobs: 0, optLevel: "O3", variant: "p0", linkDiagnostics: null };
   let outDirGiven = false;
   let optGiven = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--full-abi") {
       opts.fullAbi = true;
+    } else if (arg === "--test-instrumentation") {
+      opts.testInstrumentation = true;
     } else if (arg === "--variant") {
       const value = argv[i + 1] ?? "";
       if (!/^p(?:0|[1-9][0-9]*)$/.test(value)) {
@@ -268,6 +357,14 @@ function parseArgs(argv) {
       opts.optLevel = value;
       optGiven = true;
       i++;
+    } else if (arg === "--link-diagnostics") {
+      const value = argv[i + 1] ?? "";
+      if (value.length === 0) {
+        usage();
+        process.exit(2);
+      }
+      opts.linkDiagnostics = resolve(value);
+      i++;
     } else {
       usage();
       process.exit(2);
@@ -280,16 +377,36 @@ function parseArgs(argv) {
     console.error("--opt conflicts with --full-abi: full-abi requires -O2 (see linkOutputs comment)");
     process.exit(2);
   }
+  if (opts.fullAbi && opts.testInstrumentation) {
+    console.error("--test-instrumentation cannot be combined with --full-abi");
+    process.exit(2);
+  }
   // Without an explicit --outdir, full-abi must not silently overwrite the
   // default-mode artifacts in dist/ (M1 review, build-eng N2).
   if (opts.fullAbi && !outDirGiven) {
     opts.outDir = "dist/full-abi";
+  } else if (opts.testInstrumentation && !outDirGiven) {
+    opts.outDir = "dist-instrumented";
   }
   opts.outDir = resolve(opts.outDir);
+  if (opts.linkDiagnostics !== null) {
+    const diagnosticsRoot = resolve(repoRoot, "tmp/link-diagnostics");
+    if (!opts.linkDiagnostics.startsWith(diagnosticsRoot + sep)) {
+      console.error("--link-diagnostics must name a file under tmp/link-diagnostics");
+      process.exit(2);
+    }
+  }
+  if (opts.testInstrumentation) {
+    const productionDist = resolve(repoRoot, "dist");
+    if (opts.outDir === productionDist || opts.outDir.startsWith(productionDist + sep)) {
+      console.error("--test-instrumentation output must be outside the production dist tree");
+      process.exit(2);
+    }
+  }
   return opts;
 }
 
-function prepareVariant(variant) {
+function prepareVariant(variant, buildRoot) {
   const variantFile = join(repoRoot, "variants", `${variant}.json`);
   if (!existsSync(variantFile)) {
     throw new Error(`variant config not found: variants/${variant}.json`);
@@ -360,24 +477,46 @@ function writeOpaqueBuildInfo(outDir, buildInfo) {
 
 const startedAt = Date.now();
 const opts = parseArgs(process.argv.slice(2));
-const variantState = prepareVariant(opts.variant);
+// Instrumented Leptonica is compiled with a different allocator ABI. Keep its
+// object files and install tree physically separate from production so neither
+// flavor can silently reuse the other's static libraries.
+const buildRoot = opts.testInstrumentation
+  ? resolve(repoRoot, "tmp/build-instrumented")
+  : resolve(repoRoot, "tmp/build");
+const variantState = prepareVariant(opts.variant, buildRoot);
 try {
   const buildInfo = opaqueBuildInfo(variantState.productLock);
   // A normal developer build must not inherit provenance from an earlier
   // opaque target that happened to use the same output directory.
   if (buildInfo === null) rmSync(join(opts.outDir, "build-info.json"), { force: true });
   const fetchStartedAt = Date.now();
-  for (const dep of depConfigs) {
-    ensureSource(dep.name, versions[dep.name]);
+  const dependencySources = new Map();
+  const dependencyNames = ["zlib", "libpng", "libjpeg-turbo", "leptonica"];
+  for (const name of dependencyNames) {
+    dependencySources.set(name, ensureSource(name, versions[name]));
   }
   const fetchMs = Date.now() - fetchStartedAt;
-  for (const dep of depConfigs) {
-    buildDep(dep, opts.jobs, versions[dep.name]);
-  }
+  const sourceSetSha256 = dependencySourceSetSha256(dependencyNames, dependencySources);
+  const identityDepConfigs = createDepConfigs("<INSTALL_ROOT>", opts.testInstrumentation);
+  const dependencyBuildIdentity = dependencyBuildIdentitySha256(
+    createDependencyBuildInput(identityDepConfigs, dependencySources),
+  );
+  const dependencyBuildRoot = join(buildRoot, "deps", sourceSetSha256, dependencyBuildIdentity);
+  const installRoot = join(dependencyBuildRoot, "install");
+  const depConfigs = createDepConfigs(installRoot, opts.testInstrumentation);
+  const dependencyBuild = buildDependencies(
+    depConfigs,
+    dependencySources,
+    opts.jobs,
+    dependencyBuildRoot,
+    installRoot,
+    dependencyBuildIdentity,
+  );
+  const leptonicaSourceDir = dependencySources.get("leptonica").sourceDir;
   let exportsPath = null;
   let exportedFunctions = null;
   if (opts.fullAbi) {
-    exportsPath = writeFullAbiExports(opts.outDir);
+    exportsPath = writeFullAbiExports(opts.outDir, buildRoot, installRoot, leptonicaSourceDir);
     exportedFunctions = readFileSync(exportsPath, "utf8").split("\n").filter((line) => line.length > 0).length;
   }
   const linkStartedAt = Date.now();
@@ -388,9 +527,13 @@ try {
     fullAbi: opts.fullAbi,
     optLevel: opts.optLevel,
     productLock: variantState.productLock,
+    testInstrumentation: opts.testInstrumentation,
+    installRoot,
+    leptonicaSourceDir,
+    linkDiagnostics: opts.linkDiagnostics,
   });
   const report = {
-    mode: opts.fullAbi ? "full-abi" : "default",
+    mode: opts.fullAbi ? "full-abi" : opts.testInstrumentation ? "test-instrumentation" : "default",
     // Provenance fields (M1 review, build-eng N4): the report must identify
     // which inputs produced it — trend comparisons and the M6 manifest need
     // pin + sdk + optimization level attached to every measurement. Private
@@ -398,6 +541,8 @@ try {
     provenance: {
       sdkVersion: versions.emsdk?.sdkVersion ?? null,
       dependencyPins: Object.fromEntries(depConfigs.map((dep) => [dep.name, versions[dep.name].commit])),
+      dependencySources: Object.fromEntries(depConfigs.map((dep) => [dep.name, sourceProvenance(dependencySources.get(dep.name))])),
+      dependencyBuild,
       optimizationLevel: opts.fullAbi ? "-O2" : `-${opts.optLevel}`,
     },
     wasmBytes: sizes.wasmBytes,

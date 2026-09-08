@@ -20,6 +20,7 @@ import type { SessionOptions } from "./session.ts";
 
 export { WorkerSession, RemotePix } from "./session.ts";
 export type { SessionOptions } from "./session.ts";
+export type { PackedMask } from "../core/types.ts";
 
 /**
  * Locate the worker entry from this file's own location. Two layouts
@@ -67,12 +68,20 @@ export async function createSession(opts: SessionOptions = {}): Promise<WorkerSe
     // the process without this.
     () => void worker.terminate(),
   );
-  worker.once("exit", () => session.markTerminated());
-  worker.once("error", () => session.markTerminated());
+  worker.once("exit", (code) => session.markTerminated(new Error(`worker exited with code ${code}`)));
+  worker.once("error", (error) => {
+    session.markTerminated(error instanceof Error ? error : new Error(String(error)));
+  });
+  worker.once("messageerror", (error) => {
+    session.markTerminated(error instanceof Error ? error : new Error(String(error)));
+  });
   try {
     await session.init(opts.wasmPath);
   } catch (err) {
-    await worker.terminate();
+    // Keep initialization failure cleanup on WorkerSession's single,
+    // idempotent teardown path. Fatal init responses may already have
+    // retired the session before this catch runs.
+    session.terminate();
     throw err;
   }
   return session;

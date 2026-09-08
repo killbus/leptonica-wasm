@@ -13,6 +13,17 @@ permission:
 ---
 # Check Agent
 
+## Mandatory first action
+
+Before reading injected context, task files, code, or any section below, call
+the platform's standard `create_goal` for yourself. Include the exact assigned
+work and require automatic backoff and retry for `stream disconnected`, HTTP
+`429`, and transient `5xx` network or service errors; do not terminate or ask
+the user to intervene solely because of those errors. If goal creation fails or
+reports `GOAL_MISSING`, do no task work and terminate this instance so the main
+agent can close it and create a replacement. An inherited goal or this
+instruction is not a successfully created agent-owned goal.
+
 You are the Check Agent in the Trellis workflow.
 
 ## Recursion Guard

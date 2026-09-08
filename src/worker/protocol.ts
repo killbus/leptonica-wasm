@@ -17,7 +17,7 @@ export type WorkerRequest =
   | { readonly id: number; readonly type: "init"; readonly wasmPath?: string }
   | { readonly id: number; readonly type: "load"; readonly buffer: ArrayBuffer; readonly w: number; readonly h: number }
   | { readonly id: number; readonly type: "run"; readonly source: HandleId; readonly ops: readonly Op[] }
-  | { readonly id: number; readonly type: "extract"; readonly handle: HandleId; readonly format: "rgba" | "png" | "jpeg"; readonly quality?: number }
+  | { readonly id: number; readonly type: "extract"; readonly handle: HandleId; readonly format: "rgba" | "png" | "jpeg" | "mask"; readonly quality?: number }
   | { readonly id: number; readonly type: "query"; readonly handle: HandleId; readonly query: Query }
   | { readonly id: number; readonly type: "close" };
 
@@ -39,4 +39,5 @@ export type WorkerResponse =
         | { readonly kind: "average"; readonly value: number };
     }
   | { readonly id: number; readonly ok: true; readonly type: "close" }
-  | { readonly id: number; readonly ok: false; readonly error: string };
+  | { readonly id: number; readonly ok: false; readonly fatal?: false; readonly error: string }
+  | { readonly id: number; readonly ok: false; readonly fatal: true; readonly error: string };

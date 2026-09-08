@@ -97,6 +97,7 @@ writeFileSync(
         // protocol, the worker-side arena, and the Node adapter all ship.
         join(repoRoot, "src", "worker", "index.ts"),
         join(repoRoot, "src", "worker", "node.ts"),
+        join(repoRoot, "src", "worker", "arena.ts"),
         join(repoRoot, "src", "worker", "worker.ts"),
       ],
     },
@@ -134,6 +135,7 @@ const dtsFiles = [
   "worker/index.d.ts",
   "worker/session.d.ts",
   "worker/protocol.d.ts",
+  "worker/arena.d.ts",
   "worker/worker.d.ts",
   "worker/node.d.ts",
 ];

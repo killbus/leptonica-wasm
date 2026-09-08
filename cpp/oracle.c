@@ -17,6 +17,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
+#include <math.h>
 #include "allheaders.h"
 
 /* ------------------------------------------------------------------ */
@@ -188,6 +190,56 @@ static PIX *opSauvola(PIX *src, int whsize, float factor) {
     return pixd;
 }
 
+static PIX *opCleanBackgroundToWhite(PIX *src, float gamma, int blackval, int whiteval) {
+    if (!src || pixGetColormap(src)) return NULL;
+    int depth = pixGetDepth(src);
+    if ((depth != 8 && depth != 32) || !isfinite(gamma) || gamma <= 0.0f ||
+        blackval >= whiteval || whiteval > 200) return NULL;
+    return pixCleanBackgroundToWhite(src, NULL, NULL, gamma, blackval, whiteval);
+}
+
+static PIX *opSauvolaTiled(PIX *src, int whsize, float factor, int nx, int ny) {
+    if (!src || pixGetDepth(src) != 8 || pixGetColormap(src) || whsize < 2 ||
+        !isfinite(factor) || factor < 0.0f || nx < 1 || ny < 1) return NULL;
+    int w = 0, h = 0;
+    pixGetDimensions(src, &w, &h, NULL);
+    int minDimension = L_MIN(w, h);
+    if (minDimension < 7 || whsize > (minDimension - 3) / 2) return NULL;
+    int minTileDimension = whsize + 2;
+    if (w / nx < minTileDimension || h / ny < minTileDimension) return NULL;
+    PIX *pixd = NULL;
+    if (pixSauvolaBinarizeTiled(src, whsize, factor, nx, ny, NULL, &pixd) != 0) {
+        pixDestroy(&pixd);
+        return NULL;
+    }
+    return pixd;
+}
+
+static PIX *opSelectByArea(PIX *src, float thresholdArea, int connectivity, const char *relation) {
+    if (!src || pixGetDepth(src) != 1 || !isfinite(thresholdArea) || thresholdArea < 0 ||
+        (connectivity != 4 && connectivity != 8)) return NULL;
+    int type = 0;
+    if (!strcmp(relation, "lt")) type = L_SELECT_IF_LT;
+    else if (!strcmp(relation, "gt")) type = L_SELECT_IF_GT;
+    else if (!strcmp(relation, "lte")) type = L_SELECT_IF_LTE;
+    else if (!strcmp(relation, "gte")) type = L_SELECT_IF_GTE;
+    else return NULL;
+    l_int32 changed = 0;
+    return pixSelectByArea(src, thresholdArea, connectivity, type, &changed);
+}
+
+static PIX *opMaskOverColorPixels(PIX *src, int thresholdDiff, int minDistance) {
+    if (!src || pixGetDepth(src) != 32 || pixGetColormap(src) ||
+        thresholdDiff < 0 || thresholdDiff > 255 || minDistance < 1) return NULL;
+    l_int32 w, h;
+    pixGetDimensions(src, &w, &h, NULL);
+    l_int32 minDimension = L_MIN(w, h);
+    l_int32 maxFittingDistance = minDimension / 2 + minDimension % 2;
+    if (minDistance > maxFittingDistance)
+        return pixCreate(w, h, 1);
+    return pixMaskOverColorPixels(src, thresholdDiff, minDistance);
+}
+
 static PIX *opDeskew(PIX *src, int reduction) { return pixDeskew(src, reduction); }
 
 static PIX *opRotate(PIX *src, float angle, int qualityShear) {
@@ -267,15 +319,18 @@ static PIX *opSobel(PIX *src, int orient) {
  * sobel.orientation, rotate.quality) and an array (toGray.weights) that
  * positional numeric parsing cannot represent. */
 static void applyOp(Chain *ch, Json *j) {
-    char kind[16] = {0};
+    char kind[32] = {0};
     /* Named numeric slots — one per protocol key that carries a number.
      * Reading by key name (not position) is what makes field order in
      * chain.json irrelevant. */
     double vLevel = 0, vTile = 0, vFactor = 0, vWhsize = 0, vReduction = 0;
     double vAngle = 0, vFx = 0, vFy = 0, vX = 0, vY = 0, vW = 0, vH = 0;
     double vDx = 0, vDy = 0, vFrac = 0, vT = 0, vVal = 0;
+    double vGamma = 0, vBlack = 0, vWhite = 0, vNx = 0, vNy = 0;
+    double vThresholdArea = 0, vConnectivity = 0, vThresholdDiff = 0, vMinDistance = 0;
     int hasFy = 0, hasTile = 0, hasFactor = 0, hasReduction = 0;
     char sDirection[16] = "h", sOrientation[16] = "all", sQuality[16] = "area";
+    char sRelation[16] = {0};
     double weights[3] = {0, 0, 0};
     int hasWeights = 0;
     /* Track which optional fields were explicitly given so defaults can
@@ -294,6 +349,8 @@ static void applyOp(Chain *ch, Json *j) {
             jstr(j, sOrientation, sizeof sOrientation);
         } else if (!strcmp(key, "quality")) {
             jstr(j, sQuality, sizeof sQuality);
+        } else if (!strcmp(key, "relation")) {
+            jstr(j, sRelation, sizeof sRelation);
         } else if (!strcmp(key, "weights")) {
             /* toGray custom weights: [r, g, b] */
             jexpect(j, '[');
@@ -316,6 +373,24 @@ static void applyOp(Chain *ch, Json *j) {
             vFactor = jnum(j); hasFactor = 1;
         } else if (!strcmp(key, "whsize")) {
             vWhsize = jnum(j);
+        } else if (!strcmp(key, "gamma")) {
+            vGamma = jnum(j);
+        } else if (!strcmp(key, "black")) {
+            vBlack = jnum(j);
+        } else if (!strcmp(key, "white")) {
+            vWhite = jnum(j);
+        } else if (!strcmp(key, "nx")) {
+            vNx = jnum(j);
+        } else if (!strcmp(key, "ny")) {
+            vNy = jnum(j);
+        } else if (!strcmp(key, "thresholdArea")) {
+            vThresholdArea = jnum(j);
+        } else if (!strcmp(key, "connectivity")) {
+            vConnectivity = jnum(j);
+        } else if (!strcmp(key, "thresholdDiff")) {
+            vThresholdDiff = jnum(j);
+        } else if (!strcmp(key, "minDistance")) {
+            vMinDistance = jnum(j);
         } else if (!strcmp(key, "reduction")) {
             vReduction = jnum(j); hasReduction = 1;
         } else if (!strcmp(key, "angle")) {
@@ -364,6 +439,10 @@ static void applyOp(Chain *ch, Json *j) {
     if (!strcmp(kind, "threshold")) out = opThreshold(ch->pix, (int)vLevel);
     else if (!strcmp(kind, "otsu")) out = opOtsu(ch->pix, (int)(hasTile ? vTile : 16), (float)(hasFactor ? vFactor : 0.1));
     else if (!strcmp(kind, "sauvola")) out = opSauvola(ch->pix, (int)vWhsize, (float)(hasFactor ? vFactor : 0.34));
+    else if (!strcmp(kind, "cleanBackgroundToWhite")) out = opCleanBackgroundToWhite(ch->pix, (float)vGamma, (int)vBlack, (int)vWhite);
+    else if (!strcmp(kind, "sauvolaTiled")) out = opSauvolaTiled(ch->pix, (int)vWhsize, (float)vFactor, (int)vNx, (int)vNy);
+    else if (!strcmp(kind, "selectByArea")) out = opSelectByArea(ch->pix, (float)vThresholdArea, (int)vConnectivity, sRelation);
+    else if (!strcmp(kind, "maskOverColorPixels")) out = opMaskOverColorPixels(ch->pix, (int)vThresholdDiff, (int)vMinDistance);
     else if (!strcmp(kind, "deskew")) out = opDeskew(ch->pix, (int)(hasReduction ? vReduction : 2));
     else if (!strcmp(kind, "rotate")) {
         if (strcmp(sQuality, "area") && strcmp(sQuality, "shear")) { fprintf(stderr, "oracle: bad rotate quality '%s'\n", sQuality); exit(2); }

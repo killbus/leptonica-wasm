@@ -517,5 +517,165 @@
         "query": "average"
       }
     ]
+  },
+  {
+    "name": "clean-background-to-white",
+    "width": 64,
+    "height": 64,
+    "input": "background",
+    "ops": [
+      {
+        "op": "cleanBackgroundToWhite",
+        "gamma": 1,
+        "black": 70,
+        "white": 190
+      }
+    ],
+    "queries": []
+  },
+  {
+    "name": "sauvola-tiled-four-zones",
+    "width": 96,
+    "height": 96,
+    "input": "sauvolaTiles",
+    "ops": [
+      {
+        "op": "toGray"
+      },
+      {
+        "op": "sauvolaTiled",
+        "whsize": 8,
+        "factor": 1.5,
+        "nx": 2,
+        "ny": 2
+      }
+    ],
+    "queries": [
+      {
+        "query": "countPixels"
+      }
+    ]
+  },
+  {
+    "name": "select-area-lt",
+    "width": 12,
+    "height": 5,
+    "input": "area",
+    "expectedPixelCount": 3,
+    "ops": [
+      { "op": "toGray" },
+      { "op": "threshold", "level": 128 },
+      { "op": "selectByArea", "thresholdArea": 4, "connectivity": 4, "relation": "lt" }
+    ],
+    "queries": [{ "query": "countPixels" }]
+  },
+  {
+    "name": "select-area-lte",
+    "width": 12,
+    "height": 5,
+    "input": "area",
+    "expectedPixelCount": 7,
+    "ops": [
+      { "op": "toGray" },
+      { "op": "threshold", "level": 128 },
+      { "op": "selectByArea", "thresholdArea": 4, "connectivity": 4, "relation": "lte" }
+    ],
+    "queries": [{ "query": "countPixels" }]
+  },
+  {
+    "name": "select-area-gt",
+    "width": 12,
+    "height": 5,
+    "input": "area",
+    "expectedPixelCount": 0,
+    "ops": [
+      { "op": "toGray" },
+      { "op": "threshold", "level": 128 },
+      { "op": "selectByArea", "thresholdArea": 4, "connectivity": 4, "relation": "gt" }
+    ],
+    "queries": [{ "query": "countPixels" }]
+  },
+  {
+    "name": "select-area-gte",
+    "width": 12,
+    "height": 5,
+    "input": "area",
+    "expectedPixelCount": 4,
+    "ops": [
+      { "op": "toGray" },
+      { "op": "threshold", "level": 128 },
+      { "op": "selectByArea", "thresholdArea": 4, "connectivity": 4, "relation": "gte" }
+    ],
+    "queries": [{ "query": "countPixels" }]
+  },
+  {
+    "name": "select-area-connectivity-4",
+    "width": 4,
+    "height": 4,
+    "input": "connectivity",
+    "expectedPixelCount": 0,
+    "ops": [
+      { "op": "toGray" },
+      { "op": "threshold", "level": 128 },
+      { "op": "selectByArea", "thresholdArea": 1, "connectivity": 4, "relation": "gt" }
+    ],
+    "queries": [{ "query": "countPixels" }]
+  },
+  {
+    "name": "select-area-connectivity-8",
+    "width": 4,
+    "height": 4,
+    "input": "connectivity",
+    "expectedPixelCount": 2,
+    "ops": [
+      { "op": "toGray" },
+      { "op": "threshold", "level": 128 },
+      { "op": "selectByArea", "thresholdArea": 1, "connectivity": 8, "relation": "gt" }
+    ],
+    "queries": [{ "query": "countPixels" }]
+  },
+  {
+    "name": "color-mask-threshold-boundary",
+    "width": 3,
+    "height": 1,
+    "input": "colorThreshold",
+    "expectedPixelCount": 2,
+    "ops": [
+      { "op": "maskOverColorPixels", "thresholdDiff": 10, "minDistance": 1 }
+    ],
+    "queries": [{ "query": "countPixels" }]
+  },
+  {
+    "name": "color-mask-zero-threshold",
+    "width": 3,
+    "height": 1,
+    "input": "colorThreshold",
+    "expectedPixelCount": 3,
+    "ops": [
+      { "op": "maskOverColorPixels", "thresholdDiff": 0, "minDistance": 1 }
+    ],
+    "queries": [{ "query": "countPixels" }]
+  },
+  {
+    "name": "color-mask-distance-two-erodes-five-by-five-to-three-by-three",
+    "width": 9,
+    "height": 9,
+    "input": "colorErosion",
+    "expectedPixelCount": 9,
+    "ops": [
+      { "op": "maskOverColorPixels", "thresholdDiff": 10, "minDistance": 2 }
+    ],
+    "queries": [{ "query": "countPixels" }]
+  },
+  {
+    "name": "color-mask-over-image-distance-is-empty",
+    "width": 9,
+    "height": 9,
+    "input": "colorErosion",
+    "expectedPixelCount": 0,
+    "ops": [
+      { "op": "maskOverColorPixels", "thresholdDiff": 10, "minDistance": 2147483647 }
+    ],
+    "queries": [{ "query": "countPixels" }]
   }
 ]

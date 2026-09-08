@@ -340,7 +340,13 @@ def test_source_workflow_matches_dispatch_contract() -> None:
         "&& vars.LEPTONICA_BUILDER_REPOSITORY != ''"
         in dispatch
     )
-    assert "needs: [release-set, compare]" in dispatch
+    for required_job in (
+        "release-set",
+        "compare",
+        "browser-e2e",
+        "instrumented-resource-failures",
+    ):
+        assert f"      - {required_job}\n" in dispatch
     assert (
         "BUILDER_REPOSITORY: ${{ vars.LEPTONICA_BUILDER_REPOSITORY }}"
         in dispatch

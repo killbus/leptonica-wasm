@@ -39,6 +39,14 @@ The development machine may contain temporary local credential files. They are e
 - Installed fallback tools are `rg` with PCRE2 support and `ast-grep`; they are fallback paths, not the default.
 - The host selects chatroom and review perspectives directly; user confirmation is not required for each persona (user direction, 2026-09-03).
 
+## Agent dispatch protocol
+
+- Every dispatched agent must call the platform's standard `create_goal` mechanism as its first action, before reading task files, analysing code, editing, or reporting findings. Its goal must contain the exact assignment and require automatic backoff and retry for `stream disconnected`, HTTP `429`, and transient `5xx` network or service errors, without terminating or asking the user to intervene solely for those errors.
+- When the parent thread has an active goal, use a non-forked dispatch unless the platform proves goal state is isolated. Pass the required task context explicitly; an inherited parent goal is not the dispatched agent's own goal.
+- A dispatch prompt is only an instruction to initialize; it is not a substitute for the agent-owned goal. Until successful goal creation is confirmed, the instance is not started. On creation failure or `GOAL_MISSING`, stop and close it, do not wait for, resume, or send task input to it, and create a replacement.
+- After goal activation, preserve the same agent across retryable transport or service failures. Resume it with backoff and actively supervise it through an early status check, planned progress checkpoints, recovery interactions when needed, and a verified terminal event. A timeout or disconnected stream is not completion.
+- If a requested model route is unavailable or the effective routed model does not match a user requirement, do not dispatch under a substitute identity. Continue in the main agent or wait for the required route.
+
 ## Build and CI execution discipline
 
 - **No heavy local work.** Do not install or run emsdk, compiler suites, or compilation on the development machine. Heavy work belongs in GitHub CI. Local work is limited to editing, header or text parsing, and lightweight `pnpm test` or type-check validation unless the user explicitly approves a local build.

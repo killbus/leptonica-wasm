@@ -11,12 +11,40 @@ Modern ESM/WASM build of [Leptonica](https://github.com/DanBloomberg/leptonica)
   curated layer doesn't cover. Documented danger: no semver, no
   ownership, no validation.
 
-The wasm binary is fetched relative to the module — bundlers (vite,
-webpack 5, esbuild) rewrite the worker entry and its wasm dependency
-automatically (verified by the repo's bundler matrix).
+The wasm binary is resolved relative to its runtime module. Browser builds
+must emit the worker entry as a separate bundle and copy the curated wasm next
+to that worker. Full-ABI consumers must likewise copy the full-ABI wasm next
+to their full-ABI entry. The independent-consumer gate verifies these URLs and
+sidecar locations instead of assuming that a bundler rewrites them.
 The package ships the raw escape hatch (dist/full-abi/) alongside
 the curated build — every C symbol, loose types, zero ownership
 semantics. Prefer the curated layer unless you need it.
+
+## Installation and reproducibility
+
+The supported compiler-free route is the package tarball attached to a GitHub
+Release. It is built in CI from the pinned toolchain and can be installed
+directly from the release asset URL:
+
+```sh
+pnpm add https://github.com/<owner>/<repo>/releases/download/<tag>/leptonica-wasm-<version>.tgz
+```
+
+The release consumer gate installs that tarball with dependency scripts
+disabled, checks its manifest and source provenance, compiles every public
+entry used by Node and browser consumers, bundles the browser entries, and
+runs the Node worker path.
+
+A fixed 40-character Git commit is a separate build-from-source route:
+
+```sh
+pnpm add github:<owner>/<repo>#<40-character-commit>
+```
+
+That route requires the repository's pinned Emscripten toolchain and explicit
+approval of the exact Git dependency's build script. It is reproducibility
+gated in CI, but it is not compiler-free. Mutable branches and tags, including
+`main`, are not accepted by the fixed-commit consumer gate.
 
 ## Quick start — worker session (recommended)
 
@@ -44,6 +72,10 @@ swaps in a worker_threads adapter; no code changes.
 Long-running op holding close() hostage? session.terminate() kills
 the worker outright — the whole wasm heap dies with it, every pending
 request rejects.
+
+A fatal WebAssembly trap is session-wide: every pending request rejects, all
+RemotePix proxies are poisoned, and the client adapter terminates the Worker.
+It is never surfaced as an ordinary recoverable operation error.
 
 ## Quick start — synchronous core
 
@@ -85,11 +117,12 @@ You own every pointer; nothing is validated; upgrades can move symbols.
 | API | Description |
 | --- | --- |
 | createSession(opts?) | Spawn worker + init wasm. opts.wasmPath overrides the binary location (CDN / self-host). |
-| session.load(data, w, h) | Transfer RGBA in → 32bpp RemotePix. Buffer is transferred, not copied. |
+| session.load(data, w, h) | RGBA → 32bpp RemotePix. Full ArrayBuffer views transfer directly; partial/shared views are copied exactly first. |
 | session.run(pix, ops) | Run a chain (one round trip) → new RemotePix. |
 | session.close() | Release every live Pix, poison session, tear down worker. Idempotent. |
 | session.terminate() | Kill the worker outright (nuclear option). In-flight rejects. |
 | pix.toPNG() / toJPEG(q) / toRGBA() | Encode/extract — bytes transfer back to this thread. |
+| pix.toMask() | Extract a 1bpp Pix as compact, row-major, MSB-first bytes plus dimensions and stride. |
 | pix.findSkew() / countPixels() / connComp() / histogram() / average() | Queries on the live handle. |
 
 ## API — chain ops (worker run and sync chain share the same set)
@@ -100,7 +133,11 @@ You own every pointer; nothing is validated; upgrades can move symbols.
 | threshold(level) | 8→1 | Fixed-level threshold. |
 | otsu({tile?, factor?}) | 8→1 | Otsu adaptive threshold. |
 | sauvola(whsize, factor?) | 8→1 | Sauvola adaptive threshold (tiled). |
-| deskew(reduction?) | 1→1 | Rotate to deskew (estimate via findSkew). |
+| cleanBackgroundToWhite(gamma, black, white) | 8/32→same | Normalize uneven background; all policy values are explicit. |
+| sauvolaTiled(whsize, factor, nx, ny) | 8→1 | Native tiled Sauvola with an explicit grid. |
+| selectByArea(area, connectivity, relation) | 1→1 | Keep components by `lt`/`gt`/`lte`/`gte` comparison against Leptonica's float32 area threshold. |
+| maskOverColorPixels(thresholdDiff, minDistance) | 32→1 | Select pixels by RGB spread, with optional native erosion; over-image distances produce an empty mask without allocating a giant SEL. |
+| deskew(reduction?) | any→same | Rotate to deskew (estimate via findSkew). |
 | rotate(angle, quality?) | any | radians; area (smooth) or shear (fast). |
 | scale(fx, fy?) | any | Scale by factors. |
 | shear(dir, angle) | any | Shear horizontally or vertically. |
@@ -113,7 +150,12 @@ You own every pointer; nothing is validated; upgrades can move symbols.
 | sobel(orientation?) | 8→8 | Edge detection. |
 
 Depth is validated at record time — an invalid chain throws before any
-wasm work happens.
+wasm work happens. The new document-imaging primitives preserve Leptonica's
+native domains rather than embedding a product profile: gamma must be positive,
+Sauvola factor non-negative, area relation explicit, and color-mask distance is
+a positive int32. Over-image erosion distances short-circuit to the equivalent
+empty mask instead of allocating a giant SEL. Image/tile geometry that
+Leptonica would silently rewrite is rejected.
 
 ## API — synchronous core (leptonica-wasm)
 
@@ -124,7 +166,7 @@ wasm work happens.
 | lp.chain(src) | ChainBuilder — record ops, run() executes. |
 | lp.assertOwns(pix) | Cross-instance guard. |
 | pix.width/height/depth | Live reads. |
-| pix.toPNG() / toJPEG(q) / toRGBA() | Encode/extract. |
+| pix.toPNG() / toJPEG(q) / toRGBA() / toMask() | Encode/extract; returned bytes are JS-owned copies. |
 | pix[Symbol.dispose]() | Release the handle, poison the wrapper. |
 
 ## Provenance & reproducibility

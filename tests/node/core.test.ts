@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { generateRgba, generateSlantRgba } from "../../scripts/generate-rgba.mjs"
+import { generateNamedRgba, generateRgba, generateSlantRgba } from "../../scripts/generate-rgba.mjs"
 import { load } from "../../src/core/load.ts"
 import { Leptonica, Pix } from "../../src/core/types.ts"
 import { runChain } from "../../src/core/chain.ts"
@@ -33,7 +33,7 @@ const canRun = goldensPresent && distPresent
 // native-oracle job; a dev machine can hold a stale goldens artifact
 // that predates them. Restrict parity to the chains whose goldens
 // actually exist (CI's guard step pins the full set).
-const allChains: { name: string; width: number; height: number; input?: string; ops: Op[]; queries: Query[] }[] = JSON.parse(
+const allChains: { name: string; width: number; height: number; input?: string; expectedPixelCount?: number; ops: Op[]; queries: Query[] }[] = JSON.parse(
   readFileSync(join("tests/golden/chains.json"), "utf8"),
 )
 const parityChains = allChains.filter(
@@ -142,6 +142,59 @@ describe.skipIf(!distPresent)("core invariants", () => {
     expect(() => lp.chain(pix)).toThrow(ReferenceError)
     // Double dispose is a no-op, not a throw.
     pix.dispose()
+  })
+
+  it.each([
+    { width: 1, full: [0x80], alternating: [0x80] },
+    { width: 7, full: [0xfe], alternating: [0xaa] },
+    { width: 8, full: [0xff], alternating: [0xaa] },
+    { width: 9, full: [0xff, 0x80], alternating: [0xaa, 0x80] },
+    { width: 31, full: [0xff, 0xff, 0xff, 0xfe], alternating: [0xaa, 0xaa, 0xaa, 0xaa] },
+    { width: 32, full: [0xff, 0xff, 0xff, 0xff], alternating: [0xaa, 0xaa, 0xaa, 0xaa] },
+    { width: 33, full: [0xff, 0xff, 0xff, 0xff, 0x80], alternating: [0xaa, 0xaa, 0xaa, 0xaa, 0x80] },
+  ])("toMask packs width $width row-major, MSB-first, with zero padding", async ({ width, full, alternating }) => {
+    const lp = await loadInstance()
+    const height = 3
+    const rgba = new Uint8Array(width * height * 4)
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const foreground = y === 0 || (y === 1 && x % 2 === 0)
+        const i = (y * width + x) * 4
+        const value = foreground ? 0 : 255
+        rgba[i] = value
+        rgba[i + 1] = value
+        rgba[i + 2] = value
+        rgba[i + 3] = 255
+      }
+    }
+    using src = lp.fromRGBA(rgba, width, height)
+    const pix = lp.chain(src).toGray().threshold(128).run()
+    const mask = pix.toMask()
+    expect(mask).toMatchObject({
+      width,
+      height,
+      strideBytes: Math.ceil(width / 8),
+      bitOrder: "msb-first",
+      foregroundBit: 1,
+    })
+    expect([...mask.data]).toEqual([...full, ...alternating, ...new Array(full.length).fill(0)])
+
+    // Extraction must return a JS-owned copy, not a view into PIX or the
+    // current WASM heap. Disposing the source and forcing heap growth must
+    // leave the previously returned bytes intact.
+    const snapshot = [...mask.data]
+    pix.dispose()
+    const growth = new Uint8Array(4 * 1024 * 1024)
+    growth.fill(255)
+    using large = lp.fromRGBA(growth, 1024, 1024)
+    expect([...mask.data]).toEqual(snapshot)
+    expect(() => pix.toMask()).toThrow(ReferenceError)
+  })
+
+  it("toMask rejects non-1bpp Pix", async () => {
+    const lp = await loadInstance()
+    using src = lp.fromRGBA(generateRgba(8, 8), 8, 8)
+    expect(() => src.toMask()).toThrow(TypeError)
   })
 
   it("FinalizationRegistry callback does not throw when a live Pix is GC'd in dev mode (M4 review N3)", async () => {
@@ -315,8 +368,7 @@ describe.skipIf(!canRun)("core parity (golden replay through the core API)", () 
   // remaining chains — a red run reports every failing chain at once.
   it.each(chains)("$name", async (chain) => {
     const lp = await loadInstance()
-    const gen = chain.input === "slant" ? generateSlantRgba : generateRgba
-    const src = lp.fromRGBA(gen(chain.width, chain.height), chain.width, chain.height)
+    const src = lp.fromRGBA(generateNamedRgba(chain.input, chain.width, chain.height), chain.width, chain.height)
     using _src = src
     const builder = lp.chain(src)
     // Record every op through the builder's fluent API.
@@ -373,6 +425,10 @@ describe.skipIf(!canRun)("core parity (golden replay through the core API)", () 
         expect(Math.abs(out.average() - goldenJson.average)).toBeLessThanOrEqual(1e-3)
       }
     }
+    if (chain.expectedPixelCount !== undefined) {
+      expect(goldenJson.pixelCount, `native fixture semantics for '${chain.name}'`).toBe(chain.expectedPixelCount)
+      expect(out.countPixels(), `core fixture semantics for '${chain.name}'`).toBe(chain.expectedPixelCount)
+    }
   })
 })
 
@@ -383,6 +439,10 @@ function recordOp(builder: ReturnType<Leptonica["chain"]>, op: Op): void {
     case "threshold": builder.threshold(op.level); break
     case "otsu": builder.otsu(op.tile !== undefined || op.factor !== undefined ? { ...(op.tile !== undefined ? { tile: op.tile } : {}), ...(op.factor !== undefined ? { factor: op.factor } : {}) } : {}); break
     case "sauvola": builder.sauvola(op.whsize, op.factor); break
+    case "cleanBackgroundToWhite": builder.cleanBackgroundToWhite(op.gamma, op.black, op.white); break
+    case "sauvolaTiled": builder.sauvolaTiled(op.whsize, op.factor, op.nx, op.ny); break
+    case "selectByArea": builder.selectByArea(op.thresholdArea, op.connectivity, op.relation); break
+    case "maskOverColorPixels": builder.maskOverColorPixels(op.thresholdDiff, op.minDistance); break
     case "deskew": builder.deskew((op.reduction ?? 2) as 1 | 2 | 4); break
     case "rotate": builder.rotate(op.angle, op.quality); break
     case "scale": builder.scale(op.fx, op.fy); break

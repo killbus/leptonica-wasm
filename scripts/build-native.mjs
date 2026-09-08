@@ -10,15 +10,40 @@
  * script runs inside a workflow job, never on a dev machine.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  assertEnvironmentVariablesUnset,
+  commandPath,
+  compilerProgramPath,
+  dependencyBuildIdentitySha256,
+  dependencySourceSetSha256,
+  commandVersion,
+  readDependencyBuildCache,
+  withDependencyBuildLock,
+  writeDependencyBuildCache,
+} from "./dependency-cache.mjs";
+import { prepareSourceTreeFromArchive, resolveSourcePatchSet } from "./source-patches.mjs";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const depsRoot = join(repoRoot, "tmp", "deps");
+const downloadsRoot = join(repoRoot, "tmp", "downloads");
 const buildRoot = join(repoRoot, "tmp", "build-native");
-const installRoot = join(buildRoot, "install");
 const versions = JSON.parse(readFileSync(join(repoRoot, "vendor", "versions.json"), "utf8"));
+const nativeCompiler = commandPath("cc", { cwd: repoRoot });
+const nativeCxxCompiler = commandPath("c++", { cwd: repoRoot });
+const nativeCmake = commandPath("cmake", { cwd: repoRoot });
+const nativeNinja = commandPath("ninja", { cwd: repoRoot });
+const nativeArchiver = compilerProgramPath(nativeCompiler, "ar", { cwd: repoRoot });
+const nativeRanlib = compilerProgramPath(nativeCompiler, "ranlib", { cwd: repoRoot });
+const nativeToolchainConfigure = [
+  `-DCMAKE_C_COMPILER:FILEPATH=${nativeCompiler}`,
+  `-DCMAKE_CXX_COMPILER:FILEPATH=${nativeCxxCompiler}`,
+  `-DCMAKE_MAKE_PROGRAM:FILEPATH=${nativeNinja}`,
+  `-DCMAKE_AR:FILEPATH=${nativeArchiver}`,
+  `-DCMAKE_RANLIB:FILEPATH=${nativeRanlib}`,
+];
 
 function run(cmd, args, opts = {}) {
   const result = spawnSync(cmd, args, { stdio: "inherit", cwd: repoRoot, ...opts });
@@ -33,36 +58,33 @@ function ghSlug(repo) {
 }
 
 function ensureSource(name, pin) {
-  const srcDir = join(depsRoot, name);
-  const marker = join(srcDir, ".pin-commit");
-  if (existsSync(marker) && readFileSync(marker, "utf8").trim() === pin.commit && existsSync(join(srcDir, "CMakeLists.txt"))) {
-    return;
-  }
-  // Remove any stale source tree first (same as build.mjs, M1 review
-  // build-eng N1 posture): without this, a pin bump re-extracts the new
-  // archive over an old tree and files removed upstream would linger.
-  rmSync(srcDir, { recursive: true, force: true });
-  mkdirSync(srcDir, { recursive: true });
-  mkdirSync(join(repoRoot, "tmp", "downloads"), { recursive: true });
-  const archive = join(join(repoRoot, "tmp", "downloads"), `${name}-${pin.commit}.tar.gz`);
-  // Download to a .part first, then rename into place (same atomicity as
-  // build.mjs): a truncated archive must not persist under the final name.
-  const partial = `${archive}.part`;
-  run("curl", [
-    "-fsSL",
-    "--retry",
-    "3",
-    "-o",
-    partial,
-    `https://codeload.github.com/${ghSlug(pin.repo)}/tar.gz/${pin.commit}`,
-  ]);
-  if (!existsSync(partial)) throw new Error(`curl did not produce ${partial}`);
-  renameSync(partial, archive);
-  run("tar", ["-xzf", archive, "--strip-components=1", "-C", srcDir]);
-  writeFileSync(marker, pin.commit + "\n");
+  const source = resolveSourcePatchSet(name, pin, repoRoot);
+  const srcDir = join(depsRoot, `${name}-${source.sourceIdentitySha256}`);
+  const archive = join(downloadsRoot, `${name}-${pin.commit}.tar.gz`);
+  prepareSourceTreeFromArchive({
+    source,
+    sourceDir: srcDir,
+    archive,
+    download(candidate) {
+      mkdirSync(downloadsRoot, { recursive: true });
+      run("curl", [
+        "-fsSL",
+        "--retry",
+        "3",
+        "-o",
+        candidate,
+        `https://codeload.github.com/${ghSlug(pin.repo)}/tar.gz/${pin.commit}`,
+      ]);
+    },
+    extract(archiveToExtract, stagingDir) {
+      run("tar", ["-xzf", archiveToExtract, "--strip-components=1", "-C", stagingDir]);
+    },
+  });
+  return Object.freeze({ ...source, sourceDir: srcDir });
 }
 
-const depConfigs = [
+function createDepConfigs(installRoot) {
+  return [
   {
     name: "zlib",
     extra: ["-DZLIB_BUILD_SHARED=OFF", "-DZLIB_BUILD_TESTING=OFF"],
@@ -97,25 +119,105 @@ const depConfigs = [
       `-DJPEG_INCLUDE_DIR=${join(installRoot, "include")}`,
     ],
   },
-];
-
-function buildDep(dep, jobs, pin) {
-  const buildDir = join(buildRoot, dep.name);
-  const doneMarker = join(buildDir, ".done");
-  const doneKey = JSON.stringify([pin.commit, dep.extra]);
-  if (existsSync(doneMarker) && readFileSync(doneMarker, "utf8") === doneKey) return;
-  const srcDir = join(depsRoot, dep.name);
-  mkdirSync(buildDir, { recursive: true });
-  run("cmake", ["-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release", `-DCMAKE_INSTALL_PREFIX=${installRoot}`, ...dep.extra, srcDir], { cwd: buildDir });
-  run("ninja", ["install", ...(jobs > 0 ? [`-j${jobs}`] : [])], { cwd: buildDir });
-  writeFileSync(doneMarker, doneKey);
+  ];
 }
 
-function buildOracle(jobs) {
+function buildDep(dep, jobs, source, dependencyBuildRoot, installRoot) {
+  const buildDir = join(dependencyBuildRoot, dep.name);
+  const srcDir = source.sourceDir;
+  mkdirSync(buildDir, { recursive: true });
+  run(nativeCmake, [
+    "-G",
+    "Ninja",
+    "-DCMAKE_BUILD_TYPE=Release",
+    `-DCMAKE_INSTALL_PREFIX=${installRoot}`,
+    ...nativeToolchainConfigure,
+    ...dep.extra,
+    srcDir,
+  ], { cwd: buildDir });
+  run(nativeNinja, ["install", ...(jobs > 0 ? [`-j${jobs}`] : [])], { cwd: buildDir });
+}
+
+function createDependencyBuildInput(depConfigs, dependencySources) {
+  return {
+    schemaVersion: 1,
+    platform: process.platform,
+    architecture: process.arch,
+    toolchain: {
+      ccPath: nativeCompiler,
+      ccCanonicalPath: realpathSync(nativeCompiler),
+      ccVersion: commandVersion(nativeCompiler),
+      cxxPath: nativeCxxCompiler,
+      cxxCanonicalPath: realpathSync(nativeCxxCompiler),
+      cxxVersion: commandVersion(nativeCxxCompiler),
+      arPath: nativeArchiver,
+      arCanonicalPath: realpathSync(nativeArchiver),
+      arVersion: commandVersion(nativeArchiver),
+      ranlibPath: nativeRanlib,
+      ranlibCanonicalPath: realpathSync(nativeRanlib),
+      ranlibVersion: commandVersion(nativeRanlib),
+      cmakePath: nativeCmake,
+      cmakeVersion: commandVersion(nativeCmake),
+      ninjaPath: nativeNinja,
+      ninjaVersion: commandVersion(nativeNinja),
+    },
+    environment: Object.fromEntries([
+      "CFLAGS",
+      "CXXFLAGS",
+      "CPPFLAGS",
+      "LDFLAGS",
+    ].map((name) => [name, process.env[name] ?? null])),
+    dependencies: depConfigs.map((dep) => ({
+      name: dep.name,
+      sourceIdentitySha256: dependencySources.get(dep.name).sourceIdentitySha256,
+      configure: [...nativeToolchainConfigure, ...dep.extra],
+    })),
+  };
+}
+
+function buildDependencies(depConfigs, dependencySources, jobs, dependencyBuildRoot, installRoot, buildIdentitySha256) {
+  const marker = join(dependencyBuildRoot, ".done.json");
+  const cached = readDependencyBuildCache({
+    marker,
+    installRoot,
+    buildIdentitySha256,
+    label: "native dependency",
+  });
+  if (cached) return cached;
+
+  return withDependencyBuildLock({
+    lock: `${dependencyBuildRoot}.lock`,
+    label: "native dependency",
+  }, () => {
+    const rechecked = readDependencyBuildCache({
+      marker,
+      installRoot,
+      buildIdentitySha256,
+      label: "native dependency",
+    });
+    if (rechecked) return rechecked;
+
+    rmSync(dependencyBuildRoot, { recursive: true, force: true });
+    mkdirSync(dependencyBuildRoot, { recursive: true });
+    for (const dep of depConfigs) {
+      buildDep(dep, jobs, dependencySources.get(dep.name), dependencyBuildRoot, installRoot);
+    }
+    return writeDependencyBuildCache({
+      marker,
+      installRoot,
+      buildIdentitySha256,
+      label: "native dependency",
+    });
+  });
+}
+
+function buildOracle(installRoot) {
+  // Keep the public CI/artifact contract stable even though dependency
+  // installs now live under an identity-addressed cache directory.
   const outDir = join(buildRoot, "oracle");
   mkdirSync(outDir, { recursive: true });
   run(
-    "cc",
+    nativeCompiler,
     [
       "cpp/oracle.c",
       "-o",
@@ -153,12 +255,32 @@ function parseArgs(argv) {
 }
 
 const opts = parseArgs(process.argv.slice(2));
+assertEnvironmentVariablesUnset(
+  process.env,
+  ["CMAKE_TOOLCHAIN_FILE"],
+  "native dependency build",
+);
 
-for (const dep of depConfigs) {
-  ensureSource(dep.name, versions[dep.name]);
+const dependencySources = new Map();
+const dependencyNames = ["zlib", "libpng", "libjpeg-turbo", "leptonica"];
+for (const name of dependencyNames) {
+  dependencySources.set(name, ensureSource(name, versions[name]));
 }
-for (const dep of depConfigs) {
-  buildDep(dep, opts.jobs, versions[dep.name]);
-}
-const oracle = buildOracle(opts.jobs);
+const sourceSetSha256 = dependencySourceSetSha256(dependencyNames, dependencySources);
+const identityDepConfigs = createDepConfigs("<INSTALL_ROOT>");
+const dependencyBuildIdentity = dependencyBuildIdentitySha256(
+  createDependencyBuildInput(identityDepConfigs, dependencySources),
+);
+const dependencyBuildRoot = join(buildRoot, "deps", sourceSetSha256, dependencyBuildIdentity);
+const installRoot = join(dependencyBuildRoot, "install");
+const depConfigs = createDepConfigs(installRoot);
+buildDependencies(
+  depConfigs,
+  dependencySources,
+  opts.jobs,
+  dependencyBuildRoot,
+  installRoot,
+  dependencyBuildIdentity,
+);
+const oracle = buildOracle(installRoot);
 console.log(`native oracle build OK: ${oracle}`);

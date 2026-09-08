@@ -50,7 +50,7 @@ jobs:
             tmp/deps
             tmp/downloads
             tmp/build-native
-          key: native-deps-${{ hashFiles('vendor/versions.json', 'scripts/build-native.mjs') }}
+          key: native-deps-${{ hashFiles('vendor/versions.json', 'vendor/patches/**', 'scripts/source-patches.mjs', 'scripts/dependency-cache.mjs', 'scripts/build-native.mjs') }}
 
       # Host cmake/ninja (ubuntu-24.04 preinstalled) build the four pinned
       # deps natively — no emsdk involved, no toolchain cache to verify.
@@ -88,6 +88,8 @@ jobs:
     # native-oracle job produces this run — never a repo fixture, so the
     # comparison is always anchored to this commit's pinned oracle.
     needs: native-oracle
+    outputs:
+      runtime_builds_ready: ${{ steps.upload_runtime_builds.outcome == 'success' }}
     # Pinned image: ubuntu-latest is a moving target (monthly image rolls,
     # preinstalled toolchain changes unannounced) — M1 review supply N4.
     runs-on: ubuntu-24.04
@@ -136,6 +138,9 @@ jobs:
           out("sdk_version", v.emsdk.sdkVersion);
           out("cmake_tool", v.emsdk.cmakeTool);
           out("ninja_tool", v.emsdk.ninjaTool);
+          out("toolchain_hash", createHash("sha256").update(
+            JSON.stringify(v.emsdk),
+          ).digest("hex").slice(0, 16));
           // actions/cache keys may not contain commas — hash the pin array
           // rather than joining it (run 33844970673: Key Validation Error on
           // the joined form).
@@ -196,13 +201,14 @@ jobs:
           path: |
             tmp/deps
             tmp/build
+            tmp/build-instrumented
             tmp/downloads
-          key: deps-${{ steps.pins.outputs.deps_hash }}-${{ steps.pins.outputs.emsdk_commit }}-${{ hashFiles('scripts/build.mjs') }}
+          key: deps-${{ steps.pins.outputs.deps_hash }}-${{ steps.pins.outputs.toolchain_hash }}-${{ hashFiles('vendor/patches/**', 'scripts/source-patches.mjs', 'scripts/dependency-cache.mjs', 'scripts/build.mjs') }}
 
       - name: Build (default)
         run: |
           . ./tmp/emsdk/emsdk_env.sh
-          node scripts/build.mjs
+          node scripts/build.mjs --link-diagnostics tmp/link-diagnostics/default.tsv
           cp dist/build-report.json tmp/report-default.json
 
       - name: Build (default at -O2, same-opt-level control)
@@ -221,6 +227,17 @@ jobs:
 
       - name: Check exports (default)
         run: node scripts/check-exports.mjs dist
+
+      # Keep archive-extraction evidence available even when the symbol gate
+      # fails. This diagnostic never enters dist/, a package, or a manifest.
+      - name: Upload linker extraction diagnostics
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: linker-extraction-diagnostics
+          path: tmp/link-diagnostics/default.tsv
+          if-no-files-found: warn
+          retention-days: 7
 
       # M4 review W11: the hand-pinned CuratedModule interface vs the live
       # embind module — catches bindings-side renames the d.ts never sees.
@@ -267,6 +284,43 @@ jobs:
           test -f dist/full-abi/leptonica.wasm
           pnpm test
 
+      # Build the isolated target-WASM artifact once, then let independent
+      # runtime gates consume it. Keeping this separate from the allocation
+      # sweep means a leak report cannot prevent the browser fatal-retirement
+      # case from exercising an artifact that built successfully. The sweep
+      # remains mandatory below and still
+      # fails the job when any recoverable path retains native resources.
+      # The separate build/install root is mandatory: instrumented Leptonica
+      # has a different allocator ABI and must never contaminate dist/.
+      - name: Build instrumented target-WASM
+        id: build_instrumented
+        run: |
+          . ./tmp/emsdk/emsdk_env.sh
+          node scripts/build.mjs --test-instrumentation
+          test -f dist-instrumented/leptonica.mjs
+          test -f dist-instrumented/leptonica.wasm
+          test -f dist-instrumented/leptonica.d.ts
+
+      - name: Generate runtime type and worker artifacts
+        run: |
+          node scripts/gen-types.mjs
+          test -f dist/types/worker/index.js
+          test -f dist/types/worker/worker.mjs
+
+      # Freeze the exact production + instrumented artifacts consumed by the
+      # independent browser and OOM jobs below. The job output remains true
+      # even if a later, unrelated ci step fails.
+      - name: Upload runtime build artifacts
+        id: upload_runtime_builds
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: runtime-builds
+          path: |
+            dist
+            dist-instrumented
+          if-no-files-found: error
+          retention-days: 1
+
       # Mutation smoke (M2 review F5): prove the golden suite catches a
       # broken parameter mapping — mutate threshold's level (+1), require
       # the suite to go red, restore, require green. Runs after the main
@@ -285,7 +339,10 @@ jobs:
       # stayed green.
       - name: Consumer fixture
         run: |
-          node scripts/gen-types.mjs
+          . ./tmp/emsdk/emsdk_env.sh
+          emsdk_root="$GITHUB_WORKSPACE/tmp/emsdk/"
+          emcc_path="$(command -v emcc)"
+          test "${emcc_path#"$emsdk_root"}" != "$emcc_path"
           cd tests/consumer
           pnpm install --frozen-lockfile
           pnpm run check
@@ -299,20 +356,6 @@ jobs:
       # the same pnpm 10.34.5 via its packageManager field.
       - name: Bundler matrix
         run: node scripts/check-bundler-matrix.mjs
-
-      # Playwright E2E (M6): the browser worker session must produce
-      # byte-identical PNG output to the Node worker session — the same
-      # session API, same chain, different platform stack. Chromium is
-      # installed per-run (no cache layer for browser binaries — the
-      # download is ~2min and keeps the runner stateless).
-      - name: E2E (browser vs Node, byte-identical)
-        run: |
-          # chromium-headless-shell listed explicitly: 1.63's headless mode
-          # uses the separate headless-shell binary; "chromium" alone did
-          # not pull it in local testing, leaving the suite to fail on a
-          # missing browser.
-          pnpm exec playwright install --with-deps chromium chromium-headless-shell
-          pnpm exec playwright test
 
       - name: Determinism check (same runner)
         # Relink from the same .a files and compare all four artifacts —
@@ -343,14 +386,24 @@ jobs:
           console.log("all four artifacts reproducible (wasm, mjs, d.ts, symbols)");
           NODE
 
-      # dist sha256 manifest (M0 review F7 / M6): generated after all
-      # builds and relinks so it covers the final dist/ tree (default
-      # + full-abi), then uploaded with ci-dist. The compare job below
-      # proves ci-dist and repro-dist byte-identical across runners, so
-      # the manifest that ships with ci-dist is proven to describe the
-      # independently compiled tree too.
-      - name: Generate dist sha256 manifest
-        run: pnpm run hash-manifest
+      # Build the exact release-candidate package through the same prepack
+      # path used by release tags and fixed-commit Git dependencies. This
+      # reruns the cheap link/generation phase against the cached native
+      # libraries, checks all exports, writes source provenance, hashes only
+      # after every generator, and freezes the candidate tarball for Gate A.
+      - name: Pack release candidate
+        env:
+          LEPTONICA_WASM_SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          . ./tmp/emsdk/emsdk_env.sh
+          mkdir -p tmp/release-candidate
+          pnpm pack --pack-destination tmp/release-candidate
+
+      - name: Fresh tarball consumer
+        run: |
+          candidate=$(find tmp/release-candidate -maxdepth 1 -name 'leptonica-wasm-*.tgz' -print -quit)
+          test -n "$candidate"
+          node scripts/run-consumer-gate.mjs --tarball "$candidate" --commit "${{ github.sha }}" --repeat 2
 
       # v7.0.1 (2026-04-10): https://github.com/actions/upload-artifact/releases/tag/v7.0.1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -359,6 +412,157 @@ jobs:
           name: ci-dist
           path: dist
           if-no-files-found: warn
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-candidate
+          path: tmp/release-candidate/leptonica-wasm-*.tgz
+          if-no-files-found: error
+
+  # Runtime evidence jobs consume the same frozen artifact but have separate
+  # runners and timeout budgets. A failure or stall in one cannot mask the
+  # other; neither performs another native/WASM build.
+  browser-e2e:
+    needs: ci
+    # Run when the frozen runtime artifact exists even if a later ci step
+    # fails, but do not defeat an explicit workflow cancellation.
+    if: ${{ !cancelled() && needs.ci.outputs.runtime_builds_ready == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 20
+      - name: Install dependencies
+        run: |
+          corepack enable pnpm
+          pnpm install --frozen-lockfile --ignore-scripts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: runtime-builds
+          path: .
+      - name: Verify runtime build artifact identity
+        run: |
+          node --input-type=commonjs <<'NODE'
+          const fs = require("fs");
+          const crypto = require("crypto");
+          for (const [dir, mode] of [["dist", "default"], ["dist-instrumented", "test-instrumentation"]]) {
+            const report = JSON.parse(fs.readFileSync(`${dir}/build-report.json`, "utf8"));
+            const wasm = fs.readFileSync(`${dir}/leptonica.wasm`);
+            const actual = crypto.createHash("sha256").update(wasm).digest("hex");
+            if (report.mode !== mode || report.wasmSha256 !== actual) {
+              throw new Error(`${dir} identity mismatch: mode=${report.mode}, report=${report.wasmSha256}, actual=${actual}`);
+            }
+          }
+          NODE
+      - name: E2E (browser output and fatal retirement)
+        run: |
+          # The fatal-retirement case runs the production package adapter
+          # while substituting only the CI instrumented Worker entry.
+          test -f dist/types/worker/index.js
+          test -f dist/types/worker/worker.mjs
+          test -f dist-instrumented/leptonica.mjs
+          test -f dist-instrumented/leptonica.wasm
+          # Playwright 1.63 headless mode uses the separate shell binary.
+          pnpm exec playwright install --with-deps chromium chromium-headless-shell
+          pnpm exec playwright test
+
+  instrumented-resource-failures:
+    needs: ci
+    if: ${{ !cancelled() && needs.ci.outputs.runtime_builds_ready == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 20
+      - name: Install dependencies
+        run: |
+          corepack enable pnpm
+          pnpm install --frozen-lockfile --ignore-scripts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: runtime-builds
+          path: .
+      - name: Verify runtime build artifact identity
+        run: |
+          node --input-type=commonjs <<'NODE'
+          const fs = require("fs");
+          const crypto = require("crypto");
+          for (const [dir, mode] of [["dist", "default"], ["dist-instrumented", "test-instrumentation"]]) {
+            const report = JSON.parse(fs.readFileSync(`${dir}/build-report.json`, "utf8"));
+            const wasm = fs.readFileSync(`${dir}/leptonica.wasm`);
+            const actual = crypto.createHash("sha256").update(wasm).digest("hex");
+            if (report.mode !== mode || report.wasmSha256 !== actual) {
+              throw new Error(`${dir} identity mismatch: mode=${report.mode}, report=${report.wasmSha256}, actual=${actual}`);
+            }
+          }
+          NODE
+      - name: Instrumented resource-failure suite
+        run: |
+          test -f dist-instrumented/leptonica.mjs
+          test -f dist-instrumented/leptonica.wasm
+          test -f dist-instrumented/leptonica.d.ts
+          pnpm exec vitest run tests/node/fault-injection.test.ts
+
+  # A normal PR uses a synthetic merge commit that is not guaranteed to be
+  # reachable by a fresh GitHub clone. Run the fixed-40-character source gate
+  # on main pushes, where github.sha is an ordinary reachable commit. Release
+  # tags repeat the same gate before publishing.
+  fixed-commit-consumer:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: |
+          corepack enable pnpm
+          pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Resolve toolchain pins
+        id: pins
+        run: |
+          node --input-type=module -e '
+          import { appendFileSync, readFileSync } from "node:fs";
+          const v = JSON.parse(readFileSync("vendor/versions.json", "utf8"));
+          const out = (name, value) => appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
+          out("emsdk_commit", v.emsdk.commit);
+          out("sdk_version", v.emsdk.sdkVersion);
+          out("cmake_tool", v.emsdk.cmakeTool);
+          out("ninja_tool", v.emsdk.ninjaTool);
+          '
+
+      - name: Install pinned emsdk (cold, verified)
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git tmp/emsdk
+          git -C tmp/emsdk fetch --depth 1 origin ${{ steps.pins.outputs.emsdk_commit }}
+          git -C tmp/emsdk checkout ${{ steps.pins.outputs.emsdk_commit }}
+          EMSDK_KEEP_DOWNLOADS=1 ./tmp/emsdk/emsdk install ${{ steps.pins.outputs.sdk_version }} ${{ steps.pins.outputs.cmake_tool }} ${{ steps.pins.outputs.ninja_tool }}
+          ./tmp/emsdk/emsdk activate ${{ steps.pins.outputs.sdk_version }} ${{ steps.pins.outputs.cmake_tool }} ${{ steps.pins.outputs.ninja_tool }}
+          node scripts/verify-toolchain.mjs
+
+      - name: Fresh fixed-commit Git consumer
+        run: |
+          . ./tmp/emsdk/emsdk_env.sh
+          node scripts/run-consumer-gate.mjs \
+            --github-repository "${{ github.repository }}" \
+            --commit "${{ github.sha }}" \
+            --repeat 2
 
   # Cross-runner compile determinism (M1 review supply W3 + build-eng W3):
   # an independent cold build on a different runner instance — no cache
@@ -502,7 +706,13 @@ jobs:
 
   dispatch-builder:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.LEPTONICA_BUILDER_REPOSITORY != ''
-    needs: [release-set, compare]
+    # Runtime failures must block the external release dispatch even though
+    # their jobs execute independently from the main build job.
+    needs:
+      - release-set
+      - compare
+      - browser-e2e
+      - instrumented-resource-failures
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:

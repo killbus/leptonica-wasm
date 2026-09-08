@@ -46,13 +46,15 @@ If automatic task discovery is unavailable, use the task explicitly named by the
 
 ## Agent dispatch protocol
 
-Before every agent dispatch, first initialize that agent through the platform's standard `set goal` mechanism. The goal must contain the business objective and this retry policy:
+Every dispatched agent must make the platform's standard `create_goal` call its first action, before reading task files, analysing the code, editing, or reporting findings. The agent-owned goal must contain the business objective and this retry policy:
 
 > Treat `stream disconnected`, HTTP `429`, and transient `5xx` network or service errors as retryable. Automatically retry with backoff and continue retrying; do not terminate or ask for user intervention solely because of these errors.
 
-This is goal initialization, not a dispatch prompt, injected message, or inherited convention. Do not dispatch when the platform cannot provide the standard per-agent goal mechanism; continue in the main session instead.
+When the parent thread has an active goal, use a non-forked dispatch unless the platform proves goal state is isolated. Supply the required task context explicitly. An inherited parent goal does not satisfy the dispatched agent's own `create_goal` requirement.
 
-The main agent owns active supervision. Check early progress, planned checkpoints, raw status when progress is unclear, and terminal success or failure events. Recover or follow up when needed. A timeout or disconnected stream is not a completion result.
+The dispatch prompt must require this first action, but the prompt itself is not goal initialization. Until successful goal creation is confirmed, the instance is not started. If `create_goal` fails or the instance reports `GOAL_MISSING`, it must stop without task work; the main agent must not wait for, resume, or send task input to it, and must close it and create a replacement. Once the goal is active, preserve that instance across retryable transport or service failures.
+
+The main agent owns active supervision. Confirm goal activation, check early progress and planned checkpoints, inspect raw status when progress is unclear, perform recovery or follow-up interactions when needed, and verify a terminal success or failure event. A timeout or disconnected stream is not a completion result.
 
 ## Phase Index
 
@@ -84,7 +86,7 @@ Preserve existing fields and artifacts. Ask the user only when the correct state
 [workflow-state:planning]
 Stay in planning. Read and maintain `prd.md`; complex tasks also require `design.md` and `implement.md`.
 Curate `implement.jsonl` and `check.jsonl`, review the artifacts with the user, then run `task.py start`.
-Do not implement before activation. Every agent dispatch remains subject to the standard `set goal` and retry protocol in this workflow.
+Do not implement before activation. Every agent dispatch remains subject to the agent-owned `create_goal` and retry protocol in this workflow.
 [/workflow-state:planning]
 
 [workflow-state:planning-inline]
@@ -102,8 +104,8 @@ Do not implement before activation.
 [workflow-state:in_progress]
 Read context in this order: `implement.jsonl`, `prd.md`, `design.md`, `implement.md`, then applicable specifications.
 Flow: implement -> quality check -> specification update -> commit -> finish-work.
-Before every agent dispatch, first use the standard per-agent `set goal` mechanism. Include the business objective and this policy in that goal: Treat `stream disconnected`, HTTP `429`, and transient `5xx` network or service errors as retryable; automatically retry with backoff and continue retrying; do not terminate or ask for user intervention solely because of these errors.
-Do not dispatch through a prompt, message, or implicit inheritance in place of goal initialization. If compliant goal initialization is unavailable, continue inline. The main agent actively checks progress, status, and terminal events and performs recovery or follow-up actions.
+Every dispatched agent must first call standard `create_goal` for itself. Include the business objective and this policy in that goal: Treat `stream disconnected`, HTTP `429`, and transient `5xx` network or service errors as retryable; automatically retry with backoff and continue retrying; do not terminate or ask for user intervention solely because of these errors.
+The dispatch prompt requires the first action but does not replace it. If goal creation fails or returns `GOAL_MISSING`, do not wait for, resume, or send task input to that instance; close it and create a replacement. After activation, retain and resume the same instance across retryable failures. The main agent confirms activation, checks early progress and planned checkpoints, inspects unclear status, performs recovery or follow-up interactions, and verifies terminal events.
 [/workflow-state:in_progress]
 
 [workflow-state:in_progress-inline]
