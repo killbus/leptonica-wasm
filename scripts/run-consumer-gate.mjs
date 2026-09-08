@@ -117,6 +117,49 @@ export function removeConsumerRoot(root, remove = rmSync) {
   });
 }
 
+function isOwnedConsumerRoot(root) {
+  const absoluteRoot = resolve(root);
+  return dirname(absoluteRoot) === resolve(tmpdir())
+    && /^leptonica-consumer-[1-3]-.+$/.test(basename(absoluteRoot));
+}
+
+function cleanupErrorCode(error) {
+  return error && typeof error === "object" && "code" in error
+    ? error.code
+    : undefined;
+}
+
+function warnAboutCleanupFailure(warn, root, error) {
+  const message = error instanceof Error ? error.message : String(error);
+  try {
+    warn(`consumer cleanup left temporary root ${root}: ${message}`);
+  } catch {
+    // Cleanup diagnostics must not replace the consumer gate result.
+  }
+}
+
+export async function withConsumerRootCleanup(root, task, options = {}) {
+  const remove = options.remove ?? removeConsumerRoot;
+  const warn = options.warn ?? console.warn;
+  let taskFailed = false;
+  try {
+    return await task();
+  } catch (error) {
+    taskFailed = true;
+    throw error;
+  } finally {
+    try {
+      remove(root);
+    } catch (cleanupError) {
+      if (taskFailed || (isOwnedConsumerRoot(root) && cleanupErrorCode(cleanupError) === "ENOTEMPTY")) {
+        warnAboutCleanupFailure(warn, root, cleanupError);
+      } else {
+        throw cleanupError;
+      }
+    }
+  }
+}
+
 const nodeConsumer = `
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -865,14 +908,14 @@ function verifyInstalled(root, options) {
 
 async function runOnce(options, attempt) {
   const root = mkdtempSync(join(tmpdir(), `leptonica-consumer-${attempt}-`));
-  const store = join(root, "store");
-  mkdirSync(store);
-  const sourceSpec = options.tarball
-    ? `file:${options.tarball}`
-    : `git+https://github.com/${options.repository}.git#${options.commit}`;
-  const allow = options.repository ? gitDependencyId(options.repository, options.commit) : undefined;
-  writeConsumer(root, sourceSpec, allow);
-  try {
+  const runConsumer = async () => {
+    const store = join(root, "store");
+    mkdirSync(store);
+    const sourceSpec = options.tarball
+      ? `file:${options.tarball}`
+      : `git+https://github.com/${options.repository}.git#${options.commit}`;
+    const allow = options.repository ? gitDependencyId(options.repository, options.commit) : undefined;
+    writeConsumer(root, sourceSpec, allow);
     const installArgs = ["install", "--store-dir", store, "--config.confirmModulesPurge=false"];
     if (options.tarball) installArgs.push("--ignore-scripts");
     await retryWithBackoff(
@@ -885,9 +928,15 @@ async function runOnce(options, attempt) {
       },
     );
     verifyInstalled(root, options);
-  } finally {
-    if (options.keep) console.log(`consumer retained at ${root}`);
-    else removeConsumerRoot(root);
+  };
+  if (options.keep) {
+    try {
+      await runConsumer();
+    } finally {
+      console.log(`consumer retained at ${root}`);
+    }
+  } else {
+    await withConsumerRootCleanup(root, runConsumer);
   }
 }
 

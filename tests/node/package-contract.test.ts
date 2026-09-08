@@ -15,6 +15,7 @@ import {
   removeConsumerRoot,
   retryAfterMilliseconds,
   retryWithBackoff,
+  withConsumerRootCleanup,
   validateConsumerLockfile,
   validateInstalledPackageRoot,
   verifyBrowserBundleLayout,
@@ -824,6 +825,83 @@ describe("consumer install retry policy", () => {
       maxRetries: 8,
       retryDelay: 250,
     });
+  });
+
+  it("preserves a successful gate when an owned temporary root stays non-empty", async () => {
+    const warnings: string[] = [];
+    const root = join(tmpdir(), "leptonica-consumer-1-race");
+    const result = await withConsumerRootCleanup(root, () => "verified", {
+      remove: () => { throw Object.assign(new Error("directory not empty"), { code: "ENOTEMPTY" }); },
+      warn: (message) => { warnings.push(message); },
+    });
+
+    expect(result).toBe("verified");
+    expect(warnings).toEqual([expect.stringContaining(root)]);
+  });
+
+  it.each(["EACCES", "EIO"])(
+    "fails a successful gate when cleanup reports %s",
+    async (code) => {
+      const cleanupError = Object.assign(new Error(`cleanup failed: ${code}`), { code });
+      await expect(withConsumerRootCleanup(
+        join(tmpdir(), "leptonica-consumer-1-hard-failure"),
+        () => "verified",
+        { remove: () => { throw cleanupError; } },
+      )).rejects.toBe(cleanupError);
+    },
+  );
+
+  it.each(["ENOTEMPTY", "EACCES"])(
+    "preserves the gate failure when cleanup also reports %s",
+    async (code) => {
+      const gateError = new Error("consumer verification failed");
+      const warnings: string[] = [];
+      await expect(withConsumerRootCleanup(
+        join(tmpdir(), "leptonica-consumer-1-primary-failure"),
+        () => { throw gateError; },
+        {
+          remove: () => { throw Object.assign(new Error(`cleanup failed: ${code}`), { code }); },
+          warn: (message) => { warnings.push(message); },
+        },
+      )).rejects.toBe(gateError);
+      expect(warnings).toEqual([expect.stringContaining(`cleanup failed: ${code}`)]);
+    },
+  );
+
+  it("does not trust an ENOTEMPTY-looking message without that error code", async () => {
+    const cleanupError = Object.assign(new Error("ENOTEMPTY: directory not empty"), { code: "EIO" });
+    await expect(withConsumerRootCleanup(
+      join(tmpdir(), "leptonica-consumer-1-wrong-code"),
+      () => "verified",
+      { remove: () => { throw cleanupError; } },
+    )).rejects.toBe(cleanupError);
+  });
+
+  it("does not tolerate ENOTEMPTY outside an owned consumer root", async () => {
+    const cleanupError = Object.assign(new Error("directory not empty"), { code: "ENOTEMPTY" });
+    await expect(withConsumerRootCleanup(
+      join(tmpdir(), "unrelated-root"),
+      () => "verified",
+      { remove: () => { throw cleanupError; } },
+    )).rejects.toBe(cleanupError);
+  });
+
+  it("continues later isolated attempts after a tolerated cleanup race", async () => {
+    const executed: number[] = [];
+    const warnings: string[] = [];
+    for (const attempt of [1, 2]) {
+      await withConsumerRootCleanup(
+        join(tmpdir(), `leptonica-consumer-${attempt}-race`),
+        () => { executed.push(attempt); },
+        {
+          remove: () => { throw Object.assign(new Error("directory not empty"), { code: "ENOTEMPTY" }); },
+          warn: (message) => { warnings.push(message); },
+        },
+      );
+    }
+
+    expect(executed).toEqual([1, 2]);
+    expect(warnings).toHaveLength(2);
   });
 
   it.each([

@@ -29,6 +29,14 @@ export function removeConsumerRoot(
     },
   ) => void,
 ): void;
+export function withConsumerRootCleanup<T>(
+  root: string,
+  task: () => T | Promise<T>,
+  options?: {
+    remove?: (root: string) => void;
+    warn?: (message: string) => void;
+  },
+): Promise<T>;
 export function validateConsumerLockfile(
   lock: string,
   options: { consumerRoot?: string; tarball?: string; repository?: string; commit?: string },
