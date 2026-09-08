@@ -730,6 +730,16 @@ does not contain an independent archive-content hash. A failing regression was
 added first for clean/dirty state transitions, then made green by the complete
 identity comparison.
 
+The final pre-merge release-control review found that `dispatch-builder` did
+not depend on `fixed-commit-consumer`. Main CI run `34191680304` supplied a
+concrete counterexample: the fixed-commit consumer failed at 05:49:59 UTC on
+2026-09-08, but the external builder dispatch still completed successfully six
+seconds later. The builder job now requires the fixed-commit consumer, and a
+workflow contract regression prevents that dependency from being removed. The
+known absence of repository-enforced required checks remains an external
+governance gap already recorded above; the separate immutable `refs/tags/v*`
+ruleset remains a mandatory post-main-CI, pre-tag release gate.
+
 ## M5: External real-scan comparison (R8)
 
 - [ ] Obtain a rights-cleared corpus and record storage/upload permissions.

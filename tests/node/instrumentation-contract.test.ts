@@ -271,6 +271,7 @@ describe("CI-only native fault instrumentation contract", () => {
     const dispatchBuilder = workflowJob("dispatch-builder");
     expect(dispatchBuilder).toContain("- browser-e2e");
     expect(dispatchBuilder).toContain("- instrumented-resource-failures");
+    expect(dispatchBuilder).toContain("- fixed-commit-consumer");
   });
 
   it("restores the Emscripten environment before the consumer package check", () => {

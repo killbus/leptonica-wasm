@@ -719,13 +719,14 @@ jobs:
 
   dispatch-builder:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.LEPTONICA_BUILDER_REPOSITORY != ''
-    # Runtime failures must block the external release dispatch even though
-    # their jobs execute independently from the main build job.
+    # Runtime and fixed-commit consumer failures must block the external
+    # release dispatch even though their jobs execute independently.
     needs:
       - release-set
       - compare
       - browser-e2e
       - instrumented-resource-failures
+      - fixed-commit-consumer
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
