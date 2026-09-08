@@ -17,6 +17,17 @@ export const CONSUMER_TOOL_VERSIONS = Object.freeze({
   typescript: "7.0.2",
 });
 
+export const CONSUMER_COMMAND_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
+
+export function consumerCommandSpawnOptions(cwd, env = process.env) {
+  return {
+    cwd,
+    env,
+    encoding: "utf8",
+    maxBuffer: CONSUMER_COMMAND_MAX_BUFFER_BYTES,
+  };
+}
+
 export function gitDependencyId(repository, commit) {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) throw new Error(`invalid GitHub repository: ${repository}`);
   if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error(`invalid Git commit: ${commit}`);
@@ -46,7 +57,7 @@ function parseArgs(argv) {
 }
 
 function run(command, args, cwd, env = process.env) {
-  const result = spawnSync(command, args, { cwd, env, encoding: "utf8" });
+  const result = spawnSync(command, args, consumerCommandSpawnOptions(cwd, env));
   if (result.error) throw result.error;
   if (result.status !== 0) {
     throw new Error(`${command} ${args.join(" ")} failed in ${cwd}\n${result.stdout}\n${result.stderr}`);

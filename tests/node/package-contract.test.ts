@@ -8,7 +8,9 @@ import { describe, expect, it } from "vitest";
 import { EXPECTED_EXPORTS, validatePackageContract } from "../../scripts/check-package-contract.mjs";
 import { generateHashManifest } from "../../scripts/gen-hash-manifest.mjs";
 import {
+  CONSUMER_COMMAND_MAX_BUFFER_BYTES,
   CONSUMER_TOOL_VERSIONS,
+  consumerCommandSpawnOptions,
   consumerWorkspaceYaml,
   gitDependencyId,
   isRetryableNetworkError,
@@ -270,6 +272,17 @@ describe("fixed-commit consumer identity", () => {
 });
 
 describe("independent consumer gate", () => {
+  it("uses a bounded command buffer large enough for Git dependency builds", () => {
+    const env = { CI: "true" };
+    expect(CONSUMER_COMMAND_MAX_BUFFER_BYTES).toBe(16 * 1024 * 1024);
+    expect(consumerCommandSpawnOptions("/consumer", env)).toEqual({
+      cwd: "/consumer",
+      env,
+      encoding: "utf8",
+      maxBuffer: CONSUMER_COMMAND_MAX_BUFFER_BYTES,
+    });
+  });
+
   function tarballFixture(consumerRoot: string, tarball: string): any {
     const absoluteLocator = `file:${resolve(tarball).replaceAll("\\", "/")}`;
     const relativeLocator = `file:${relative(consumerRoot, tarball).replaceAll("\\", "/")}`;

@@ -649,6 +649,19 @@ two isolated attempts. Current lightweight evidence is 158 tests passed with
 type checking, and release-contract tests. Neither failed CI run is accepted as
 release evidence; a new PR run must reach terminal success before merge.
 
+PR #13 CI run `34205380352` then passed every native, WASM, browser, resource,
+packaging, determinism, tarball-consumer, and comparison job except
+`fixed-commit-consumer` job `101994172596`. The revised cleanup behavior
+correctly preserved and exposed the primary failure: `spawnSync pnpm ENOBUFS`;
+the accompanying leftover-store warning no longer replaced it. Node's default
+synchronous child-process output buffer was too small for the Git dependency's
+build log. The consumer runner now applies an explicit 16 MiB per-stream
+`maxBuffer`: large enough for this bounded build output while retaining a firm
+memory and runaway-log failure boundary. A package-contract regression fixes
+that value and verifies the exact spawn options used by the runner. Focused
+package contracts now pass 84/84 and node/web type checking passes locally. A
+new CI run remains required before this change can be release evidence.
+
 ## M5: External real-scan comparison (R8)
 
 - [ ] Obtain a rights-cleared corpus and record storage/upload permissions.

@@ -3,6 +3,16 @@ export const CONSUMER_TOOL_VERSIONS: Readonly<{
   esbuild: string;
   typescript: string;
 }>;
+export const CONSUMER_COMMAND_MAX_BUFFER_BYTES: number;
+export function consumerCommandSpawnOptions(
+  cwd: string,
+  env?: NodeJS.ProcessEnv,
+): {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  encoding: "utf8";
+  maxBuffer: number;
+};
 export function consumerWorkspaceYaml(onlyBuiltDependency?: string): string;
 export function gitDependencyId(repository: string, commit: string): string;
 export function isRetryableNetworkError(error: unknown): boolean;
