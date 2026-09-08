@@ -662,6 +662,22 @@ that value and verifies the exact spawn options used by the runner. Focused
 package contracts now pass 84/84 and node/web type checking passes locally. A
 new CI run remains required before this change can be release evidence.
 
+PR #13 CI run `34206188591` passed the other eight executed checks but the
+fixed-commit job `101996802973` ended its consumer step after about four minutes
+with exit 143. The 16 MiB bound prevented the prior `ENOBUFS`, but synchronous
+capture still withheld all pnpm/prepack output until process completion and
+therefore left no evidence for the initiating SIGTERM. A serial independent
+reliability audit ranked that full buffering and observability gap above OOM or
+script timeout; the job-level timeout is 60 minutes, and the available evidence
+does not prove a GitHub no-output watchdog. The Git-source `pnpm install` now
+uses asynchronous `spawn`, immediately forwards stdout and stderr, and retains
+only a 256 KiB tail for failure reporting and the existing 429/5xx retry
+classification. Other short consumer verification commands retain the explicit
+16 MiB synchronous bound. Regressions prove output is observed before a
+one-second child exits and that a streamed HTTP 503 failure remains retryable.
+A subsequent CI run must establish whether streaming also removes the external
+SIGTERM cause; regardless, it restores bounded memory and actionable logs.
+
 ## M5: External real-scan comparison (R8)
 
 - [ ] Obtain a rights-cleared corpus and record storage/upload permissions.

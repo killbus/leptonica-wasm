@@ -17,6 +17,7 @@ import {
   removeConsumerRoot,
   retryAfterMilliseconds,
   retryWithBackoff,
+  runStreamingCommand,
   withConsumerRootCleanup,
   validateConsumerLockfile,
   validateInstalledPackageRoot,
@@ -281,6 +282,41 @@ describe("independent consumer gate", () => {
       encoding: "utf8",
       maxBuffer: CONSUMER_COMMAND_MAX_BUFFER_BYTES,
     });
+  });
+
+  it("streams long-running command output before the child exits", async () => {
+    const startedAt = Date.now();
+    let firstOutputAt = Number.POSITIVE_INFINITY;
+    const command = [
+      'process.stdout.write("ready\\n");',
+      "setTimeout(() => process.exit(0), 1000);",
+    ].join("");
+
+    await runStreamingCommand(process.execPath, ["-e", command], process.cwd(), process.env, {
+      stdout: () => { firstOutputAt = Math.min(firstOutputAt, Date.now()); },
+      stderr: () => {},
+    });
+
+    expect(firstOutputAt - startedAt).toBeLessThan(800);
+  });
+
+  it("retains a bounded failure tail for network retry classification", async () => {
+    let failure: unknown;
+    try {
+      await runStreamingCommand(
+        process.execPath,
+        ["-e", 'process.stderr.write("HTTP 503 from registry\\n"); process.exit(1);'],
+        process.cwd(),
+        process.env,
+        { stdout: () => {}, stderr: () => {} },
+      );
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain("exited with status 1");
+    expect((failure as Error).message).toContain("HTTP 503 from registry");
+    expect(isRetryableNetworkError(failure)).toBe(true);
   });
 
   function tarballFixture(consumerRoot: string, tarball: string): any {

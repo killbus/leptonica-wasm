@@ -13,6 +13,16 @@ export function consumerCommandSpawnOptions(
   encoding: "utf8";
   maxBuffer: number;
 };
+export function runStreamingCommand(
+  command: string,
+  args: readonly string[],
+  cwd: string,
+  env?: NodeJS.ProcessEnv,
+  output?: {
+    stdout?: (chunk: Buffer) => void;
+    stderr?: (chunk: Buffer) => void;
+  },
+): Promise<void>;
 export function consumerWorkspaceYaml(onlyBuiltDependency?: string): string;
 export function gitDependencyId(repository: string, commit: string): string;
 export function isRetryableNetworkError(error: unknown): boolean;

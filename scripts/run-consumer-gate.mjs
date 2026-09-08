@@ -3,7 +3,7 @@ import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { parseAst } from "vite";
 import { parseDocument, visit } from "yaml";
 import { validatePackageContract } from "./check-package-contract.mjs";
@@ -18,6 +18,7 @@ export const CONSUMER_TOOL_VERSIONS = Object.freeze({
 });
 
 export const CONSUMER_COMMAND_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
+const CONSUMER_COMMAND_TAIL_BYTES = 256 * 1024;
 
 export function consumerCommandSpawnOptions(cwd, env = process.env) {
   return {
@@ -26,6 +27,53 @@ export function consumerCommandSpawnOptions(cwd, env = process.env) {
     encoding: "utf8",
     maxBuffer: CONSUMER_COMMAND_MAX_BUFFER_BYTES,
   };
+}
+
+function appendOutputTail(tail, chunk) {
+  const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+  if (bytes.length >= CONSUMER_COMMAND_TAIL_BYTES) {
+    return bytes.subarray(bytes.length - CONSUMER_COMMAND_TAIL_BYTES);
+  }
+  const retained = Math.min(tail.length, CONSUMER_COMMAND_TAIL_BYTES - bytes.length);
+  return Buffer.concat([tail.subarray(tail.length - retained), bytes], retained + bytes.length);
+}
+
+export function runStreamingCommand(command, args, cwd, env = process.env, output = {}) {
+  const writeStdout = output.stdout ?? ((chunk) => process.stdout.write(chunk));
+  const writeStderr = output.stderr ?? ((chunk) => process.stderr.write(chunk));
+  return new Promise((resolveRun, rejectRun) => {
+    let child;
+    try {
+      child = spawn(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    } catch (error) {
+      rejectRun(error);
+      return;
+    }
+
+    let tail = Buffer.alloc(0);
+    let settled = false;
+    const capture = (write) => (chunk) => {
+      tail = appendOutputTail(tail, chunk);
+      write(chunk);
+    };
+    child.stdout.on("data", capture(writeStdout));
+    child.stderr.on("data", capture(writeStderr));
+    child.once("error", (error) => {
+      if (settled) return;
+      settled = true;
+      rejectRun(error);
+    });
+    child.once("close", (status, signal) => {
+      if (settled) return;
+      settled = true;
+      if (status === 0) {
+        resolveRun();
+        return;
+      }
+      const outcome = signal ? `terminated by ${signal}` : `exited with status ${status}`;
+      rejectRun(new Error(`${command} ${args.join(" ")} ${outcome} in ${cwd}\n${tail.toString("utf8")}`));
+    });
+  });
 }
 
 export function gitDependencyId(repository, commit) {
@@ -930,7 +978,7 @@ async function runOnce(options, attempt) {
     const installArgs = ["install", "--store-dir", store, "--config.confirmModulesPurge=false"];
     if (options.tarball) installArgs.push("--ignore-scripts");
     await retryWithBackoff(
-      () => run("pnpm", installArgs, root, { ...process.env, CI: "true" }),
+      () => runStreamingCommand("pnpm", installArgs, root, { ...process.env, CI: "true" }),
       {
         onRetry: ({ attempt: retryAttempt, delayMs, error }) => {
           const message = error instanceof Error ? error.message : String(error);
