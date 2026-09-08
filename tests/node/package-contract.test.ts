@@ -255,7 +255,7 @@ describe("fixed-commit consumer identity", () => {
   it("uses the exact pnpm Git dependency identity", () => {
     const commit = "a".repeat(40);
     expect(gitDependencyId("owner/repository", commit)).toBe(
-      `leptonica-wasm@git+https://github.com/owner/repository.git#${commit}`,
+      `leptonica-wasm@https://codeload.github.com/owner/repository/tar.gz/${commit}`,
     );
   });
 
@@ -760,6 +760,50 @@ describe("independent consumer gate", () => {
     expect(release.match(/--repeat 2/g)).toHaveLength(2);
     expect(ci).toContain("timeout-minutes: 60");
     expect(release).toContain("timeout-minutes: 90");
+  });
+
+  it("runs the fixed-commit gate against the reviewable PR head", () => {
+    const ci = readFileSync(".github/workflows/ci.yml", "utf8");
+
+    expect(ci).toContain("github.event_name == 'pull_request' || (github.event_name == 'push'");
+    expect(ci).toContain("github.event.pull_request.head.sha");
+    expect(ci).toContain('--commit "$SOURCE_COMMIT"');
+    expect(ci).toContain('candidate="tmp/release-candidate/leptonica-wasm-${version}.tgz"');
+    expect(ci).toContain('path: ${{ steps.pack_release_candidate.outputs.candidate }}');
+    expect(ci.indexOf("name: release-candidate")).toBeLessThan(
+      ci.indexOf("- name: Fresh tarball consumer"),
+    );
+  });
+
+  it("binds a release to package version, current main, and one exact tarball", () => {
+    const release = readFileSync(".github/workflows/release.yml", "utf8");
+
+    expect(release).toContain('expected_tag="v${version}"');
+    expect(release).toContain('git ls-remote --exit-code origin refs/heads/main');
+    expect(release).toContain('test "$head_commit" = "$event_commit"');
+    expect(release).toContain('test "$event_commit" = "$tag_commit"');
+    expect(release).toContain('test "$tag_commit" = "$main_commit"');
+    expect(release).toContain('Verify successful CI for release commit');
+    expect(release).toContain('.head_sha == $commit');
+    expect(release).toContain('run-id: ${{ steps.verified_main_ci.outputs.run_id }}');
+    expect(release).toContain('cmp --silent "$candidate" "$verified_candidate"');
+    expect(release).toContain('cmp --silent "$release_asset" "$first_download"');
+    expect(release).toContain('cmp --silent "$release_asset" "$rebuilt"');
+    expect(release).toContain('echo "commit=$tag_commit" >> "$GITHUB_OUTPUT"');
+    expect(release).toContain('LEPTONICA_WASM_SOURCE_COMMIT: ${{ steps.release_identity.outputs.commit }}');
+    expect(release).toContain(
+      'files: tmp/release-asset/leptonica-wasm-${{ steps.release_identity.outputs.version }}.tgz',
+    );
+    expect(release).not.toContain('leptonica-wasm-*.tgz');
+
+    const finalDownload = release.lastIndexOf("uses: actions/download-artifact@");
+    const freeze = release.indexOf("- name: Freeze verified release asset");
+    const revalidate = release.indexOf("- name: Revalidate release target");
+    const publish = release.indexOf("- name: Create GitHub Release");
+    expect(finalDownload).toBeGreaterThan(release.indexOf("- name: Fresh fixed-commit Git consumer"));
+    expect(finalDownload).toBeLessThan(freeze);
+    expect(freeze).toBeLessThan(revalidate);
+    expect(revalidate).toBeLessThan(publish);
   });
 });
 

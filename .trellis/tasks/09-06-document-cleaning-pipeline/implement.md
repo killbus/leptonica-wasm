@@ -582,6 +582,50 @@ bundle retains both the Worker URL and the curated WASM URL. The replacement
 gate must accept that exact two-asset set while continuing to reject all other
 resource URLs, then complete all downstream jobs on one synthetic merge SHA.
 
+### Release-preparation checkpoint (2026-09-08)
+
+PR #12 was squash-merged to `main` as
+`9d58ae6c24d1b8e11518d19234c6862c7830d639`. Secret scan run `34191680264`
+passed, while main CI run `34191680304` failed in the fixed-commit consumer:
+pnpm represented the GitHub dependency by its codeload tarball identity and
+rejected the former Git-URL allow-build key with
+`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`. The release-preparation branch now
+derives the exact pnpm identity as
+`leptonica-wasm@https://codeload.github.com/{owner}/{repo}/tar.gz/{commit}`.
+The gate also runs against the actual pull-request head SHA rather than the
+synthetic merge SHA, while main pushes continue to use the pushed SHA.
+
+The package version is staged as `0.2.0`. Main CI names the tarball from that
+exact version, rejects additional candidate tarballs, and uploads the candidate
+immediately after packing, before any repository script runs again. Release
+validation requires an annotated `v${package.version}` tag on the current
+`origin/main`, selects a successful `ci.yml` main-push run with the exact head
+SHA, downloads that run's `release-candidate`, and requires an independent cold
+rebuild to match it byte-for-byte. Pack review and tarball-consumer checks run
+against the CI artifact. After all repository-controlled tests finish, the
+workflow downloads the same artifact again into a fresh release-only path,
+compares it to both prior copies, makes it read-only, revalidates the remote
+main/tag object/tag commit, and gives only that path to the pinned GitHub
+Release action. No npm publication path exists.
+
+A serial supply-chain falsification review confirmed the exact-SHA successful
+CI lookup, cross-run artifact inputs and permissions, pnpm codeload identity,
+checkout/event/tag/main identity, and absence of npm or credential-state
+changes. It found and caused the upload-order/final-byte correction above. It
+also identified that workflow-side remote-ref checks cannot eliminate the final
+tag-movement TOCTOU window. The repository therefore still requires an active
+tag ruleset for `refs/tags/v*` with deletion and non-fast-forward updates
+blocked before `v0.2.0` is created. A creation attempt using the provided token
+as process stdin returned HTTP 403; no repository rule changed and `gh auth`
+was not modified. This governance permission gap blocks the immutable tag, not
+the release-preparation PR.
+
+Current release-preparation lightweight evidence: the focused package-contract
+suite passes 74/74, both workflow YAML files parse, and `git diff --check`
+passes. Native/WASM builds, browser E2E, target resource tests, and consumer
+installation remain delegated to GitHub CI to protect the constrained local
+machine.
+
 ## M5: External real-scan comparison (R8)
 
 - [ ] Obtain a rights-cleared corpus and record storage/upload permissions.

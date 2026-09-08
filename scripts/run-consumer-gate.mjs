@@ -20,7 +20,7 @@ export const CONSUMER_TOOL_VERSIONS = Object.freeze({
 export function gitDependencyId(repository, commit) {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) throw new Error(`invalid GitHub repository: ${repository}`);
   if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error(`invalid Git commit: ${commit}`);
-  return `leptonica-wasm@git+https://github.com/${repository}.git#${commit}`;
+  return `leptonica-wasm@https://codeload.github.com/${repository}/tar.gz/${commit}`;
 }
 
 function parseArgs(argv) {

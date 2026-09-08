@@ -392,18 +392,35 @@ jobs:
       # libraries, checks all exports, writes source provenance, hashes only
       # after every generator, and freezes the candidate tarball for Gate A.
       - name: Pack release candidate
+        id: pack_release_candidate
         env:
           LEPTONICA_WASM_SOURCE_COMMIT: ${{ github.sha }}
         run: |
+          set -euo pipefail
           . ./tmp/emsdk/emsdk_env.sh
           mkdir -p tmp/release-candidate
           pnpm pack --pack-destination tmp/release-candidate
+          version=$(node -p 'require("./package.json").version')
+          candidate="tmp/release-candidate/leptonica-wasm-${version}.tgz"
+          test -f "$candidate"
+          test "$(find tmp/release-candidate -maxdepth 1 -type f -name '*.tgz' | wc -l)" -eq 1
+          echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
+
+      # Upload the candidate immediately after packing, before any repository
+      # script can run again. A release only accepts this artifact from a
+      # successful main push run, so later gates certify these frozen bytes.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-candidate
+          path: ${{ steps.pack_release_candidate.outputs.candidate }}
+          if-no-files-found: error
 
       - name: Fresh tarball consumer
         run: |
-          candidate=$(find tmp/release-candidate -maxdepth 1 -name 'leptonica-wasm-*.tgz' -print -quit)
-          test -n "$candidate"
-          node scripts/run-consumer-gate.mjs --tarball "$candidate" --commit "${{ github.sha }}" --repeat 2
+          node scripts/run-consumer-gate.mjs \
+            --tarball "${{ steps.pack_release_candidate.outputs.candidate }}" \
+            --commit "${{ github.sha }}" \
+            --repeat 2
 
       # v7.0.1 (2026-04-10): https://github.com/actions/upload-artifact/releases/tag/v7.0.1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -412,12 +429,6 @@ jobs:
           name: ci-dist
           path: dist
           if-no-files-found: warn
-
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: release-candidate
-          path: tmp/release-candidate/leptonica-wasm-*.tgz
-          if-no-files-found: error
 
   # Runtime evidence jobs consume the same frozen artifact but have separate
   # runners and timeout budgets. A failure or stall in one cannot mask the
@@ -511,15 +522,17 @@ jobs:
           test -f dist-instrumented/leptonica.d.ts
           pnpm exec vitest run tests/node/fault-injection.test.ts
 
-  # A normal PR uses a synthetic merge commit that is not guaranteed to be
-  # reachable by a fresh GitHub clone. Run the fixed-40-character source gate
-  # on main pushes, where github.sha is an ordinary reachable commit. Release
+  # A normal PR checkout uses a synthetic merge commit that is not guaranteed
+  # to be reachable by a fresh GitHub clone. Install the repository's actual
+  # PR head commit instead; main pushes continue to install github.sha. Release
   # tags repeat the same gate before publishing.
   fixed-commit-consumer:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     needs: ci
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      SOURCE_COMMIT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -561,7 +574,7 @@ jobs:
           . ./tmp/emsdk/emsdk_env.sh
           node scripts/run-consumer-gate.mjs \
             --github-repository "${{ github.repository }}" \
-            --commit "${{ github.sha }}" \
+            --commit "$SOURCE_COMMIT" \
             --repeat 2
 
   # Cross-runner compile determinism (M1 review supply W3 + build-eng W3):
