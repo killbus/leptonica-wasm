@@ -201,8 +201,9 @@ artifact from that run.
 The real Chromium job ran two tests and passed both. Its fatal-retirement case
 proved two concurrent requests reject after the target-WASM trap, the
 pre-existing `RemotePix` is poisoned, later calls do not add Worker posts even
-after delayed tasks and cleanup, and both production and terminal-gate Worker
-teardown occur exactly once. The production Worker reported two WASM entries
+after delayed tasks and cleanup, and the production Worker's physical
+termination plus the terminal-gate client's logical teardown hook each occur
+exactly once. The production Worker reported two WASM entries
 and one native trap; the separately probed terminal-gate Worker remained at one
 entry and one trap before and after the probe. A fresh public Worker session
 then loaded a 1x1x32 pixel and closed with one teardown. The independent
@@ -233,12 +234,24 @@ validator defect, not a runtime or packaging failure. `compare` and
 `dispatch-builder` were skipped as downstream jobs; `fixed-commit-consumer` is
 intentionally skipped on pull requests.
 
+PR head `61505a53f37a1daa652b63dbcc540a1d42bfa63b` was evaluated by CI
+`34174762665` on September 8, 2026; the pull-request workflow checked out
+synthetic merge SHA `5bfaf27dff7b936f25dbf24fb683ba58b48bed63`. It passed the
+structural lockfile validation and reached browser bundle verification, proving
+that the prior tarball identity failure was corrected. The main job then failed
+because the bundle verifier treated Emscripten's literal `"file://"` protocol
+test as a concrete package-manager path. The same run again passed
+`browser-e2e` and all 15 `instrumented-resource-failures` cases; secret scan
+`34174762663` passed. `compare` and `dispatch-builder` skipped downstream, while
+the PR-only `fixed-commit-consumer` skip remained expected.
+
 ## Evidence required from the next final-head CI run
 
-Run `34172195859` proves the following browser and resource properties for
-commit `37755e913465e86375e09154b8ccc2a10f1bb3c6`; the next run must repeat them
-on the final lockfile-validator correction so every required gate shares one
-SHA:
+Run `34174762665` proves the following browser and resource properties while
+evaluating PR head `61505a53f37a1daa652b63dbcc540a1d42bfa63b` through synthetic
+merge SHA `5bfaf27dff7b936f25dbf24fb683ba58b48bed63`; the next run must
+repeat them on the final bundle-verifier correction in one workflow run so
+every required gate consumes that run's same synthetic merge SHA:
 
 - a real `__builtin_trap()` reached through `load`/`fromRGBA` rejects both
   concurrent pending requests within the timeout;
@@ -297,7 +310,76 @@ so a symlink alias cannot escape or falsely trigger the consumer/worktree
 boundary. A local integration test generates a real tarball and lockfile with
 pnpm 10.34.5, while independent one-field mutations cover importer, package,
 resolution, snapshot, extra-identity, malicious-key, and candidate-byte cases.
-Full source-only validation at this checkpoint reports 107 tests passed and 58
-artifact-dependent tests skipped; Node/web type checking, release-contract
-tests, Trellis task validation, and `git diff --check` also pass. Final-head CI
-remains outstanding.
+
+The follow-up bundle-verifier regression first reproduced CI `34174762665`'s
+false positive, then replaced raw text matching with Vite's ESTree parser. The
+gate is intentionally limited to actual `new URL(...)` resource references
+through unshadowed `URL` and `self` globals; ordinary strings, diagnostics, and
+protocol checks remain consumer-owned content rather than a general binding
+policy. Every browser-base resource URL must resolve to that entry's expected
+asset, and every unshadowed `Worker` constructor in `main.mjs` must use such a
+URL directly, so an unused correct URL cannot hide an operational wrong sink.
+Static resource values may use literals, templates, `+`, or lexically scoped
+constants. Mutable calls such as `String.raw` and
+`String.prototype.concat` are deliberately non-static, and direct writes to
+the global `URL` or `Worker` constructor are rejected before resource
+analysis. Temporal-dead-zone and shadowing checks prevent textual lookalikes
+from satisfying the gate. Relative references are
+resolved with the WHATWG URL algorithm and must reach the expected
+same-directory asset; explicit schemes and authorities, including
+protocol-relative and sentinel-origin inputs, and percent-encoded path
+separators are rejected before filesystem resolution. URL preprocessing follows
+browser semantics: ASCII tabs and newlines are removed, leading and trailing C0
+controls or ASCII spaces are stripped, and non-ASCII whitespace such as NBSP
+remains part of the path. The emitted curated and full-ABI WASM bytes must each
+equal their corresponding installed package asset, closing the prior
+path-without-identity gap. Independent cases cover disconnected URL decoys,
+additional invalid resource URLs, direct constructor mutation, mutable
+string-method composition, lexical shadowing, constant and class-heritage TDZ,
+stringified fake URLs, encoded separator traversal, invalid authorities,
+cross-variant references, and cross-variant bytes. A positive regression keeps
+browser-valid leading and trailing ASCII URL whitespace accepted. This is a
+generated-bundle integrity contract, not a claim that the static checker is a
+JavaScript security sandbox against arbitrary hostile code.
+
+The final concurrency audit also found a result-publication race at the generic
+`WorkerSession` transport boundary. A transport may deliver a successful
+response and a fatal response synchronously in one turn: the internal request
+promise was already resolved, but its public continuation could previously
+publish a new `RemotePix` or result after `markTerminated()` had retired the
+session. A regression first reproduced the escaped live proxy. Successful
+`init`, `load`, `run`, `extract`, and `query` continuations now re-check the
+terminal gate before publishing any result; a companion case covers normal
+`close()` starting in the same window. These source changes post-date CI
+`34174762665`, so that run does not prove this additional invariant.
+
+Final local source-only validation reports 146 tests passed
+and 58 artifact-dependent tests skipped; the focused package, trap-retirement,
+and instrumentation set reports 99/99. Node/web type checking, release-contract
+tests, Trellis task validation,
+and `git diff --check` also pass. These verifier changes do not yet have
+final-diff CI evidence; one workflow run with `compare` and `dispatch-builder`
+succeeding on the same synthetic merge SHA also remains outstanding.
+
+## Final DBS cross-audit ruling
+
+The September 8, 2026 Dijkstra, Popper, Parnas, and Gauss review round supplied
+three concrete counterexample classes within this change's scope. Dijkstra
+reproduced a same-turn success/fatal publication race; Popper showed that one
+valid URL could hide an additional invalid resource URL; Parnas showed that a
+disconnected valid URL could hide the URL actually passed to `Worker`. Gauss
+reconfirmed those verifier failures and added mutable `URL`/string-built-in
+counterexamples. Each in-scope counterexample now has a regression and a
+bounded correction: result continuations re-check terminal state, every
+browser-base resource reference is validated, every Worker sink must be
+directly connected, mutable string methods are not folded as static resource
+names, and direct global constructor writes are rejected.
+
+The judge does not fold unrelated existing architecture or release governance
+into this result. Worker binary-operation operand parity, exact export-target
+mapping in the standalone package checker, fixed-commit dependency ordering for
+external builder dispatch, and tag-to-main/same-SHA release authorization are
+separate follow-up issues. They remain relevant before a broad release-ready
+claim, but they neither invalidate the bounded fatal-retirement mechanism nor
+become silently fixed by this work. No publish, commit, push, or main-branch
+change is part of this evidence set.

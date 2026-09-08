@@ -307,6 +307,29 @@ describe("independent consumer gate", () => {
     delete section[key];
   }
 
+  function browserBundleFixture(
+    prefix: string,
+    mainSource: string,
+    includeWorkerReference = true,
+  ): string {
+    const workspace = mkdtempSync(join(tmpdir(), prefix));
+    const root = join(workspace, "browser-dist");
+    const packageDist = join(workspace, "node_modules/leptonica-wasm/dist");
+    mkdirSync(join(root, "full-abi"), { recursive: true });
+    mkdirSync(join(packageDist, "full-abi"), { recursive: true });
+    writeFileSync(
+      join(root, "main.mjs"),
+      mainSource + (includeWorkerReference ? 'new Worker(new URL("./worker.mjs", import.meta.url));\n' : ""),
+    );
+    writeFileSync(join(root, "worker.mjs"), 'new URL("leptonica.wasm", import.meta.url);\n');
+    writeFileSync(join(root, "full-abi/main.mjs"), 'new URL("leptonica.wasm", import.meta.url);\n');
+    writeFileSync(join(root, "leptonica.wasm"), "curated");
+    writeFileSync(join(root, "full-abi/leptonica.wasm"), "full ABI");
+    writeFileSync(join(packageDist, "leptonica.wasm"), "curated");
+    writeFileSync(join(packageDist, "full-abi/leptonica.wasm"), "full ABI");
+    return root;
+  }
+
   it("binds all pnpm tarball identities to the exact candidate", () => {
     const root = mkdtempSync(join(tmpdir(), "leptonica-lock-contract-"));
     const consumerRoot = join(root, "consumer");
@@ -519,12 +542,8 @@ describe("independent consumer gate", () => {
   });
 
   it("fails when an emitted browser URL has no matching packaged asset", () => {
-    const root = mkdtempSync(join(tmpdir(), "leptonica-browser-layout-"));
-    mkdirSync(join(root, "full-abi"), { recursive: true });
-    writeFileSync(join(root, "main.mjs"), 'new Worker(new URL("./worker.mjs", import.meta.url));\n');
-    writeFileSync(join(root, "worker.mjs"), 'new URL("leptonica.wasm", import.meta.url);\n');
-    writeFileSync(join(root, "full-abi/main.mjs"), 'new URL("leptonica.wasm", import.meta.url);\n');
-    writeFileSync(join(root, "leptonica.wasm"), "curated");
+    const root = browserBundleFixture("leptonica-browser-layout-", "");
+    rmSync(join(root, "full-abi/leptonica.wasm"));
 
     expect(() => verifyBrowserBundleLayout(root)).toThrow(
       "full-abi/main.mjs references missing browser asset leptonica.wasm",
@@ -533,39 +552,194 @@ describe("independent consumer gate", () => {
     expect(() => verifyBrowserBundleLayout(root)).not.toThrow();
   });
 
-  it("rejects package-manager paths embedded in browser bundle contents", () => {
-    const root = mkdtempSync(join(tmpdir(), "leptonica-browser-path-leak-"));
-    mkdirSync(join(root, "full-abi"), { recursive: true });
-    writeFileSync(
-      join(root, "main.mjs"),
-      'const leaked = "file:///tmp/consumer/node_modules/leptonica-wasm/dist/worker.mjs";\n' +
-        'new Worker(new URL("./worker.mjs", import.meta.url));\n',
-    );
-    writeFileSync(join(root, "worker.mjs"), 'new URL("leptonica.wasm", import.meta.url);\n');
-    writeFileSync(join(root, "full-abi/main.mjs"), 'new URL("leptonica.wasm", import.meta.url);\n');
-    writeFileSync(join(root, "leptonica.wasm"), "curated");
-    writeFileSync(join(root, "full-abi/leptonica.wasm"), "full ABI");
-
+  it("rejects a full-ABI browser asset containing the curated WASM bytes", () => {
+    const root = browserBundleFixture("leptonica-browser-cross-variant-bytes-", "");
+    writeFileSync(join(root, "full-abi/leptonica.wasm"), "curated");
     expect(() => verifyBrowserBundleLayout(root)).toThrow(
-      "main.mjs leaked a package-manager path",
+      "full-abi/leptonica.wasm differs from installed package asset",
     );
   });
 
-  it("rejects non-localhost file URLs embedded in browser bundles", () => {
-    const root = mkdtempSync(join(tmpdir(), "leptonica-browser-file-url-leak-"));
-    mkdirSync(join(root, "full-abi"), { recursive: true });
-    writeFileSync(
-      join(root, "main.mjs"),
-      'const leaked = "file://build-host/share/worker.mjs";\n' +
-        'new Worker(new URL("./worker.mjs", import.meta.url));\n',
-    );
-    writeFileSync(join(root, "worker.mjs"), 'new URL("leptonica.wasm", import.meta.url);\n');
-    writeFileSync(join(root, "full-abi/main.mjs"), 'new URL("leptonica.wasm", import.meta.url);\n');
-    writeFileSync(join(root, "leptonica.wasm"), "curated");
-    writeFileSync(join(root, "full-abi/leptonica.wasm"), "full ABI");
+  it.each([
+    ["diagnostic package-manager path", 'const diagnostic = "/tmp/consumer/node_modules/leptonica-wasm/dist/worker.mjs";\n'],
+    ["diagnostic file URL", 'const diagnostic = "file://build-host/share/worker.mjs";\n'],
+    ["dynamic file URL composition", 'const diagnostic = "file:" + runtimePath;\n'],
+    ["unknown tagged template", 'tag`file:///tmp/worker.mjs`;\n'],
+    ["runtime protocol check", 'const isFileURI = (value) => value.startsWith("file://");\n'],
+    ["runtime scheme check", 'const isFileURI = (value) => value.startsWith("file:");\n'],
+    ["bare protocol constant", 'const fileProtocol = "file://";\n'],
+    ["bare scheme constant", 'const fileProtocol = "file:";\n'],
+    ["computed runtime protocol check", 'const isFileURI = (value) => value["startsWith"]("file://");\n'],
+    ["regular expression", 'const matcher = /^file:\\/\\/\\//;\n'],
+    ["raw tagged template", 'const escaped = String.raw`file\\x3a\\x2f\\x2fbuild-host/share`;\n'],
+    [
+      "harmless static raw composition",
+      'const label = String.raw`${"/node_modules"}-suffix`;\n',
+    ],
+    ["harmless static concat", 'const label = "prefix".concat("/node_modules", "-suffix");\n'],
+  ])("allows unrelated %s content outside a resource URL connection", (_label, source) => {
+    const root = browserBundleFixture("leptonica-browser-file-protocol-", source);
+    expect(() => verifyBrowserBundleLayout(root)).not.toThrow();
+  });
 
+  it("fails closed when a browser bundle is not parseable JavaScript", () => {
+    const root = browserBundleFixture("leptonica-browser-invalid-js-", "const broken = ;\n");
+    expect(() => verifyBrowserBundleLayout(root)).toThrow("main.mjs is not parseable JavaScript");
+  });
+
+  it("does not accept a resource URL that appears only inside a string", () => {
+    const root = browserBundleFixture(
+      "leptonica-browser-stringified-url-",
+      'const fake = \'new URL("./worker.mjs", import.meta.url)\';\n',
+      false,
+    );
     expect(() => verifyBrowserBundleLayout(root)).toThrow(
-      "main.mjs leaked a package-manager path",
+      "main.mjs does not retain a resolvable worker.mjs URL",
+    );
+  });
+
+  it("does not let a disconnected correct URL hide the Worker resource sink", () => {
+    const root = browserBundleFixture(
+      "leptonica-browser-disconnected-worker-url-",
+      'new URL("./worker.mjs", import.meta.url);\n' +
+        'new Worker(new URL("./wrong-worker.mjs", import.meta.url));\n',
+      false,
+    );
+    expect(() => verifyBrowserBundleLayout(root)).toThrow(
+      "main.mjs references unexpected browser asset ./wrong-worker.mjs",
+    );
+  });
+
+  it.each([
+    [
+      "URL",
+      'URL = class { constructor() { return "https://evil.invalid/worker.mjs"; } };\n' +
+        'new Worker(new URL("./worker.mjs", import.meta.url));\n',
+    ],
+    [
+      "Worker",
+      'Worker = class {};\n' +
+        'new Worker(new URL("./worker.mjs", import.meta.url));\n',
+    ],
+  ])("rejects a direct global %s-constructor mutation before the Worker sink", (name, source) => {
+    const root = browserBundleFixture(
+      `leptonica-browser-mutated-${name.toLowerCase()}-constructor-`,
+      source,
+      false,
+    );
+    expect(() => verifyBrowserBundleLayout(root)).toThrow(
+      `main.mjs mutates the global ${name} constructor`,
+    );
+  });
+
+  it("does not evaluate mutable String methods as static resource names", () => {
+    const root = browserBundleFixture(
+      "leptonica-browser-mutated-string-concat-",
+      'String.prototype.concat = () => "./wrong-worker.mjs";\n' +
+        'new Worker(new URL(".".concat("/worker.mjs"), import.meta.url));\n',
+      false,
+    );
+    expect(() => verifyBrowserBundleLayout(root)).toThrow(
+      "main.mjs contains a non-static browser asset URL",
+    );
+  });
+
+  it.each([
+    ["file URL", "file:///tmp/worker.mjs", "contains a disallowed browser asset URL"],
+    ["package-manager path", "./node_modules/leptonica-wasm/worker.mjs", "references unexpected browser asset"],
+  ])("rejects an additional %s resource URL beside the correct Worker URL", (_label, reference, classification) => {
+    const root = browserBundleFixture(
+      "leptonica-browser-extra-resource-url-",
+      `new URL(${JSON.stringify(reference)}, import.meta.url);\n`,
+    );
+    expect(() => verifyBrowserBundleLayout(root)).toThrow(
+      `main.mjs ${classification} ${reference}`,
+    );
+  });
+
+  it("does not accept a resource URL through a shadowed URL constructor", () => {
+    const root = browserBundleFixture(
+      "leptonica-browser-shadowed-url-",
+      'const URL = class {}; new Worker(new URL("./worker.mjs", import.meta.url));\n',
+      false,
+    );
+    expect(() => verifyBrowserBundleLayout(root)).toThrow(
+      "main.mjs does not retain a resolvable worker.mjs URL",
+    );
+  });
+
+  it("does not propagate a resource name through its temporal dead zone", () => {
+    const root = browserBundleFixture(
+      "leptonica-browser-forward-reference-",
+      'new Worker(new URL(asset, import.meta.url)); const asset = "./worker.mjs";\n',
+      false,
+    );
+    expect(() => verifyBrowserBundleLayout(root)).toThrow(
+      "main.mjs contains a non-static browser asset URL",
+    );
+  });
+
+  it("does not treat a class name in its heritage expression as a global URL", () => {
+    const root = browserBundleFixture(
+      "leptonica-browser-class-tdz-",
+      'class URL extends (new URL("./worker.mjs", import.meta.url)).constructor {}\n',
+      false,
+    );
+    expect(() => verifyBrowserBundleLayout(root)).toThrow(
+      "main.mjs does not retain a resolvable worker.mjs URL",
+    );
+  });
+
+  it("does not accept a resource URL through a shadowed self binding", () => {
+    const root = browserBundleFixture("leptonica-browser-shadowed-self-", "");
+    writeFileSync(
+      join(root, "worker.mjs"),
+      'const self = { location: { href: import.meta.url } };\n' +
+        'new URL("leptonica.wasm", self.location.href);\n',
+    );
+    expect(() => verifyBrowserBundleLayout(root)).toThrow(
+      "worker.mjs does not retain a resolvable leptonica.wasm URL",
+    );
+  });
+
+  it("accepts leading and trailing ASCII URL whitespace with browser semantics", () => {
+    const root = browserBundleFixture(
+      "leptonica-browser-ascii-url-whitespace-",
+      `new Worker(new URL(${JSON.stringify(" \t./worker.mjs\r\n")}, import.meta.url));\n`,
+      false,
+    );
+    expect(() => verifyBrowserBundleLayout(root)).not.toThrow();
+  });
+
+  it.each([
+    ["package-manager path", './node_modules/leptonica-wasm/worker.mjs', "references unexpected browser asset"],
+    ["file URL", 'file:///tmp/worker.mjs', "contains a disallowed browser asset URL"],
+    ["protocol-relative", '//worker.mjs', "contains a disallowed browser asset URL"],
+    ["sentinel-origin absolute", 'https://bundle.invalid/worker.mjs', "contains a disallowed browser asset URL"],
+    ["sentinel-origin authority", '//bundle.invalid/worker.mjs', "contains a disallowed browser asset URL"],
+    ["directory-shaped", './worker.mjs//', "contains a disallowed browser asset URL"],
+    ["encoded path separators", 'nested%2F..%2Fworker.mjs', "contains a disallowed browser asset URL"],
+    ["encoded backslash separators", 'nested%5C..%5Cworker.mjs', "contains a disallowed browser asset URL"],
+    ["leading non-ASCII whitespace", '\u00a0./worker.mjs', "references unexpected browser asset"],
+  ])("does not accept a %s resource URL", (_label, reference, classification) => {
+    const root = browserBundleFixture(
+      "leptonica-browser-invalid-reference-",
+      `new Worker(new URL(${JSON.stringify(reference)}, import.meta.url));\n`,
+      false,
+    );
+    expect(() => verifyBrowserBundleLayout(root)).toThrow(
+      `main.mjs ${classification} ${reference}`,
+    );
+  });
+
+  it("does not let the full-ABI entry resolve to the curated WASM sibling", () => {
+    const root = browserBundleFixture("leptonica-browser-cross-variant-reference-", "");
+    writeFileSync(
+      join(root, "full-abi/main.mjs"),
+      'new URL("../leptonica.wasm", import.meta.url);\n',
+    );
+    expect(() => verifyBrowserBundleLayout(root)).toThrow(
+      "full-abi/main.mjs references unexpected browser asset ../leptonica.wasm",
     );
   });
 

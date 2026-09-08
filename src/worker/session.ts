@@ -225,6 +225,7 @@ export class WorkerSession {
   init(wasmPath?: string | URL): Promise<void> {
     return this.#request({ id: this.#nextRequestId++, type: "init", ...(wasmPath !== undefined ? { wasmPath: String(wasmPath) } : {}) }).then((r) => {
       if (!r.ok || r.type !== "init") throw new Error(`init: unexpected response ${JSON.stringify(r)}`);
+      this.#assertOpen("init");
     });
   }
 
@@ -250,6 +251,10 @@ export class WorkerSession {
     const buffer = toTransferableArrayBuffer(data);
     return this.#request({ id: this.#nextRequestId++, type: "load", buffer, w, h }, [buffer]).then((r) => {
       if (!r.ok || r.type !== "load") throw new Error(`load: unexpected response ${JSON.stringify(r)}`);
+      // A transport may synchronously deliver another response before this
+      // continuation runs. Do not publish a fresh proxy after a same-turn
+      // fatal response or close has already retired the session.
+      this.#assertOpen("load");
       const pix = createRemotePix(this, r.handle, r.width, r.height, r.depth);
       this.#live.add(pix);
       return pix;
@@ -271,6 +276,7 @@ export class WorkerSession {
     if (source.isPoisoned()) throw new ReferenceError("run: source RemotePix is not usable");
     const r = await this.#request({ id: this.#nextRequestId++, type: "run", source: remoteHandleFor(source), ops: [...ops] });
     if (!r.ok || r.type !== "run") throw new Error(`run: unexpected response ${JSON.stringify(r)}`);
+    this.#assertOpen("run");
     const pix = createRemotePix(this, r.handle, r.width, r.height, r.depth);
     this.#live.add(pix);
     return pix;
@@ -337,6 +343,7 @@ export class WorkerSession {
     const req: WorkerRequest = { id: this.#nextRequestId++, type: "extract", handle: remoteHandleFor(pix), format, ...(quality !== undefined ? { quality } : {}) };
     return this.#request(req).then((r) => {
       if (!r.ok || r.type !== "extract") throw new Error(`extract: unexpected response ${JSON.stringify(r)}`);
+      this.#assertOpen(`extract:${format}`);
       return new Uint8Array(r.buffer);
     });
   }
@@ -350,6 +357,7 @@ export class WorkerSession {
     }
     return this.#request({ id: this.#nextRequestId++, type: "query", handle: remoteHandleFor(pix), query }).then((r) => {
       if (!r.ok || r.type !== "query") throw new Error(`query: unexpected response ${JSON.stringify(r)}`);
+      this.#assertOpen(`query:${query.query}`);
       return r.value;
     });
   }

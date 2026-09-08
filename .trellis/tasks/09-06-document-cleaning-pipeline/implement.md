@@ -381,7 +381,7 @@ after delayed tasks and cleanup, the browser assertion requires that final
 count to remain unchanged, and the local session test verifies the same
 invariant across a timer turn.
 
-### Current fatal-retirement evidence ledger (2026-09-07)
+### Current fatal-retirement evidence ledger (2026-09-08)
 
 | Requirement | Current evidence | Status |
 | --- | --- | --- |
@@ -393,7 +393,7 @@ invariant across a timer turn.
 | Curated build remains decode-free after preserving `toJPEG()` | Run `34169822640` passed both curated builds, linker export/symbol checks, curated smoke, and the full-ABI escape-hatch checks | Proven on `66066516835dcbe4c72a86189a7100a358687760`; replacement final-head run required |
 | Recoverable allocation and JPEG destination-growth failures leave no tracked native blocks | Run `34169822640` passed all 15 target-WASM fault-injection cases, including the three paths that retained resources in run `34146706412` | Proven on `66066516835dcbe4c72a86189a7100a358687760`; replacement final-head run required |
 | General-purpose binding boundary is preserved | No `documentClean`, pdfhow profile, fixed operation order, output policy, or deskew policy appears in the package API | Proven by current source inspection |
-| Feasible local contracts pass without a native/WASM rebuild | Full serial Vitest reports 102 passed and 58 skipped; the current focused fatal/instrumentation/source-patch run reports 41 passed; typecheck, strict declaration emit, release contract, task validation, and `git diff --check` pass | Proven locally for source-only coverage; artifact-dependent tests remain skipped/unverified |
+| Feasible local contracts pass without a native/WASM rebuild | Full serial Vitest reports 146 passed and 58 skipped; the focused package/trap-retirement/instrumentation run reports 99/99; typecheck, strict declaration emit, release contract, task validation, and `git diff --check` pass | Proven locally for source-only coverage; artifact-dependent tests remain skipped/unverified |
 
 The completed remote evidence at that checkpoint was feature commit
 `468f15cb14b51630ac2c4556f191920a6b005829`, CI run `34146706412`.
@@ -521,17 +521,61 @@ exception because comments, unrelated local locators, and wrong Git identities
 could spoof it. The accepted correction uses pinned `yaml@2.8.1` to parse pnpm
 lockfile version 9 with duplicate-key, alias, warning, and explicit-tag
 rejection. It binds the root importer dependency plus every package, resolution,
-and snapshot identity to the exact selected source; for tarballs it also binds `resolution.integrity`
-to the candidate file's actual SHA-512 bytes. It rejects every additional
+and snapshot identity to the exact selected source; for tarballs it also binds
+`resolution.integrity` to the candidate file's actual SHA-512 bytes. It rejects every additional
 local or directory source, canonicalizes filesystem identities before boundary
 checks, and verifies the installed package is inside the independent consumer
 but outside this worktree. Its test matrix includes real pnpm 10.34.5 tarball
 generation plus one-field-at-a-time tarball/Git identity mutations, adversarial
 YAML tags and mapping keys, additional identities, local locators, and canonical
-path/symlink cases. Final local validation reports 107 tests passed and 58
-artifact-dependent tests skipped; Node/web type checking, release-contract
-tests, Trellis task validation, and `git diff --check` pass. A final-head
-same-SHA CI run remains outstanding and has not yet started.
+path/symlink cases.
+
+PR head `61505a53f37a1daa652b63dbcc540a1d42bfa63b` was then evaluated by CI
+`34174762665`; the pull-request workflow itself checked out synthetic merge SHA
+`5bfaf27dff7b936f25dbf24fb683ba58b48bed63`. The structural lockfile gate,
+type checks, package build, and browser bundling completed, but the post-bundle
+verifier rejected Emscripten's literal `"file://"` protocol test as though it
+were a concrete build-host path.
+The independently uploaded browser fatal-retirement and all 15 resource-failure
+checks passed; secret scan `34174762663` passed. The follow-up verifier uses
+Vite's ESTree parser rather than raw text matching, but deliberately scopes the
+package contract to actual `new URL(...)` resource references through unshadowed
+`URL` and `self` globals. Arbitrary diagnostic strings, protocol checks, and
+other consumer content are not treated as a leptonica-wasm policy violation.
+Every browser-base resource URL must resolve to the expected asset, and every
+unshadowed `Worker` constructor must connect directly to such a URL, so a valid
+decoy cannot hide an invalid operational sink. Static references may use
+literals, templates, `+`, or lexically scoped constants; mutable
+`String.raw`/`.concat()` calls are non-static, direct global `URL`/`Worker`
+constructor writes are rejected, and temporal-dead-zone plus shadowing checks
+prevent a textual lookalike from satisfying the gate. Relative resource
+references use WHATWG URL resolution and must reach the expected same-directory
+asset; explicit schemes and authorities, including protocol-relative and
+sentinel-origin inputs, plus percent-encoded path separators, are rejected
+before filesystem resolution.
+Browser URL preprocessing removes ASCII tabs/newlines and trims only
+leading/trailing C0 controls or ASCII spaces; it preserves non-ASCII whitespace
+such as NBSP. The emitted curated and full-ABI WASM files are also compared
+byte-for-byte with their respective installed package assets, so correct paths
+cannot conceal a cross-variant copy. Independent regressions cover disconnected
+decoys, extra invalid URLs, direct constructor mutation, mutable string-method
+composition, lexical shadowing, constant and class-heritage TDZ, stringified
+fake URLs, encoded separator traversal, invalid authorities, cross-variant
+references, and cross-variant bytes. This remains a generated-bundle integrity
+contract, not a JavaScript security sandbox. A final concurrency audit then
+reproduced a same-turn
+result-publication race in the generic `WorkerSession` transport: after an
+internal request resolved but before its public continuation ran, a
+synchronously delivered fatal response could retire the session and still let
+the earlier continuation publish a fresh proxy or value. Successful `init`,
+`load`, `run`, `extract`, and `query` continuations now re-check terminal state
+before publication, with regressions for fatal retirement across every result
+shape and for normal close. Final local validation therefore reports 146 tests
+passed and 58 artifact-dependent tests skipped; the focused package,
+trap-retirement, and instrumentation set reports 99/99. Node/web type
+checking, release-contract tests, Trellis task validation, and `git diff --check`
+pass. A final-diff workflow run with all required jobs on the same synthetic
+merge SHA remains outstanding and has not yet started.
 
 ## M5: External real-scan comparison (R8)
 

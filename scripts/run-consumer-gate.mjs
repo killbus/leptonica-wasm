@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
+import { parseAst } from "vite";
 import { parseDocument, visit } from "yaml";
 import { validatePackageContract } from "./check-package-contract.mjs";
 
@@ -233,32 +234,385 @@ export function writeConsumer(root, sourceSpec, onlyBuiltDependency) {
   writeFileSync(join(root, "bundle.mjs"), bundleConsumer);
 }
 
-function collectRelativeUrlAssets(source) {
-  return [...source.matchAll(/new URL\(\s*["']([^"']+)["']\s*,\s*(?:import\.meta\.url|self\.location\.href)\s*\)/g)]
-    .map((match) => match[1]);
+function walkAst(node, visit, parent = undefined) {
+  if (visit(node, parent) === false) return;
+  for (const [key, child] of Object.entries(node)) {
+    if (key === "loc" || key === "start" || key === "end") continue;
+    if (Array.isArray(child)) {
+      for (const item of child) {
+        if (item !== null && typeof item === "object" && typeof item.type === "string") {
+          walkAst(item, visit, node);
+        }
+      }
+    } else if (child !== null && typeof child === "object" && typeof child.type === "string") {
+      walkAst(child, visit, node);
+    }
+  }
+}
+
+function parseBrowserBundle(source, file) {
+  try {
+    return parseAst(source);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(file + " is not parseable JavaScript: " + message);
+  }
+}
+
+function childAstNodes(node) {
+  const children = [];
+  for (const [key, child] of Object.entries(node)) {
+    if (key === "loc" || key === "start" || key === "end") continue;
+    if (Array.isArray(child)) {
+      for (const item of child) {
+        if (item !== null && typeof item === "object" && typeof item.type === "string") {
+          children.push(item);
+        }
+      }
+    } else if (child !== null && typeof child === "object" && typeof child.type === "string") {
+      children.push(child);
+    }
+  }
+  return children;
+}
+
+function createScope(parent, kind) {
+  return { parent, kind, bindings: new Map() };
+}
+
+function registerBinding(scope, name, expression, declarationStart) {
+  if (scope.bindings.has(name)) {
+    scope.bindings.set(name, { expression: undefined, declarationStart });
+  } else {
+    scope.bindings.set(name, { expression, declarationStart });
+  }
+}
+
+function nearestVariableScope(scope) {
+  let current = scope;
+  while (current.kind !== "function" && current.kind !== "program") current = current.parent;
+  return current;
+}
+
+function collectScopeInfo(parsed) {
+  const scopeForNode = new WeakMap();
+  const bindingIdentifiers = new WeakSet();
+  const root = createScope(undefined, "program");
+
+  const registerPattern = (scope, pattern, expression) => {
+    const identifiers = [];
+    const collect = (node) => {
+      if (node === null || node === undefined) return;
+      if (node.type === "Identifier") {
+        identifiers.push(node);
+      } else if (node.type === "RestElement") {
+        collect(node.argument);
+      } else if (node.type === "AssignmentPattern") {
+        collect(node.left);
+      } else if (node.type === "ArrayPattern") {
+        for (const element of node.elements) collect(element);
+      } else if (node.type === "ObjectPattern") {
+        for (const property of node.properties) {
+          collect(property.type === "RestElement" ? property.argument : property.value);
+        }
+      }
+    };
+    collect(pattern);
+    for (const identifier of identifiers) {
+      bindingIdentifiers.add(identifier);
+      registerBinding(
+        scope,
+        identifier.name,
+        identifiers.length === 1 ? expression : undefined,
+        identifier.start,
+      );
+    }
+  };
+
+  const visit = (node, scope) => {
+    scopeForNode.set(node, scope);
+
+    if (node.type === "FunctionDeclaration" || node.type === "FunctionExpression"
+      || node.type === "ArrowFunctionExpression") {
+      if (node.type === "FunctionDeclaration" && node.id !== null) {
+        bindingIdentifiers.add(node.id);
+        registerBinding(scope, node.id.name, undefined, node.id.start);
+      }
+      const functionScope = createScope(scope, "function");
+      if (node.type === "FunctionExpression" && node.id !== null) {
+        bindingIdentifiers.add(node.id);
+        registerBinding(functionScope, node.id.name, undefined, node.id.start);
+      }
+      for (const parameter of node.params) registerPattern(functionScope, parameter, undefined);
+      if (node.id !== null) scopeForNode.set(node.id, functionScope);
+      for (const parameter of node.params) visit(parameter, functionScope);
+      visit(node.body, functionScope);
+      return;
+    }
+
+    if (node.type === "ClassDeclaration" || node.type === "ClassExpression") {
+      if (node.type === "ClassDeclaration" && node.id !== null) {
+        bindingIdentifiers.add(node.id);
+        registerBinding(scope, node.id.name, undefined, node.id.start);
+      }
+      const classScope = createScope(scope, "block");
+      if (node.id !== null) {
+        bindingIdentifiers.add(node.id);
+        registerBinding(classScope, node.id.name, undefined, node.id.start);
+        scopeForNode.set(node.id, classScope);
+      }
+      if (node.superClass !== null) visit(node.superClass, classScope);
+      visit(node.body, classScope);
+      return;
+    }
+
+    if (node.type === "BlockStatement" || node.type === "StaticBlock") {
+      const blockScope = createScope(scope, "block");
+      scopeForNode.set(node, blockScope);
+      for (const child of childAstNodes(node)) visit(child, blockScope);
+      return;
+    }
+
+    if (node.type === "ForStatement" || node.type === "ForInStatement"
+      || node.type === "ForOfStatement" || node.type === "SwitchStatement") {
+      const blockScope = createScope(scope, "block");
+      scopeForNode.set(node, blockScope);
+      for (const child of childAstNodes(node)) visit(child, blockScope);
+      return;
+    }
+
+    if (node.type === "CatchClause") {
+      const catchScope = createScope(scope, "block");
+      scopeForNode.set(node, catchScope);
+      registerPattern(catchScope, node.param, undefined);
+      if (node.param !== null) visit(node.param, catchScope);
+      visit(node.body, catchScope);
+      return;
+    }
+
+    if (node.type === "VariableDeclaration") {
+      const targetScope = node.kind === "var" ? nearestVariableScope(scope) : scope;
+      for (const declaration of node.declarations) {
+        const expression = node.kind === "const" && declaration.id.type === "Identifier"
+          && declaration.init !== null ? declaration.init : undefined;
+        registerPattern(targetScope, declaration.id, expression);
+      }
+    } else if (node.type === "ImportDeclaration") {
+      for (const specifier of node.specifiers) registerPattern(scope, specifier.local, undefined);
+    }
+
+    for (const child of childAstNodes(node)) visit(child, scope);
+  };
+
+  visit(parsed, root);
+  return { scopeForNode, bindingIdentifiers };
+}
+
+function resolveBinding(node, name, scopeInfo) {
+  let scope = scopeInfo.scopeForNode.get(node);
+  while (scope !== undefined) {
+    if (scope.bindings.has(name)) return scope.bindings.get(name);
+    scope = scope.parent;
+  }
+  return undefined;
+}
+
+function isUnboundIdentifier(node, name, scopeInfo) {
+  return node.type === "Identifier" && node.name === name
+    && resolveBinding(node, name, scopeInfo) === undefined;
+}
+
+function memberHasName(node, name) {
+  if (node.type !== "MemberExpression") return false;
+  return node.computed
+    ? node.property.type === "Literal" && node.property.value === name
+    : node.property.type === "Identifier" && node.property.name === name;
+}
+
+function staticTemplateValue(node, scopeInfo, resolving) {
+  let value = node.quasis[0]?.value.cooked;
+  if (value === null || value === undefined) return undefined;
+  for (let index = 0; index < node.expressions.length; index += 1) {
+    const expression = staticStringValue(node.expressions[index], scopeInfo, resolving);
+    if (expression === undefined) return undefined;
+    const quasi = node.quasis[index + 1]?.value.cooked;
+    if (quasi === null || quasi === undefined) return undefined;
+    value += expression + quasi;
+  }
+  return value;
+}
+
+function staticStringValue(node, scopeInfo, resolving = new Set()) {
+  if (node.type === "Literal" && typeof node.value === "string") {
+    return node.value;
+  }
+  if (node.type === "Identifier") {
+    const binding = resolveBinding(node, node.name, scopeInfo);
+    if (binding === undefined || binding.expression === undefined || resolving.has(binding)
+      || (binding.declarationStart !== undefined && node.start < binding.declarationStart)) return undefined;
+    const next = new Set(resolving);
+    next.add(binding);
+    return staticStringValue(binding.expression, scopeInfo, next);
+  }
+  if (node.type === "BinaryExpression" && node.operator === "+") {
+    const left = staticStringValue(node.left, scopeInfo, resolving);
+    const right = staticStringValue(node.right, scopeInfo, resolving);
+    return left === undefined || right === undefined ? undefined : left + right;
+  }
+  if (node.type === "TemplateLiteral") {
+    return staticTemplateValue(node, scopeInfo, resolving);
+  }
+  return undefined;
+}
+
+function isBrowserRuntimeConstructor(node, name, scopeInfo) {
+  if (isUnboundIdentifier(node, name, scopeInfo)) return true;
+  return node.type === "MemberExpression" && memberHasName(node, name)
+    && node.object.type === "Identifier"
+    && ["globalThis", "self", "window"].some(
+      (globalName) => isUnboundIdentifier(node.object, globalName, scopeInfo),
+    );
+}
+
+function findBrowserRuntimeConstructorMutation(parsed, scopeInfo) {
+  let mutation;
+  walkAst(parsed, (node) => {
+    if (mutation !== undefined) return false;
+    const target = node.type === "AssignmentExpression" || node.type === "UpdateExpression"
+      ? node.left ?? node.argument
+      : node.type === "UnaryExpression" && node.operator === "delete"
+        ? node.argument
+        : undefined;
+    if (target === undefined) return true;
+    for (const name of ["URL", "Worker"]) {
+      if (isBrowserRuntimeConstructor(target, name, scopeInfo)) {
+        mutation = name;
+        return false;
+      }
+    }
+    return true;
+  });
+  return mutation;
+}
+
+function isBrowserUrlBase(node, scopeInfo) {
+  if (node.type !== "MemberExpression" || node.computed !== false
+    || node.property.type !== "Identifier") return false;
+  if (node.property.name === "url" && node.object.type === "MetaProperty") {
+    return node.object.meta.name === "import" && node.object.property.name === "meta";
+  }
+  return node.property.name === "href" && node.object.type === "MemberExpression"
+    && node.object.computed === false && node.object.property.type === "Identifier"
+    && node.object.property.name === "location"
+    && isUnboundIdentifier(node.object.object, "self", scopeInfo);
+}
+
+function collectBrowserAssetReferences(parsed, scopeInfo) {
+  const references = [];
+  const workerConstructors = [];
+  walkAst(parsed, (node, parent) => {
+    if (node.type === "NewExpression" && node.callee.type === "Identifier"
+      && isUnboundIdentifier(node.callee, "Worker", scopeInfo)) {
+      workerConstructors.push(node);
+    }
+    if (node.type !== "NewExpression" || node.callee.type !== "Identifier"
+      || !isUnboundIdentifier(node.callee, "URL", scopeInfo) || node.arguments.length < 2
+      || !isBrowserUrlBase(node.arguments[1], scopeInfo)) return true;
+    references.push({
+      node,
+      reference: staticStringValue(node.arguments[0], scopeInfo),
+      workerSink: parent?.type === "NewExpression"
+        && parent.arguments[0] === node
+        && parent.callee.type === "Identifier"
+        && isUnboundIdentifier(parent.callee, "Worker", scopeInfo),
+    });
+    return false;
+  });
+  return { references, workerConstructors };
+}
+
+function preprocessBrowserUrlReference(reference) {
+  return reference
+    .replace(/[\t\n\r]/g, "")
+    .replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, "")
+    .replaceAll("\\", "/");
+}
+
+function resolveBrowserAssetReference(root, entryFile, reference) {
+  try {
+    const normalizedReference = preprocessBrowserUrlReference(reference);
+    if (/^[A-Za-z][A-Za-z\d+.-]*:/.test(normalizedReference)
+      || normalizedReference.startsWith("//")) return undefined;
+    const base = new URL(entryFile.replaceAll("\\", "/"), "https://bundle.invalid/");
+    const resolvedUrl = new URL(normalizedReference, base);
+    if (resolvedUrl.origin !== base.origin || resolvedUrl.pathname.endsWith("/")) return undefined;
+    // decodeURIComponent followed by path.resolve() would otherwise turn an
+    // encoded separator into filesystem traversal that the browser URL parser
+    // did not perform (for example, x%2F..%2Fworker.mjs).
+    if (/%(?:2f|5c)/i.test(resolvedUrl.pathname)) return undefined;
+    const pathname = decodeURIComponent(resolvedUrl.pathname);
+    const target = resolve(root, "." + pathname);
+    return target.startsWith(root + sep) ? target : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function verifyBrowserBundleLayout(outputRoot) {
   const root = resolve(outputRoot);
+  const installedDist = resolve(dirname(root), "node_modules/leptonica-wasm/dist");
   const expectations = [
-    { file: "main.mjs", asset: "worker.mjs" },
-    { file: "worker.mjs", asset: "leptonica.wasm" },
-    { file: "full-abi/main.mjs", asset: "leptonica.wasm" },
+    { file: "main.mjs", asset: "worker.mjs", requireWorkerSink: true },
+    { file: "worker.mjs", asset: "leptonica.wasm", installedAsset: "leptonica.wasm" },
+    { file: "full-abi/main.mjs", asset: "leptonica.wasm", installedAsset: "full-abi/leptonica.wasm" },
   ];
-  for (const { file, asset } of expectations) {
+  for (const { file, asset, installedAsset, requireWorkerSink } of expectations) {
     const entry = join(root, file);
     if (!existsSync(entry) || !lstatSync(entry).isFile()) throw new Error(`browser bundle entry is missing: ${file}`);
     const source = readFileSync(entry, "utf8");
-    const normalizedSource = source.replaceAll("\\", "/");
-    if (normalizedSource.includes("/node_modules/") || normalizedSource.includes("file://")) {
-      throw new Error(`${file} leaked a package-manager path`);
+    const parsed = parseBrowserBundle(source, file);
+    const scopeInfo = collectScopeInfo(parsed);
+    const constructorMutation = findBrowserRuntimeConstructorMutation(parsed, scopeInfo);
+    if (constructorMutation !== undefined) {
+      throw new Error(`${file} mutates the global ${constructorMutation} constructor`);
     }
-    const urls = collectRelativeUrlAssets(source);
-    const match = urls.find((url) => basename(url) === asset);
-    if (!match) throw new Error(`${file} does not retain a resolvable ${asset} URL`);
-    const target = match.startsWith("/") ? join(root, match.slice(1)) : resolve(dirname(entry), match);
-    if (!target.startsWith(root + sep) || !existsSync(target) || !lstatSync(target).isFile()) {
-      throw new Error(`${file} references missing browser asset ${match}`);
+    const { references, workerConstructors } = collectBrowserAssetReferences(parsed, scopeInfo);
+    const expectedTarget = resolve(dirname(entry), asset);
+    const resolvedReferences = references.map(({ node, reference, workerSink }) => {
+      if (reference === undefined) {
+        throw new Error(`${file} contains a non-static browser asset URL`);
+      }
+      const target = resolveBrowserAssetReference(root, file, reference);
+      if (target === undefined) {
+        throw new Error(`${file} contains a disallowed browser asset URL ${reference}`);
+      }
+      if (target !== expectedTarget) {
+        throw new Error(`${file} references unexpected browser asset ${reference}`);
+      }
+      return { node, reference, target, workerSink };
+    });
+    if (resolvedReferences.length === 0) {
+      throw new Error(`${file} does not retain a resolvable ${asset} URL`);
+    }
+    if (requireWorkerSink === true) {
+      const connected = new Set(
+        resolvedReferences.filter(({ workerSink }) => workerSink).map(({ node }) => node),
+      );
+      if (connected.size === 0 || workerConstructors.some((worker) => !connected.has(worker.arguments[0]))) {
+        throw new Error(`${file} does not retain a resolvable ${asset} URL in every Worker resource sink`);
+      }
+    }
+    if (!existsSync(expectedTarget) || !lstatSync(expectedTarget).isFile()) {
+      throw new Error(`${file} references missing browser asset ${resolvedReferences[0].reference}`);
+    }
+    if (installedAsset !== undefined) {
+      const installed = join(installedDist, installedAsset);
+      if (!existsSync(installed) || !lstatSync(installed).isFile()) {
+        throw new Error(`installed package asset is missing: ${installedAsset}`);
+      }
+      if (!readFileSync(expectedTarget).equals(readFileSync(installed))) {
+        throw new Error(`${relative(root, expectedTarget).replaceAll("\\", "/")} differs from installed package asset`);
+      }
     }
   }
   const unexpected = readdirSync(root, { recursive: true })

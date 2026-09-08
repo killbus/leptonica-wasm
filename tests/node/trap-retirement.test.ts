@@ -386,6 +386,123 @@ describe("fatal WebAssembly trap retirement", () => {
     await expect(second).rejects.toThrow(/fatal WebAssembly trap/);
   });
 
+  it("does not publish successful responses after same-turn fatal retirement", async () => {
+    const posted: WorkerRequest[] = [];
+    let receive!: (response: WorkerResponse) => void;
+    let teardownCalls = 0;
+    const session = new WorkerSession(
+      (request) => posted.push(request),
+      (cb) => { receive = cb; },
+      () => { teardownCalls++; },
+    );
+
+    const init = session.init();
+    receive({ id: posted.at(-1)!.id, ok: true, type: "init" });
+    await init;
+
+    const load = session.load(new Uint8Array(4), 1, 1);
+    const loadId = posted.at(-1)!.id;
+    const fatal = session.load(new Uint8Array(4), 1, 1);
+    const fatalId = posted.at(-1)!.id;
+    const loadRejected = expect(load).rejects.toThrow(/WorkerSession is terminated/);
+    const fatalRejected = expect(fatal).rejects.toThrow(/fatal WebAssembly trap/);
+
+    // A transport is allowed to deliver multiple responses synchronously. The
+    // successful internal request must not publish a live proxy after the
+    // following fatal control response has retired the whole session.
+    receive({ id: loadId, ok: true, type: "load", handle: 1, width: 1, height: 1, depth: 32 });
+    receive({ id: fatalId, ok: false, fatal: true, error: "RuntimeError: unreachable" });
+
+    await loadRejected;
+    await fatalRejected;
+    expect(teardownCalls).toBe(1);
+  });
+
+  it("does not publish successful init after same-turn fatal retirement", async () => {
+    const posted: WorkerRequest[] = [];
+    let receive!: (response: WorkerResponse) => void;
+    let teardownCalls = 0;
+    const session = new WorkerSession(
+      (request) => posted.push(request),
+      (cb) => { receive = cb; },
+      () => { teardownCalls++; },
+    );
+
+    const init = session.init();
+    const initRejected = expect(init).rejects.toThrow(/WorkerSession is terminated/);
+    receive({ id: posted.at(-1)!.id, ok: true, type: "init" });
+    receive({ id: 999_999, ok: false, fatal: true, error: "RuntimeError: unreachable" });
+
+    await initRejected;
+    expect(teardownCalls).toBe(1);
+  });
+
+  it("gates every successful result shape against same-turn fatal retirement", async () => {
+    const posted: WorkerRequest[] = [];
+    let receive!: (response: WorkerResponse) => void;
+    const session = new WorkerSession(
+      (request) => posted.push(request),
+      (cb) => { receive = cb; },
+    );
+
+    const init = session.init();
+    receive({ id: posted.at(-1)!.id, ok: true, type: "init" });
+    await init;
+
+    const initial = session.load(new Uint8Array(4), 1, 1);
+    receive({ id: posted.at(-1)!.id, ok: true, type: "load", handle: 1, width: 1, height: 1, depth: 32 });
+    const pix = await initial;
+
+    const run = session.run(pix, []);
+    const runId = posted.at(-1)!.id;
+    const extract = session.extract(pix, "rgba");
+    const extractId = posted.at(-1)!.id;
+    const query = session.query(pix, { query: "countPixels" });
+    const queryId = posted.at(-1)!.id;
+    const fatal = session.load(new Uint8Array(4), 1, 1);
+    const fatalId = posted.at(-1)!.id;
+    const results = [run, extract, query].map((promise) =>
+      expect(promise).rejects.toThrow(/WorkerSession is terminated/),
+    );
+    const fatalRejected = expect(fatal).rejects.toThrow(/fatal WebAssembly trap/);
+
+    receive({ id: runId, ok: true, type: "run", handle: 2, width: 1, height: 1, depth: 32 });
+    receive({ id: extractId, ok: true, type: "extract", buffer: new Uint8Array([1, 2, 3, 4]).buffer });
+    receive({ id: queryId, ok: true, type: "query", value: { kind: "countPixels", count: 1 } });
+    receive({ id: fatalId, ok: false, fatal: true, error: "RuntimeError: unreachable" });
+
+    await Promise.all(results);
+    await fatalRejected;
+  });
+
+  it("does not publish a successful handle after close starts", async () => {
+    const posted: WorkerRequest[] = [];
+    let receive!: (response: WorkerResponse) => void;
+    let teardownCalls = 0;
+    const session = new WorkerSession(
+      (request) => posted.push(request),
+      (cb) => { receive = cb; },
+      () => { teardownCalls++; },
+    );
+
+    const init = session.init();
+    receive({ id: posted.at(-1)!.id, ok: true, type: "init" });
+    await init;
+
+    const load = session.load(new Uint8Array(4), 1, 1);
+    const loadId = posted.at(-1)!.id;
+    const closed = session.close();
+    const closeId = posted.at(-1)!.id;
+    const loadRejected = expect(load).rejects.toThrow(/WorkerSession is closed/);
+
+    receive({ id: loadId, ok: true, type: "load", handle: 1, width: 1, height: 1, depth: 32 });
+    receive({ id: closeId, ok: true, type: "close" });
+
+    await loadRejected;
+    await closed;
+    expect(teardownCalls).toBe(1);
+  });
+
   it("retires a session even when a fatal response arrives for a stale request id", async () => {
     const posted: WorkerRequest[] = [];
     let receive!: (response: WorkerResponse) => void;
