@@ -3,7 +3,7 @@ import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { parseAst } from "vite";
 import { parseDocument, visit } from "yaml";
 import { validatePackageContract } from "./check-package-contract.mjs";
@@ -17,10 +17,69 @@ export const CONSUMER_TOOL_VERSIONS = Object.freeze({
   typescript: "7.0.2",
 });
 
+export const CONSUMER_COMMAND_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
+const CONSUMER_COMMAND_TAIL_BYTES = 256 * 1024;
+
+export function consumerCommandSpawnOptions(cwd, env = process.env) {
+  return {
+    cwd,
+    env,
+    encoding: "utf8",
+    maxBuffer: CONSUMER_COMMAND_MAX_BUFFER_BYTES,
+  };
+}
+
+function appendOutputTail(tail, chunk) {
+  const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+  if (bytes.length >= CONSUMER_COMMAND_TAIL_BYTES) {
+    return bytes.subarray(bytes.length - CONSUMER_COMMAND_TAIL_BYTES);
+  }
+  const retained = Math.min(tail.length, CONSUMER_COMMAND_TAIL_BYTES - bytes.length);
+  return Buffer.concat([tail.subarray(tail.length - retained), bytes], retained + bytes.length);
+}
+
+export function runStreamingCommand(command, args, cwd, env = process.env, output = {}) {
+  const writeStdout = output.stdout ?? ((chunk) => process.stdout.write(chunk));
+  const writeStderr = output.stderr ?? ((chunk) => process.stderr.write(chunk));
+  return new Promise((resolveRun, rejectRun) => {
+    let child;
+    try {
+      child = spawn(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    } catch (error) {
+      rejectRun(error);
+      return;
+    }
+
+    let tail = Buffer.alloc(0);
+    let settled = false;
+    const capture = (write) => (chunk) => {
+      tail = appendOutputTail(tail, chunk);
+      write(chunk);
+    };
+    child.stdout.on("data", capture(writeStdout));
+    child.stderr.on("data", capture(writeStderr));
+    child.once("error", (error) => {
+      if (settled) return;
+      settled = true;
+      rejectRun(error);
+    });
+    child.once("close", (status, signal) => {
+      if (settled) return;
+      settled = true;
+      if (status === 0) {
+        resolveRun();
+        return;
+      }
+      const outcome = signal ? `terminated by ${signal}` : `exited with status ${status}`;
+      rejectRun(new Error(`${command} ${args.join(" ")} ${outcome} in ${cwd}\n${tail.toString("utf8")}`));
+    });
+  });
+}
+
 export function gitDependencyId(repository, commit) {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) throw new Error(`invalid GitHub repository: ${repository}`);
   if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error(`invalid Git commit: ${commit}`);
-  return `leptonica-wasm@git+https://github.com/${repository}.git#${commit}`;
+  return `leptonica-wasm@https://codeload.github.com/${repository}/tar.gz/${commit}`;
 }
 
 function parseArgs(argv) {
@@ -46,7 +105,7 @@ function parseArgs(argv) {
 }
 
 function run(command, args, cwd, env = process.env) {
-  const result = spawnSync(command, args, { cwd, env, encoding: "utf8" });
+  const result = spawnSync(command, args, consumerCommandSpawnOptions(cwd, env));
   if (result.error) throw result.error;
   if (result.status !== 0) {
     throw new Error(`${command} ${args.join(" ")} failed in ${cwd}\n${result.stdout}\n${result.stderr}`);
@@ -104,6 +163,58 @@ export async function retryWithBackoff(task, options = {}) {
       onRetry({ attempt, delayMs, error });
       await sleep(delayMs);
       attempt += 1;
+    }
+  }
+}
+
+export function removeConsumerRoot(root, remove = rmSync) {
+  remove(root, {
+    recursive: true,
+    force: true,
+    maxRetries: 8,
+    retryDelay: 250,
+  });
+}
+
+function isOwnedConsumerRoot(root) {
+  const absoluteRoot = resolve(root);
+  return dirname(absoluteRoot) === resolve(tmpdir())
+    && /^leptonica-consumer-[1-3]-.+$/.test(basename(absoluteRoot));
+}
+
+function cleanupErrorCode(error) {
+  return error && typeof error === "object" && "code" in error
+    ? error.code
+    : undefined;
+}
+
+function warnAboutCleanupFailure(warn, root, error) {
+  const message = error instanceof Error ? error.message : String(error);
+  try {
+    warn(`consumer cleanup left temporary root ${root}: ${message}`);
+  } catch {
+    // Cleanup diagnostics must not replace the consumer gate result.
+  }
+}
+
+export async function withConsumerRootCleanup(root, task, options = {}) {
+  const remove = options.remove ?? removeConsumerRoot;
+  const warn = options.warn ?? console.warn;
+  let taskFailed = false;
+  try {
+    return await task();
+  } catch (error) {
+    taskFailed = true;
+    throw error;
+  } finally {
+    try {
+      remove(root);
+    } catch (cleanupError) {
+      if (taskFailed || (isOwnedConsumerRoot(root) && cleanupErrorCode(cleanupError) === "ENOTEMPTY")) {
+        warnAboutCleanupFailure(warn, root, cleanupError);
+      } else {
+        throw cleanupError;
+      }
     }
   }
 }
@@ -216,6 +327,16 @@ copyFileSync(fullAbiWasm, "browser-dist/full-abi/leptonica.wasm");
 export function consumerWorkspaceYaml(onlyBuiltDependency) {
   const allowed = ["esbuild", ...(onlyBuiltDependency ? [onlyBuiltDependency] : [])];
   return ["onlyBuiltDependencies:", ...allowed.map((name) => "  - \"" + name + "\""), ""].join("\n");
+}
+
+export function consumerAttemptPaths(ownerRoot) {
+  // pnpm prepares Git-hosted dependencies below the store and runs their
+  // package manager there. Keep that tree outside the consumer workspace so
+  // workspace discovery cannot recurse into the outer consumer install.
+  return {
+    consumerRoot: join(ownerRoot, "consumer"),
+    store: join(ownerRoot, "store"),
+  };
 }
 
 export function writeConsumer(root, sourceSpec, onlyBuiltDependency) {
@@ -833,15 +954,20 @@ export function validateInstalledPackageRoot(packageRoot, consumerRoot) {
   }
 }
 
+export function consumerPackageContractOptions(options) {
+  return {
+    requireManifest: true,
+    expectedCommit: options.commit,
+    expectedSourceIdentityKind: options.repository ? "git-commit-archive" : "git-checkout",
+    requireCleanSource: Boolean(options.tarball),
+  };
+}
+
 function verifyInstalled(root, options) {
   const packageLink = join(root, "node_modules", "leptonica-wasm");
   const packageRoot = realpathSync(packageLink);
   validateInstalledPackageRoot(packageRoot, root);
-  const contractErrors = validatePackageContract(packageRoot, {
-    requireManifest: true,
-    expectedCommit: options.commit,
-    requireCleanSource: Boolean(options.commit),
-  });
+  const contractErrors = validatePackageContract(packageRoot, consumerPackageContractOptions(options));
   if (contractErrors.length > 0) throw new Error(contractErrors.join("\n"));
   const lock = readFileSync(join(root, "pnpm-lock.yaml"), "utf8");
   validateConsumerLockfile(lock, { ...options, consumerRoot: root });
@@ -856,18 +982,19 @@ function verifyInstalled(root, options) {
 
 async function runOnce(options, attempt) {
   const root = mkdtempSync(join(tmpdir(), `leptonica-consumer-${attempt}-`));
-  const store = join(root, "store");
-  mkdirSync(store);
-  const sourceSpec = options.tarball
-    ? `file:${options.tarball}`
-    : `git+https://github.com/${options.repository}.git#${options.commit}`;
-  const allow = options.repository ? gitDependencyId(options.repository, options.commit) : undefined;
-  writeConsumer(root, sourceSpec, allow);
-  try {
+  const { consumerRoot, store } = consumerAttemptPaths(root);
+  const runConsumer = async () => {
+    mkdirSync(consumerRoot);
+    mkdirSync(store);
+    const sourceSpec = options.tarball
+      ? `file:${options.tarball}`
+      : `git+https://github.com/${options.repository}.git#${options.commit}`;
+    const allow = options.repository ? gitDependencyId(options.repository, options.commit) : undefined;
+    writeConsumer(consumerRoot, sourceSpec, allow);
     const installArgs = ["install", "--store-dir", store, "--config.confirmModulesPurge=false"];
     if (options.tarball) installArgs.push("--ignore-scripts");
     await retryWithBackoff(
-      () => run("pnpm", installArgs, root, { ...process.env, CI: "true" }),
+      () => runStreamingCommand("pnpm", installArgs, consumerRoot, { ...process.env, CI: "true" }),
       {
         onRetry: ({ attempt: retryAttempt, delayMs, error }) => {
           const message = error instanceof Error ? error.message : String(error);
@@ -875,10 +1002,16 @@ async function runOnce(options, attempt) {
         },
       },
     );
-    verifyInstalled(root, options);
-  } finally {
-    if (options.keep) console.log(`consumer retained at ${root}`);
-    else rmSync(root, { recursive: true, force: true });
+    verifyInstalled(consumerRoot, options);
+  };
+  if (options.keep) {
+    try {
+      await runConsumer();
+    } finally {
+      console.log(`consumer retained at ${root}`);
+    }
+  } else {
+    await withConsumerRootCleanup(root, runConsumer);
   }
 }
 

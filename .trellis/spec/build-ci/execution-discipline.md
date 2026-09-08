@@ -136,6 +136,8 @@ Branch protection on "main" anchors release provenance. Keep branch deletion and
 - GitHub Release is the sole publication channel.
 - Release artifacts are built in CI from the pinned, cold-verified toolchain.
 - The package includes the curated default artifacts, the full-ABI escape hatch, type declarations, license, README, and the content hash manifest required by the release workflow.
+- Git-source package preparation derives its commit from intrinsic source metadata: a Git checkout uses its exact HEAD, while a commit archive uses a tracked export-substituted marker. An expected commit supplied by CI only cross-checks that intrinsic identity and never replaces it.
+- Commit archives record source-tree dirtiness as unobservable rather than clean. The fixed-commit consumer checks the exact Git specifier, the codeload URL containing the requested commit SHA, and the resulting package provenance; the Git lock entry does not provide an independent archive-content hash.
 - A documentation correction made after a tag requires a new version and tag to reach a published tarball.
 
 ## 9. Stable product-specific constraints

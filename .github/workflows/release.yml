@@ -23,6 +23,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
+  actions: read
   # contents:write is required to create the GitHub Release; the npm
   # publish path (which needed no repo token beyond NODE_AUTH_TOKEN) is gone.
   contents: write
@@ -45,6 +46,80 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 20
+
+      - name: Validate release identity
+        id: release_identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p 'require("./package.json").version')
+          expected_tag="v${version}"
+          if [ "$GITHUB_REF_NAME" != "$expected_tag" ]; then
+            echo "ERROR: tag $GITHUB_REF_NAME does not match package version $version"
+            exit 1
+          fi
+          git fetch --force --depth=1 origin \
+            "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          if [ "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")" != "tag" ]; then
+            echo "ERROR: $GITHUB_REF_NAME must be an annotated tag"
+            exit 1
+          fi
+          tag_object=$(git rev-parse "refs/tags/$GITHUB_REF_NAME")
+          tag_commit=$(git rev-parse "refs/tags/$GITHUB_REF_NAME^{commit}")
+          event_commit=$(git rev-parse "$GITHUB_SHA^{commit}")
+          head_commit=$(git rev-parse HEAD)
+          test "$head_commit" = "$event_commit" || {
+            echo "ERROR: checkout commit $head_commit differs from event commit $event_commit"
+            exit 1
+          }
+          test "$event_commit" = "$tag_commit" || {
+            echo "ERROR: event commit $event_commit differs from current tag commit $tag_commit"
+            exit 1
+          }
+          main_commit=$(git ls-remote --exit-code origin refs/heads/main | awk '{print $1}')
+          if [ -z "$main_commit" ]; then
+            echo "ERROR: origin/main did not resolve"
+            exit 1
+          fi
+          test "$tag_commit" = "$main_commit" || {
+            echo "ERROR: tag commit $tag_commit is not current origin/main $main_commit"
+            exit 1
+          }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag_object=$tag_object" >> "$GITHUB_OUTPUT"
+          echo "commit=$tag_commit" >> "$GITHUB_OUTPUT"
+
+      - name: Verify successful CI for release commit
+        id: verified_main_ci
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ steps.release_identity.outputs.commit }}
+        run: |
+          set -euo pipefail
+          response=$(curl --fail --silent --show-error \
+            --retry 6 --retry-delay 2 --retry-max-time 60 --retry-all-errors \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&event=push&status=completed&per_page=100")
+          run_id=$(jq -er --arg commit "$RELEASE_COMMIT" \
+            'first(.workflow_runs[] | select(.head_sha == $commit and .event == "push" and .conclusion == "success")) | .id' \
+            <<< "$response") || {
+              echo "ERROR: no successful main CI run found for $RELEASE_COMMIT"
+              exit 1
+            }
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+
+      # v8.0.1 (2026-03-11): same reviewed immutable pin and official
+      # cross-run download inputs used in ci.yml. This retrieves the exact
+      # candidate that the successful main CI run tested.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-candidate
+          path: tmp/verified-main-ci
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.verified_main_ci.outputs.run_id }}
 
       # Toolchain pins are read from vendor/versions.json (single source of
       # truth — M1 review build-eng W2: no yml-side dual-write of pins).
@@ -90,11 +165,21 @@ jobs:
         # generated declarations/workers -> export/smoke checks -> provenance
         # -> final hash manifest. Nothing in dist changes after this step.
         env:
-          LEPTONICA_WASM_SOURCE_COMMIT: ${{ github.sha }}
+          LEPTONICA_WASM_SOURCE_COMMIT: ${{ steps.release_identity.outputs.commit }}
         run: |
           . ./tmp/emsdk/emsdk_env.sh
           mkdir -p tmp/release-candidate
           pnpm pack --pack-destination tmp/release-candidate
+          candidate="tmp/release-candidate/leptonica-wasm-${{ steps.release_identity.outputs.version }}.tgz"
+          verified_candidate="tmp/verified-main-ci/leptonica-wasm-${{ steps.release_identity.outputs.version }}.tgz"
+          test -f "$candidate"
+          test -f "$verified_candidate"
+          test "$(find tmp/release-candidate -maxdepth 1 -type f -name '*.tgz' | wc -l)" -eq 1
+          cmp --silent "$candidate" "$verified_candidate" || {
+            echo "ERROR: release tarball differs from the candidate tested by main CI"
+            sha256sum "$candidate" "$verified_candidate"
+            exit 1
+          }
 
       - name: Test
         run: |
@@ -112,8 +197,8 @@ jobs:
           # grep -qx makes grep exit on first match, tar dies with SIGPIPE,
           # and pipefail turns that into a false "missing" failure
           # (first seen in run 33949512439).
-          candidate=$(find tmp/release-candidate -maxdepth 1 -name 'leptonica-wasm-*.tgz' -print -quit)
-          test -n "$candidate"
+          candidate="tmp/verified-main-ci/leptonica-wasm-${{ steps.release_identity.outputs.version }}.tgz"
+          test -f "$candidate"
           listing="$(tar -tzf "$candidate")"
           for required in \
             package/dist/full-abi/leptonica.mjs \
@@ -135,16 +220,66 @@ jobs:
 
       - name: Fresh tarball consumer
         run: |
-          candidate=$(find tmp/release-candidate -maxdepth 1 -name 'leptonica-wasm-*.tgz' -print -quit)
-          node scripts/run-consumer-gate.mjs --tarball "$candidate" --commit "${{ github.sha }}" --repeat 2
+          candidate="tmp/verified-main-ci/leptonica-wasm-${{ steps.release_identity.outputs.version }}.tgz"
+          node scripts/run-consumer-gate.mjs \
+            --tarball "$candidate" \
+            --commit "${{ steps.release_identity.outputs.commit }}" \
+            --repeat 2
 
       - name: Fresh fixed-commit Git consumer
         run: |
           . ./tmp/emsdk/emsdk_env.sh
           node scripts/run-consumer-gate.mjs \
             --github-repository "${{ github.repository }}" \
-            --commit "${{ github.sha }}" \
+            --commit "${{ steps.release_identity.outputs.commit }}" \
             --repeat 2
+
+      # Download the successful main CI artifact again only after all
+      # repository-controlled tests have finished. The release action below
+      # receives these freshly staged bytes, never the mutable local rebuild.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-candidate
+          path: tmp/release-asset
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.verified_main_ci.outputs.run_id }}
+
+      - name: Freeze verified release asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.release_identity.outputs.version }}"
+          rebuilt="tmp/release-candidate/leptonica-wasm-${version}.tgz"
+          first_download="tmp/verified-main-ci/leptonica-wasm-${version}.tgz"
+          release_asset="tmp/release-asset/leptonica-wasm-${version}.tgz"
+          test -f "$release_asset"
+          test "$(find tmp/release-asset -maxdepth 1 -type f -name '*.tgz' | wc -l)" -eq 1
+          cmp --silent "$release_asset" "$first_download"
+          cmp --silent "$release_asset" "$rebuilt"
+          chmod 0444 "$release_asset"
+          sha256sum "$release_asset"
+
+      - name: Revalidate release target
+        shell: bash
+        run: |
+          set -euo pipefail
+          main_commit=$(git ls-remote --exit-code origin refs/heads/main | awk '{print $1}')
+          test "${{ steps.release_identity.outputs.commit }}" = "$main_commit" || {
+            echo "ERROR: origin/main advanced to $main_commit during release validation"
+            exit 1
+          }
+          tag_refs=$(git ls-remote --exit-code origin \
+            "refs/tags/$GITHUB_REF_NAME" "refs/tags/$GITHUB_REF_NAME^{}")
+          tag_object=$(awk -v ref="refs/tags/$GITHUB_REF_NAME" '$2 == ref { print $1 }' <<< "$tag_refs")
+          tag_commit=$(awk -v ref="refs/tags/$GITHUB_REF_NAME^{}" '$2 == ref { print $1 }' <<< "$tag_refs")
+          test "${{ steps.release_identity.outputs.tag_object }}" = "$tag_object" || {
+            echo "ERROR: tag object moved during release validation"
+            exit 1
+          }
+          test "${{ steps.release_identity.outputs.commit }}" = "$tag_commit" || {
+            echo "ERROR: tag commit moved during release validation"
+            exit 1
+          }
 
       # npm publishing disabled (user direction 2026-09-05): distribution
       # is the release tarball asset, installable from the release URL.
@@ -156,6 +291,6 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64
         with:
-          files: tmp/release-candidate/leptonica-wasm-*.tgz
+          files: tmp/release-asset/leptonica-wasm-${{ steps.release_identity.outputs.version }}.tgz
           generate_release_notes: true
           fail_on_unmatched_files: true

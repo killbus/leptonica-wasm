@@ -8,12 +8,19 @@ import { describe, expect, it } from "vitest";
 import { EXPECTED_EXPORTS, validatePackageContract } from "../../scripts/check-package-contract.mjs";
 import { generateHashManifest } from "../../scripts/gen-hash-manifest.mjs";
 import {
+  CONSUMER_COMMAND_MAX_BUFFER_BYTES,
   CONSUMER_TOOL_VERSIONS,
+  consumerPackageContractOptions,
+  consumerAttemptPaths,
+  consumerCommandSpawnOptions,
   consumerWorkspaceYaml,
   gitDependencyId,
   isRetryableNetworkError,
+  removeConsumerRoot,
   retryAfterMilliseconds,
   retryWithBackoff,
+  runStreamingCommand,
+  withConsumerRootCleanup,
   validateConsumerLockfile,
   validateInstalledPackageRoot,
   verifyBrowserBundleLayout,
@@ -75,7 +82,12 @@ function fixture(): string {
     }
   }
   writeFileSync(join(root, "dist/package-provenance.json"), JSON.stringify({
-    sourceCommit: "a".repeat(40), packageVersion: "0.1.1", sourceTreeDirty: false, dependencyPins,
+    sourceCommit: "a".repeat(40),
+    sourceIdentityKind: "git-checkout",
+    sourceTreeDirty: false,
+    sourceTreeState: "clean",
+    packageVersion: "0.1.1",
+    dependencyPins,
   }));
   return root;
 }
@@ -104,6 +116,22 @@ function writeCompleteManifest(root: string): void {
 }
 
 describe("package contract checker", () => {
+  it("requires clean checkout provenance for tarballs and archive provenance for fixed commits", () => {
+    const commit = "a".repeat(40);
+    expect(consumerPackageContractOptions({ tarball: "/tmp/candidate.tgz", commit })).toEqual({
+      requireManifest: true,
+      expectedCommit: commit,
+      expectedSourceIdentityKind: "git-checkout",
+      requireCleanSource: true,
+    });
+    expect(consumerPackageContractOptions({ repository: "owner/repo", commit })).toEqual({
+      requireManifest: true,
+      expectedCommit: commit,
+      expectedSourceIdentityKind: "git-commit-archive",
+      requireCleanSource: false,
+    });
+  });
+
   it("keeps only the known auxiliary build outputs outside source-dirty provenance", () => {
     const root = mkdtempSync(join(tmpdir(), "leptonica-source-dirty-"));
     mkdirSync(join(root, "src"));
@@ -167,6 +195,36 @@ describe("package contract checker", () => {
     const root = fixture();
     expect(validatePackageContract(root, { expectedCommit: "b".repeat(40) })).toContainEqual(
       expect.stringContaining("differs from expected"),
+    );
+  });
+
+  it("accepts an archive identity without claiming the source tree was observable", () => {
+    const root = fixture();
+    const provenancePath = join(root, "dist/package-provenance.json");
+    const provenance = JSON.parse(readFileSync(provenancePath, "utf8"));
+    provenance.sourceIdentityKind = "git-commit-archive";
+    provenance.sourceTreeDirty = null;
+    provenance.sourceTreeState = "not-observable-commit-archive";
+    writeFileSync(provenancePath, JSON.stringify(provenance));
+    expect(validatePackageContract(root, { expectedSourceIdentityKind: "git-commit-archive" })).toEqual([]);
+    expect(validatePackageContract(root, { expectedSourceIdentityKind: "git-checkout" })).toContainEqual(
+      expect.stringContaining("source identity git-commit-archive differs from expected git-checkout"),
+    );
+    expect(validatePackageContract(root, { requireCleanSource: true })).toContain(
+      "package provenance does not prove a clean Git checkout",
+    );
+  });
+
+  it("rejects an archive provenance that falsely claims a clean source tree", () => {
+    const root = fixture();
+    const provenancePath = join(root, "dist/package-provenance.json");
+    const provenance = JSON.parse(readFileSync(provenancePath, "utf8"));
+    provenance.sourceIdentityKind = "git-commit-archive";
+    provenance.sourceTreeDirty = false;
+    provenance.sourceTreeState = "clean";
+    writeFileSync(provenancePath, JSON.stringify(provenance));
+    expect(validatePackageContract(root)).toContain(
+      "package provenance archive source-tree state must remain explicitly unobservable",
     );
   });
 
@@ -255,7 +313,7 @@ describe("fixed-commit consumer identity", () => {
   it("uses the exact pnpm Git dependency identity", () => {
     const commit = "a".repeat(40);
     expect(gitDependencyId("owner/repository", commit)).toBe(
-      `leptonica-wasm@git+https://github.com/owner/repository.git#${commit}`,
+      `leptonica-wasm@https://codeload.github.com/owner/repository/tar.gz/${commit}`,
     );
   });
 
@@ -268,6 +326,52 @@ describe("fixed-commit consumer identity", () => {
 });
 
 describe("independent consumer gate", () => {
+  it("uses a bounded command buffer large enough for Git dependency builds", () => {
+    const env = { CI: "true" };
+    expect(CONSUMER_COMMAND_MAX_BUFFER_BYTES).toBe(16 * 1024 * 1024);
+    expect(consumerCommandSpawnOptions("/consumer", env)).toEqual({
+      cwd: "/consumer",
+      env,
+      encoding: "utf8",
+      maxBuffer: CONSUMER_COMMAND_MAX_BUFFER_BYTES,
+    });
+  });
+
+  it("streams long-running command output before the child exits", async () => {
+    const startedAt = Date.now();
+    let firstOutputAt = Number.POSITIVE_INFINITY;
+    const command = [
+      'process.stdout.write("ready\\n");',
+      "setTimeout(() => process.exit(0), 1000);",
+    ].join("");
+
+    await runStreamingCommand(process.execPath, ["-e", command], process.cwd(), process.env, {
+      stdout: () => { firstOutputAt = Math.min(firstOutputAt, Date.now()); },
+      stderr: () => {},
+    });
+
+    expect(firstOutputAt - startedAt).toBeLessThan(800);
+  });
+
+  it("retains a bounded failure tail for network retry classification", async () => {
+    let failure: unknown;
+    try {
+      await runStreamingCommand(
+        process.execPath,
+        ["-e", 'process.stderr.write("HTTP 503 from registry\\n"); process.exit(1);'],
+        process.cwd(),
+        process.env,
+        { stdout: () => {}, stderr: () => {} },
+      );
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain("exited with status 1");
+    expect((failure as Error).message).toContain("HTTP 503 from registry");
+    expect(isRetryableNetworkError(failure)).toBe(true);
+  });
+
   function tarballFixture(consumerRoot: string, tarball: string): any {
     const absoluteLocator = `file:${resolve(tarball).replaceAll("\\", "/")}`;
     const relativeLocator = `file:${relative(consumerRoot, tarball).replaceAll("\\", "/")}`;
@@ -761,9 +865,156 @@ describe("independent consumer gate", () => {
     expect(ci).toContain("timeout-minutes: 60");
     expect(release).toContain("timeout-minutes: 90");
   });
+
+  it("runs the fixed-commit gate against the reviewable PR head", () => {
+    const ci = readFileSync(".github/workflows/ci.yml", "utf8");
+
+    expect(ci).toContain("github.event_name == 'pull_request' || (github.event_name == 'push'");
+    expect(ci).toContain("github.event.pull_request.head.sha");
+    expect(ci).toContain('--commit "$SOURCE_COMMIT"');
+    expect(ci).toContain('candidate="tmp/release-candidate/leptonica-wasm-${version}.tgz"');
+    expect(ci).toContain('path: ${{ steps.pack_release_candidate.outputs.candidate }}');
+    expect(ci.indexOf("name: release-candidate")).toBeLessThan(
+      ci.indexOf("- name: Fresh tarball consumer"),
+    );
+  });
+
+  it("binds a release to package version, current main, and one exact tarball", () => {
+    const release = readFileSync(".github/workflows/release.yml", "utf8");
+
+    expect(release).toContain('expected_tag="v${version}"');
+    expect(release).toContain('git ls-remote --exit-code origin refs/heads/main');
+    expect(release).toContain('test "$head_commit" = "$event_commit"');
+    expect(release).toContain('test "$event_commit" = "$tag_commit"');
+    expect(release).toContain('test "$tag_commit" = "$main_commit"');
+    expect(release).toContain('Verify successful CI for release commit');
+    expect(release).toContain('.head_sha == $commit');
+    expect(release).toContain('run-id: ${{ steps.verified_main_ci.outputs.run_id }}');
+    expect(release).toContain('cmp --silent "$candidate" "$verified_candidate"');
+    expect(release).toContain('cmp --silent "$release_asset" "$first_download"');
+    expect(release).toContain('cmp --silent "$release_asset" "$rebuilt"');
+    expect(release).toContain('echo "commit=$tag_commit" >> "$GITHUB_OUTPUT"');
+    expect(release).toContain('LEPTONICA_WASM_SOURCE_COMMIT: ${{ steps.release_identity.outputs.commit }}');
+    expect(release).toContain(
+      'files: tmp/release-asset/leptonica-wasm-${{ steps.release_identity.outputs.version }}.tgz',
+    );
+    expect(release).not.toContain('leptonica-wasm-*.tgz');
+
+    const finalDownload = release.lastIndexOf("uses: actions/download-artifact@");
+    const freeze = release.indexOf("- name: Freeze verified release asset");
+    const revalidate = release.indexOf("- name: Revalidate release target");
+    const publish = release.indexOf("- name: Create GitHub Release");
+    expect(finalDownload).toBeGreaterThan(release.indexOf("- name: Fresh fixed-commit Git consumer"));
+    expect(finalDownload).toBeLessThan(freeze);
+    expect(freeze).toBeLessThan(revalidate);
+    expect(revalidate).toBeLessThan(publish);
+  });
 });
 
 describe("consumer install retry policy", () => {
+  it("keeps the pnpm store outside the consumer workspace", () => {
+    const ownerRoot = join(tmpdir(), "leptonica-consumer-1-layout");
+    const { consumerRoot, store } = consumerAttemptPaths(ownerRoot);
+
+    expect(consumerRoot).toBe(join(ownerRoot, "consumer"));
+    expect(store).toBe(join(ownerRoot, "store"));
+    expect(relative(consumerRoot, store).startsWith("..")).toBe(true);
+  });
+
+  it("retries transient recursive cleanup races", () => {
+    let receivedPath;
+    let receivedOptions;
+    removeConsumerRoot("/tmp/consumer-root", (path, options) => {
+      receivedPath = path;
+      receivedOptions = options;
+    });
+
+    expect(receivedPath).toBe("/tmp/consumer-root");
+    expect(receivedOptions).toEqual({
+      recursive: true,
+      force: true,
+      maxRetries: 8,
+      retryDelay: 250,
+    });
+  });
+
+  it("preserves a successful gate when an owned temporary root stays non-empty", async () => {
+    const warnings: string[] = [];
+    const root = join(tmpdir(), "leptonica-consumer-1-race");
+    const result = await withConsumerRootCleanup(root, () => "verified", {
+      remove: () => { throw Object.assign(new Error("directory not empty"), { code: "ENOTEMPTY" }); },
+      warn: (message) => { warnings.push(message); },
+    });
+
+    expect(result).toBe("verified");
+    expect(warnings).toEqual([expect.stringContaining(root)]);
+  });
+
+  it.each(["EACCES", "EIO"])(
+    "fails a successful gate when cleanup reports %s",
+    async (code) => {
+      const cleanupError = Object.assign(new Error(`cleanup failed: ${code}`), { code });
+      await expect(withConsumerRootCleanup(
+        join(tmpdir(), "leptonica-consumer-1-hard-failure"),
+        () => "verified",
+        { remove: () => { throw cleanupError; } },
+      )).rejects.toBe(cleanupError);
+    },
+  );
+
+  it.each(["ENOTEMPTY", "EACCES"])(
+    "preserves the gate failure when cleanup also reports %s",
+    async (code) => {
+      const gateError = new Error("consumer verification failed");
+      const warnings: string[] = [];
+      await expect(withConsumerRootCleanup(
+        join(tmpdir(), "leptonica-consumer-1-primary-failure"),
+        () => { throw gateError; },
+        {
+          remove: () => { throw Object.assign(new Error(`cleanup failed: ${code}`), { code }); },
+          warn: (message) => { warnings.push(message); },
+        },
+      )).rejects.toBe(gateError);
+      expect(warnings).toEqual([expect.stringContaining(`cleanup failed: ${code}`)]);
+    },
+  );
+
+  it("does not trust an ENOTEMPTY-looking message without that error code", async () => {
+    const cleanupError = Object.assign(new Error("ENOTEMPTY: directory not empty"), { code: "EIO" });
+    await expect(withConsumerRootCleanup(
+      join(tmpdir(), "leptonica-consumer-1-wrong-code"),
+      () => "verified",
+      { remove: () => { throw cleanupError; } },
+    )).rejects.toBe(cleanupError);
+  });
+
+  it("does not tolerate ENOTEMPTY outside an owned consumer root", async () => {
+    const cleanupError = Object.assign(new Error("directory not empty"), { code: "ENOTEMPTY" });
+    await expect(withConsumerRootCleanup(
+      join(tmpdir(), "unrelated-root"),
+      () => "verified",
+      { remove: () => { throw cleanupError; } },
+    )).rejects.toBe(cleanupError);
+  });
+
+  it("continues later isolated attempts after a tolerated cleanup race", async () => {
+    const executed: number[] = [];
+    const warnings: string[] = [];
+    for (const attempt of [1, 2]) {
+      await withConsumerRootCleanup(
+        join(tmpdir(), `leptonica-consumer-${attempt}-race`),
+        () => { executed.push(attempt); },
+        {
+          remove: () => { throw Object.assign(new Error("directory not empty"), { code: "ENOTEMPTY" }); },
+          warn: (message) => { warnings.push(message); },
+        },
+      );
+    }
+
+    expect(executed).toEqual([1, 2]);
+    expect(warnings).toHaveLength(2);
+  });
+
   it.each([
     "stream disconnected while receiving package metadata",
     "ERR_PNPM_FETCH_429 GET https://registry.example/package: Too Many Requests",

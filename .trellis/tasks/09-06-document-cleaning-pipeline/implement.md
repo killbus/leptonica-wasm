@@ -582,6 +582,164 @@ bundle retains both the Worker URL and the curated WASM URL. The replacement
 gate must accept that exact two-asset set while continuing to reject all other
 resource URLs, then complete all downstream jobs on one synthetic merge SHA.
 
+### Release-preparation checkpoint (2026-09-08)
+
+PR #12 was squash-merged to `main` as
+`9d58ae6c24d1b8e11518d19234c6862c7830d639`. Secret scan run `34191680264`
+passed, while main CI run `34191680304` failed in the fixed-commit consumer:
+pnpm represented the GitHub dependency by its codeload tarball identity and
+rejected the former Git-URL allow-build key with
+`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`. The release-preparation branch now
+derives the exact pnpm identity as
+`leptonica-wasm@https://codeload.github.com/{owner}/{repo}/tar.gz/{commit}`.
+The gate also runs against the actual pull-request head SHA rather than the
+synthetic merge SHA, while main pushes continue to use the pushed SHA.
+
+The package version is staged as `0.2.0`. Main CI names the tarball from that
+exact version, rejects additional candidate tarballs, and uploads the candidate
+immediately after packing, before any repository script runs again. Release
+validation requires an annotated `v${package.version}` tag on the current
+`origin/main`, selects a successful `ci.yml` main-push run with the exact head
+SHA, downloads that run's `release-candidate`, and requires an independent cold
+rebuild to match it byte-for-byte. Pack review and tarball-consumer checks run
+against the CI artifact. After all repository-controlled tests finish, the
+workflow downloads the same artifact again into a fresh release-only path,
+compares it to both prior copies, makes it read-only, revalidates the remote
+main/tag object/tag commit, and gives only that path to the pinned GitHub
+Release action. No npm publication path exists.
+
+A serial supply-chain falsification review confirmed the exact-SHA successful
+CI lookup, cross-run artifact inputs and permissions, pnpm codeload identity,
+checkout/event/tag/main identity, and absence of npm or credential-state
+changes. It found and caused the upload-order/final-byte correction above. It
+also identified that workflow-side remote-ref checks cannot eliminate the final
+tag-movement TOCTOU window. The repository therefore still requires an active
+tag ruleset for `refs/tags/v*` with deletion and non-fast-forward updates
+blocked before `v0.2.0` is created. A creation attempt using the provided token
+as process stdin returned HTTP 403; no repository rule changed and `gh auth`
+was not modified. This governance permission gap blocks the immutable tag, not
+the release-preparation PR.
+
+Current release-preparation lightweight evidence: the focused package-contract
+suite passes 74/74, both workflow YAML files parse, and `git diff --check`
+passes. Native/WASM builds, browser E2E, target resource tests, and consumer
+installation remain delegated to GitHub CI to protect the constrained local
+machine.
+
+PR #13 CI runs `34203187459` and `34204102369` completed every native, WASM,
+browser, packaging, determinism, tarball-consumer, and comparison job
+successfully except their respective `fixed-commit-consumer` jobs
+`101987144582` and `101990061123`. Installation, compilation, runtime checks,
+and dependency-identity validation completed; both jobs failed only while
+recursively removing their isolated pnpm stores because Node reported a
+transient `ENOTEMPTY` race. The first response added bounded recursive-removal
+retries (`maxRetries: 8`, `retryDelay: 250`), but the second run proved that a
+finite retry window alone does not define the correct gate result.
+
+A serial reliability falsification review therefore required primary-result
+preservation. Cleanup now retains bounded retries, never replaces an existing
+consumer failure, and only downgrades a final `ENOTEMPTY` to an explicit
+leftover-path warning when the target is the directly owned
+`leptonica-consumer-{1..3}-*` directory under the system temporary directory.
+Other cleanup codes, lookalike messages, and unowned paths still fail a
+successful gate. Regression coverage includes successful and failed gate
+results, `ENOTEMPTY`, `EACCES`, `EIO`, false message matches, unowned paths, and
+two isolated attempts. Current lightweight evidence is 158 tests passed with
+58 artifact-dependent tests skipped, focused package contracts 83/83, node/web
+type checking, and release-contract tests. Neither failed CI run is accepted as
+release evidence; a new PR run must reach terminal success before merge.
+
+PR #13 CI run `34205380352` then passed every native, WASM, browser, resource,
+packaging, determinism, tarball-consumer, and comparison job except
+`fixed-commit-consumer` job `101994172596`. The revised cleanup behavior
+correctly preserved and exposed the primary failure: `spawnSync pnpm ENOBUFS`;
+the accompanying leftover-store warning no longer replaced it. Node's default
+synchronous child-process output buffer was too small for the Git dependency's
+build log. The consumer runner now applies an explicit 16 MiB per-stream
+`maxBuffer`: large enough for this bounded build output while retaining a firm
+memory and runaway-log failure boundary. A package-contract regression fixes
+that value and verifies the exact spawn options used by the runner. Focused
+package contracts now pass 84/84 and node/web type checking passes locally. A
+new CI run remains required before this change can be release evidence.
+
+PR #13 CI run `34206188591` passed the other eight executed checks but the
+fixed-commit job `101996802973` ended its consumer step after about four minutes
+with exit 143. The 16 MiB bound prevented the prior `ENOBUFS`, but synchronous
+capture still withheld all pnpm/prepack output until process completion and
+therefore left no evidence for the initiating SIGTERM. A serial independent
+reliability audit ranked that full buffering and observability gap above OOM or
+script timeout; the job-level timeout is 60 minutes, and the available evidence
+does not prove a GitHub no-output watchdog. The Git-source `pnpm install` now
+uses asynchronous `spawn`, immediately forwards stdout and stderr, and retains
+only a 256 KiB tail for failure reporting and the existing 429/5xx retry
+classification. Other short consumer verification commands retain the explicit
+16 MiB synchronous bound. Regressions prove output is observed before a
+one-second child exits and that a streamed HTTP 503 failure remains retryable.
+A subsequent CI run must establish whether streaming also removes the external
+SIGTERM cause; regardless, it restores bounded memory and actionable logs.
+
+PR #13 CI run `34208376325` made the external SIGTERM diagnosable. Its
+`fixed-commit-consumer` job `102003996333` emitted a recursively deepening
+sequence of `pnpm-install$ pnpm install` lifecycle invocations before exit 143.
+pnpm 10.34.5 prepares a Git-hosted dependency below its configured store and,
+because this source package has `prepack` and no built default entry, runs the
+package manager there before `prepack`. The consumer gate had placed that store
+inside the temporary consumer workspace, so every prepared source tree found
+the outer `pnpm-workspace.yaml` while walking upward and re-entered the same
+consumer install. Each attempt now owns sibling `consumer/` and `store/`
+directories under one cleanup root. This keeps pnpm's Git preparation tree
+outside the workspace-discovery ancestry while preserving one bounded cleanup
+boundary. A failing-first regression fixes that directory invariant. A serial
+package-lifecycle audit independently confirmed the root-cause chain and found
+no blocking cleanup, lockfile, package-root, or keep-mode regression. Current
+lightweight evidence is 162 tests passed with 58 artifact-dependent tests
+skipped, focused package contracts 87/87, node/web type checking, release-set
+contract tests, workflow YAML parsing, and `git diff --check`. The corrected
+fixed-commit consumer still requires a fresh GitHub CI run before merge.
+
+PR #13 CI run `34209833936` confirmed that the sibling store removed the
+recursive workspace discovery: all package builds, export checks, runtime
+checks, tarball consumption, browser E2E, native oracle, resource failures,
+reproducibility, and artifact comparison passed. The sole failure was
+`fixed-commit-consumer` job `102010047092`, after prepack had completed,
+when package provenance called `git rev-parse HEAD` in pnpm's codeload source
+tree. That source is intentionally a GitHub commit archive and has no `.git`
+metadata. A serial supply-chain review rejected CI-only commit injection as a
+self-confirming trust root. Package preparation now derives identity from the
+checkout HEAD or a tracked `.git_archival.txt` expanded through Git's
+`export-subst`; the CI value only cross-checks the intrinsic commit and any
+mismatch fails closed. Git checkouts retain observable clean/dirty state,
+whereas commit archives record `sourceTreeDirty: null` and
+`sourceTreeState: not-observable-commit-archive`. Focused regressions cover
+valid Git and archive identities, missing/unexpanded/malformed/duplicate
+markers, source disagreement, and false archive-clean claims. Real GitHub
+codeload substitution and preparation remain CI-owned evidence for the next
+run.
+
+A serial adversarial review then challenged whether the archive marker could
+prove content against a compromised codeload service and whether package
+preparation could observe source-state transitions. The bounded release trust
+model treats GitHub Actions, checkout, codeload, TLS, pnpm, and the runner as
+trusted infrastructure; defending against their coordinated compromise would
+require a separate signed-content or transparency design and is not claimed by
+the fixed-commit consumer. The review did identify two in-scope corrections:
+package preparation now compares the complete source identity before and after
+the build, and the execution discipline states explicitly that the Git lock
+entry binds the requested commit through its specifier and codeload URL but
+does not contain an independent archive-content hash. A failing regression was
+added first for clean/dirty state transitions, then made green by the complete
+identity comparison.
+
+The final pre-merge release-control review found that `dispatch-builder` did
+not depend on `fixed-commit-consumer`. Main CI run `34191680304` supplied a
+concrete counterexample: the fixed-commit consumer failed at 05:49:59 UTC on
+2026-09-08, but the external builder dispatch still completed successfully six
+seconds later. The builder job now requires the fixed-commit consumer, and a
+workflow contract regression prevents that dependency from being removed. The
+known absence of repository-enforced required checks remains an external
+governance gap already recorded above; the separate immutable `refs/tags/v*`
+ruleset remains a mandatory post-main-CI, pre-tag release gate.
+
 ## M5: External real-scan comparison (R8)
 
 - [ ] Obtain a rights-cleared corpus and record storage/upload permissions.

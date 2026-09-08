@@ -246,13 +246,30 @@ export function validatePackageContract(packageRoot, options = {}) {
       const provenance = JSON.parse(readFileSync(provenancePath, "utf8"));
       if (!/^[0-9a-f]{40}$/.test(provenance.sourceCommit ?? "")) errors.push("package provenance sourceCommit is not a 40-character lowercase SHA");
       if (provenance.packageVersion !== pkg.version) errors.push("package provenance version differs from package.json");
+      if (provenance.sourceIdentityKind === "git-checkout") {
+        const expectedState = provenance.sourceTreeDirty === true ? "dirty" : "clean";
+        if (typeof provenance.sourceTreeDirty !== "boolean" || provenance.sourceTreeState !== expectedState) {
+          errors.push("package provenance has inconsistent Git checkout source-tree state");
+        }
+      } else if (provenance.sourceIdentityKind === "git-commit-archive") {
+        if (provenance.sourceTreeDirty !== null || provenance.sourceTreeState !== "not-observable-commit-archive") {
+          errors.push("package provenance archive source-tree state must remain explicitly unobservable");
+        }
+      } else {
+        errors.push("package provenance sourceIdentityKind is invalid");
+      }
       if (dependencyPins && JSON.stringify(provenance.dependencyPins) !== JSON.stringify(dependencyPins)) {
         errors.push("package provenance dependencyPins differ from vendor/versions.json");
       }
       if (options.expectedCommit && provenance.sourceCommit !== options.expectedCommit) {
         errors.push(`package provenance commit ${provenance.sourceCommit} differs from expected ${options.expectedCommit}`);
       }
-      if (options.requireCleanSource && provenance.sourceTreeDirty !== false) errors.push("package provenance reports a dirty source tree");
+      if (options.expectedSourceIdentityKind && provenance.sourceIdentityKind !== options.expectedSourceIdentityKind) {
+        errors.push(`package provenance source identity ${provenance.sourceIdentityKind} differs from expected ${options.expectedSourceIdentityKind}`);
+      }
+      if (options.requireCleanSource && (provenance.sourceIdentityKind !== "git-checkout" || provenance.sourceTreeDirty !== false)) {
+        errors.push("package provenance does not prove a clean Git checkout");
+      }
     } catch (error) {
       errors.push(`dist/package-provenance.json is invalid JSON: ${error.message}`);
     }
