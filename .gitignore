@@ -1,6 +1,8 @@
 node_modules/
 tmp/
 dist/
+/dist-o2/
+/dist-instrumented/
 coverage/
 *.tsbuildinfo
 *.log

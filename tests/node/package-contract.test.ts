@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +16,19 @@ import {
   verifyBrowserBundleLayout,
   writeConsumer,
 } from "../../scripts/run-consumer-gate.mjs";
+
+function git(root: string, args: readonly string[]): string {
+  const result = spawnSync(
+    "git",
+    ["-c", "core.excludesFile=/dev/null", ...args],
+    { cwd: root, encoding: "utf8", env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" } },
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`git ${args.join(" ")} failed:\n${result.stdout}\n${result.stderr}`);
+  }
+  return result.stdout.trimEnd();
+}
 
 function fixture(): string {
   const root = mkdtempSync(join(tmpdir(), "leptonica-package-contract-"));
@@ -87,6 +101,43 @@ function writeCompleteManifest(root: string): void {
 }
 
 describe("package contract checker", () => {
+  it("keeps only the known auxiliary build outputs outside source-dirty provenance", () => {
+    const root = mkdtempSync(join(tmpdir(), "leptonica-source-dirty-"));
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, ".gitignore"), readFileSync(".gitignore"));
+    writeFileSync(join(root, "src/tracked.ts"), "export const value = 1;\n");
+    git(root, ["init", "--quiet"]);
+    git(root, ["config", "user.name", "Source Dirty Contract"]);
+    git(root, ["config", "user.email", "source-dirty@example.invalid"]);
+    git(root, ["add", "."]);
+    git(root, ["commit", "--quiet", "-m", "fixture"]);
+
+    for (const directory of ["dist-o2", "dist-instrumented"]) {
+      mkdirSync(join(root, directory));
+      writeFileSync(join(root, directory, "artifact.wasm"), directory);
+    }
+    expect(git(root, ["status", "--porcelain", "--untracked-files=normal"])).toBe("");
+
+    writeFileSync(join(root, "src/tracked.ts"), "export const value = 2;\n");
+    expect(git(root, ["status", "--porcelain", "--untracked-files=normal"])).toContain(
+      " M src/tracked.ts",
+    );
+    writeFileSync(join(root, "src/tracked.ts"), "export const value = 1;\n");
+
+    writeFileSync(join(root, "src/untracked.ts"), "export {};\n");
+    for (const directory of ["dist-o2", "dist-instrumented"]) {
+      mkdirSync(join(root, "src", directory));
+      writeFileSync(join(root, "src", directory, "source.ts"), "export {};\n");
+    }
+    mkdirSync(join(root, "dist-unexpected"));
+    writeFileSync(join(root, "dist-unexpected/artifact.wasm"), "unexpected");
+    const dirty = git(root, ["status", "--porcelain", "--untracked-files=normal"]);
+    expect(dirty).toContain("?? src/untracked.ts");
+    expect(dirty).toContain("?? src/dist-o2/");
+    expect(dirty).toContain("?? src/dist-instrumented/");
+    expect(dirty).toContain("?? dist-unexpected/");
+  });
+
   it("accepts a complete regular-file manifest", () => {
     const root = fixture();
     writeCompleteManifest(root);

@@ -189,11 +189,42 @@ upstream digest and canonical patch. The manifest now records that reproduced
 value; the patch digest itself remains unchanged. This metadata correction
 still requires a new CI run before any runtime claim can advance.
 
-## Evidence required from the next CI run
+The follow-up run for head commit
+`66066516835dcbe4c72a86189a7100a358687760` (run `34169822640`, September 7,
+2026) supplied the missing runtime evidence. `release-set`, `native-oracle`,
+`reproducibility`, the curated/full-ABI builds, symbol and export checks,
+goldens, target-WASM tests, runtime artifact assembly, mutation smoke, the
+consumer fixture, bundler matrix, and same-runner determinism all passed. The
+separate browser and resource jobs downloaded and identity-checked the frozen
+artifact from that run.
 
-The browser fatal-retirement claim still requires a single new commit SHA whose
-`browser-e2e` job actually executes, without skips, against the generated
-target-WASM artifact and proves all of the following:
+The real Chromium job ran two tests and passed both. Its fatal-retirement case
+proved two concurrent requests reject after the target-WASM trap, the
+pre-existing `RemotePix` is poisoned, later calls do not add Worker posts even
+after delayed tasks and cleanup, and both production and terminal-gate Worker
+teardown occur exactly once. The production Worker reported two WASM entries
+and one native trap; the separately probed terminal-gate Worker remained at one
+entry and one trap before and after the probe. A fresh public Worker session
+then loaded a 1x1x32 pixel and closed with one teardown. The independent
+resource job passed all 15 target-WASM fault-injection cases, closing the three
+retained-allocation failures observed in run `34146706412`.
+
+The main `ci` job failed only after packing, in the fresh-tarball consumer. The
+installed tarball was rejected because provenance reported a dirty source
+tree. The package was built after CI had created untracked `dist-o2/` and
+`dist-instrumented/` directories, while `.gitignore` covered only `dist/`; the
+dirty bit therefore described expected auxiliary build output, not modified
+source. `fixed-commit-consumer`, `compare`, and `dispatch-builder` were skipped.
+The bounded correction ignores only those two root-level generated directories
+and adds a real-Git regression test that still detects tracked edits, ordinary
+untracked source, and unknown `dist-*` directories. The secret scan for the
+same head completed successfully.
+
+## Evidence required from the replacement CI run
+
+Run `34169822640` proves the following browser and resource properties for
+commit `66066516835dcbe4c72a86189a7100a358687760`; the replacement run must repeat
+them on the final correction commit so every required gate shares one SHA:
 
 - a real `__builtin_trap()` reached through `load`/`fromRGBA` rejects both
   concurrent pending requests within the timeout;
@@ -215,13 +246,27 @@ target-WASM artifact and proves all of the following:
 `instrumented-resource-failures` is a separate gate. Its result must be reported
 independently: a passing browser fatal-retirement test cannot prove allocation
 failure cleanup, and a resource-sweep failure does not erase valid browser
-retirement evidence. `native-oracle`, `reproducibility`, the main `ci` job,
-`compare`, and `dispatch-builder` must also reach terminal states before making
+retirement evidence. The replacement main `ci`, fixed-commit consumer,
+`compare`, and `dispatch-builder` must all reach terminal success before making
 broader pipeline or release claims.
 
 Heavy target-WASM, native-oracle, Chromium, and allocation-sweep execution stays
 in CI. Local checks cover source preparation, contract tests, type checking, and
 release-set validation only.
+
+The bounded correction was checked locally on September 7, 2026:
+
+- `pnpm test`: 102 passed and 58 artifact-dependent cases skipped;
+- `pnpm run typecheck`: passed for both Node and web configurations;
+- `pnpm run test:release-contract`: variant-generator and release-set contracts
+  passed;
+- `.trellis/scripts/task.py validate`: both task context files passed;
+- a strict declaration-only worker/curated emit with `stripInternal` passed and
+  retained the private `RemotePix` constructor and public read-only dimensions;
+- `git diff --check`: passed.
+
+These source-only checks do not replace the explicitly outstanding replacement
+CI run. No local native, target-WASM, or Chromium build was performed.
 No repository-installed `actionlint` or YAML parser is available locally; the
 workflow topology and changed shell fragment are source-tested/syntax-checked,
 while GitHub's workflow parser and runner remain the authoritative execution

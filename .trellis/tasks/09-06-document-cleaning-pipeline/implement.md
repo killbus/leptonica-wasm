@@ -172,8 +172,8 @@ revision and the packed bytes are the candidate later attached to a release.
   outputs, extraction allocation/copy failures, and chain cleanup.
 - [ ] Run 20 warm-up plus at least 100 measured pages for fixed and mixed
   workloads, including repeated worker sessions.
-- [ ] Enforce zero retained owned native resources after recoverable failures
-  and document separate WASM-capacity/JS/RSS budgets.
+- [x] Enforce zero retained owned native resources after recoverable failures.
+- [ ] Document separate WASM-capacity, JS-heap, and process-RSS budgets.
 - [ ] Cross-check instrumented results against a production build and save
   per-page diagnostics when a gate fails.
 - [ ] Fail mandatory CI when required dist, fixtures, instrumentation, or
@@ -193,10 +193,10 @@ runtime surface. Static and simulated-runtime coverage also verifies that
 Leptonica.close() continues destroying remaining Pix values after an ordinary
 destructor error before rethrowing the first failure.
 
-The latest 2026-09-07 lightweight run passed typecheck, 101 tests,
-release-contract
-tests, task validation, and `git diff --check`. Five artifact-dependent files
-containing 58 tests skipped because `dist`/`dist-instrumented` are absent; those
+The latest 2026-09-07 lightweight run produced 102 passing and 58 skipped
+Vitest cases, and separately passed typecheck, release-contract tests, task
+validation, and `git diff --check`. The 58 skipped cases belong to five
+artifact-dependent files because `dist`/`dist-instrumented` are absent; those
 tests are unverified, not passing. A strict declaration-only emit with
 `stripInternal`, the repository's ambient Emscripten declaration, and no
 generated `dist` artifacts confirms the public `RemotePix` dimensions, private
@@ -385,15 +385,15 @@ invariant across a timer turn.
 
 | Requirement | Current evidence | Status |
 | --- | --- | --- |
-| A real Chromium test uses the production browser adapter and target-WASM trap | `tests/e2e/fatal-page.mjs`, `instrumented-worker.mjs`, and `e2e.browser.spec.ts` are wired into a dedicated Playwright job; the CI-only native path writes a pre-trap breadcrumb and a test-only module wrapper counts `fromRGBA` entries without changing public exports or protocol; Vite resolves the bare test import through the browser/default `./worker` export target; CI freezes the production and instrumented artifacts once, then the browser and OOM jobs consume that same artifact independently; run `34146706412` downloaded the artifact but failed its Worker-file guards before Playwright installation | Implemented and locally syntax/topology-checked; Chromium execution still pending |
-| One fatal response settles every concurrent pending request | Unit coverage passes; the browser case first creates a live proxy, then requires both subsequent promises to reject within 2 seconds from the same production Worker whose fatal response carries the native counters | Locally simulated; target-browser proof pending |
-| Fatal retirement tears down once, poisons live handles, and blocks later dispatch/WASM re-entry | Unit coverage passes; browser test checks the pre-existing proxy's poisoned state and local rejection, production teardown after a task-drain window and repeated cleanup calls, unchanged direct `Worker.postMessage()` counts across refused calls and after delayed tasks drain, and a delayed physical-termination terminal gate whose native breadcrumb/module-entry counts remain 1 | Locally simulated; target-browser proof pending |
+| A real Chromium test uses the production browser adapter and target-WASM trap | Run `34169822640` identity-checked the frozen production/instrumented artifact and ran two Playwright tests successfully; the production Worker observed two WASM entries and one native trap, while the terminal-gate Worker remained at one entry and one trap before and after its probe | Proven on `66066516835dcbe4c72a86189a7100a358687760`; replacement final-head run required |
+| One fatal response settles every concurrent pending request | Run `34169822640` passed the real-browser assertion that both requests reject within 2 seconds with the fatal WebAssembly-trap reason | Proven on `66066516835dcbe4c72a86189a7100a358687760`; replacement final-head run required |
+| Fatal retirement tears down once, poisons live handles, and blocks later dispatch/WASM re-entry | Run `34169822640` passed the poisoned-proxy, unchanged post-count after drain, one production teardown, one terminal-gate teardown, and no-reentry probe assertions | Proven on `66066516835dcbe4c72a86189a7100a358687760`; replacement final-head run required |
 | Fatal retirement is request-type independent | Source inspection shows `run`, every extract/query method, metadata access, disposal, and `load` enter the same `Leptonica.callNative()` boundary; `wireWorker` classifies fatal errors around the complete request switch and `WorkerSession` treats a fatal response as session-wide state; a source-only unit injects a query trap and proves a later extract is refused without another query entry | Architectural invariant established locally; real target-WASM injection currently covers only `load`/`fromRGBA`, not per-operation trap execution |
-| A fresh Worker/module remains usable after another instance traps | Browser test creates a separate clean instance and checks a 1x1 load | CI-only proof pending |
-| Curated build remains decode-free after preserving `toJPEG()` | Compression-only JPEG path plus curated-only `--wrap=pixDisplay` isolation are present; run `34094334788` linked both default builds but still found `jpeg_read_header` | Not achieved; extraction diagnostics are prepared but require CI execution |
-| Recoverable allocation and JPEG destination-growth failures leave no tracked native blocks | Run `34146706412` executed 15 target-WASM cases: 12 passed, while `cleanBackgroundToWhite` retained +1/+16, `sauvolaTiled` retained +2/+4,148, and `selectByArea` retained +5/+640; the current canonical patch addresses those upstream paths | Not achieved; corrected patch requires a new target-WASM sweep |
+| A fresh Worker/module remains usable after another instance traps | Run `34169822640` passed the real-browser fresh-session assertion for a 1x1x32 pixel and exactly one teardown | Proven on `66066516835dcbe4c72a86189a7100a358687760`; replacement final-head run required |
+| Curated build remains decode-free after preserving `toJPEG()` | Run `34169822640` passed both curated builds, linker export/symbol checks, curated smoke, and the full-ABI escape-hatch checks | Proven on `66066516835dcbe4c72a86189a7100a358687760`; replacement final-head run required |
+| Recoverable allocation and JPEG destination-growth failures leave no tracked native blocks | Run `34169822640` passed all 15 target-WASM fault-injection cases, including the three paths that retained resources in run `34146706412` | Proven on `66066516835dcbe4c72a86189a7100a358687760`; replacement final-head run required |
 | General-purpose binding boundary is preserved | No `documentClean`, pdfhow profile, fixed operation order, output policy, or deskew policy appears in the package API | Proven by current source inspection |
-| Feasible local contracts pass without a native/WASM rebuild | Full serial Vitest reports 101 passed and 58 skipped; the current focused fatal/instrumentation/source-patch run reports 41 passed; typecheck, strict declaration emit, release contract, task validation, and `git diff --check` pass | Proven locally for source-only coverage; artifact-dependent tests remain skipped/unverified |
+| Feasible local contracts pass without a native/WASM rebuild | Full serial Vitest reports 102 passed and 58 skipped; the current focused fatal/instrumentation/source-patch run reports 41 passed; typecheck, strict declaration emit, release contract, task validation, and `git diff --check` pass | Proven locally for source-only coverage; artifact-dependent tests remain skipped/unverified |
 
 The completed remote evidence at that checkpoint was feature commit
 `468f15cb14b51630ac2c4556f191920a6b005829`, CI run `34146706412`.
@@ -435,6 +435,31 @@ locally reproduce the CI value from the pinned upstream tree and unchanged
 canonical patch. The manifest now records the reproduced value, but this
 metadata correction still requires a new CI run before any browser, allocation,
 consumer, comparison, or dispatch evidence can advance.
+
+The next completed remote evidence is feature commit
+`66066516835dcbe4c72a86189a7100a358687760`, CI run `34169822640`.
+`release-set`, `native-oracle`, `reproducibility`, all production/full-ABI and
+target-WASM gates through the release-candidate pack, `browser-e2e`, and
+`instrumented-resource-failures` passed. Chromium executed both tests, including
+the production-adapter fatal path and fresh-session recovery. The resource job
+passed 15/15 cases. The main job then failed only when the fresh tarball
+consumer rejected `sourceTreeDirty:true`: earlier CI steps had created
+untracked `dist-o2/` and `dist-instrumented/`, which were expected build outputs
+but were not ignored. The bounded correction adds exact root-level ignores and
+a real-Git positive/negative regression test; it does not move the provenance
+check earlier or exempt arbitrary `dist-*` paths. `fixed-commit-consumer`,
+`compare`, and `dispatch-builder` were skipped, so M3 and the overall final gate
+remain open. The matching secret scan completed successfully.
+
+The final DBS cross-audit found no new fatal-retirement implementation defect.
+The concurrency review confirmed monotonic session retirement, settlement of
+all pending requests, proxy poisoning, no later dispatch/WASM re-entry,
+idempotent teardown, and fresh-Worker recovery. The provenance review found one
+low-risk blind spot in the new regression: it did not prove the ignore rules
+were root-anchored. The test now also requires nested `src/dist-o2/` and
+`src/dist-instrumented/` paths to remain visible as dirty source. The
+systems-safety review keeps final-head CI and repository release governance
+explicitly open; neither is converted into a local pass.
 
 The latest independent DBS chatroom review is complete for this source-only
 boundary. Nancy Leveson's systems-safety audit initially raised a blocking
