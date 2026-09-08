@@ -17,6 +17,18 @@ export function retryWithBackoff<T>(
     now?: () => number;
   },
 ): Promise<T>;
+export function removeConsumerRoot(
+  root: string,
+  remove?: (
+    path: string,
+    options: {
+      recursive: true;
+      force: true;
+      maxRetries: number;
+      retryDelay: number;
+    },
+  ) => void,
+): void;
 export function validateConsumerLockfile(
   lock: string,
   options: { consumerRoot?: string; tarball?: string; repository?: string; commit?: string },

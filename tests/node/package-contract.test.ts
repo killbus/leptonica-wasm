@@ -12,6 +12,7 @@ import {
   consumerWorkspaceYaml,
   gitDependencyId,
   isRetryableNetworkError,
+  removeConsumerRoot,
   retryAfterMilliseconds,
   retryWithBackoff,
   validateConsumerLockfile,
@@ -808,6 +809,23 @@ describe("independent consumer gate", () => {
 });
 
 describe("consumer install retry policy", () => {
+  it("retries transient recursive cleanup races", () => {
+    let receivedPath;
+    let receivedOptions;
+    removeConsumerRoot("/tmp/consumer-root", (path, options) => {
+      receivedPath = path;
+      receivedOptions = options;
+    });
+
+    expect(receivedPath).toBe("/tmp/consumer-root");
+    expect(receivedOptions).toEqual({
+      recursive: true,
+      force: true,
+      maxRetries: 8,
+      retryDelay: 250,
+    });
+  });
+
   it.each([
     "stream disconnected while receiving package metadata",
     "ERR_PNPM_FETCH_429 GET https://registry.example/package: Too Many Requests",

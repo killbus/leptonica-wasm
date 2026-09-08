@@ -626,6 +626,19 @@ passes. Native/WASM builds, browser E2E, target resource tests, and consumer
 installation remain delegated to GitHub CI to protect the constrained local
 machine.
 
+PR #13 CI run `34203187459` completed every native, WASM, browser, packaging,
+determinism, tarball-consumer, and comparison job successfully except the
+`fixed-commit-consumer` job `101987144582`. Its install and dependency-identity
+checks passed; the job failed only while recursively removing the isolated
+temporary pnpm store because Node reported a transient `ENOTEMPTY` race. The
+consumer gate now applies Node's bounded recursive-removal retry controls
+(`maxRetries: 8`, `retryDelay: 250`) in its `finally` cleanup, with a focused
+contract test and declaration coverage. The resulting lightweight evidence is
+150 tests passed with 58 artifact-dependent tests skipped, focused package
+contracts 75/75, node/web type checking, release-contract tests, workflow YAML
+parsing, and `git diff --check`. The failed run is not accepted as release
+evidence; a new PR run must reach terminal success before merge.
+
 ## M5: External real-scan comparison (R8)
 
 - [ ] Obtain a rights-cleared corpus and record storage/upload permissions.

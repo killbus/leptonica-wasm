@@ -108,6 +108,15 @@ export async function retryWithBackoff(task, options = {}) {
   }
 }
 
+export function removeConsumerRoot(root, remove = rmSync) {
+  remove(root, {
+    recursive: true,
+    force: true,
+    maxRetries: 8,
+    retryDelay: 250,
+  });
+}
+
 const nodeConsumer = `
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -878,7 +887,7 @@ async function runOnce(options, attempt) {
     verifyInstalled(root, options);
   } finally {
     if (options.keep) console.log(`consumer retained at ${root}`);
-    else rmSync(root, { recursive: true, force: true });
+    else removeConsumerRoot(root);
   }
 }
 
