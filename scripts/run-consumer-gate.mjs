@@ -954,15 +954,20 @@ export function validateInstalledPackageRoot(packageRoot, consumerRoot) {
   }
 }
 
+export function consumerPackageContractOptions(options) {
+  return {
+    requireManifest: true,
+    expectedCommit: options.commit,
+    expectedSourceIdentityKind: options.repository ? "git-commit-archive" : "git-checkout",
+    requireCleanSource: Boolean(options.tarball),
+  };
+}
+
 function verifyInstalled(root, options) {
   const packageLink = join(root, "node_modules", "leptonica-wasm");
   const packageRoot = realpathSync(packageLink);
   validateInstalledPackageRoot(packageRoot, root);
-  const contractErrors = validatePackageContract(packageRoot, {
-    requireManifest: true,
-    expectedCommit: options.commit,
-    requireCleanSource: Boolean(options.commit),
-  });
+  const contractErrors = validatePackageContract(packageRoot, consumerPackageContractOptions(options));
   if (contractErrors.length > 0) throw new Error(contractErrors.join("\n"));
   const lock = readFileSync(join(root, "pnpm-lock.yaml"), "utf8");
   validateConsumerLockfile(lock, { ...options, consumerRoot: root });

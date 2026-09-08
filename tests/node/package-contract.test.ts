@@ -10,6 +10,7 @@ import { generateHashManifest } from "../../scripts/gen-hash-manifest.mjs";
 import {
   CONSUMER_COMMAND_MAX_BUFFER_BYTES,
   CONSUMER_TOOL_VERSIONS,
+  consumerPackageContractOptions,
   consumerAttemptPaths,
   consumerCommandSpawnOptions,
   consumerWorkspaceYaml,
@@ -81,7 +82,12 @@ function fixture(): string {
     }
   }
   writeFileSync(join(root, "dist/package-provenance.json"), JSON.stringify({
-    sourceCommit: "a".repeat(40), packageVersion: "0.1.1", sourceTreeDirty: false, dependencyPins,
+    sourceCommit: "a".repeat(40),
+    sourceIdentityKind: "git-checkout",
+    sourceTreeDirty: false,
+    sourceTreeState: "clean",
+    packageVersion: "0.1.1",
+    dependencyPins,
   }));
   return root;
 }
@@ -110,6 +116,22 @@ function writeCompleteManifest(root: string): void {
 }
 
 describe("package contract checker", () => {
+  it("requires clean checkout provenance for tarballs and archive provenance for fixed commits", () => {
+    const commit = "a".repeat(40);
+    expect(consumerPackageContractOptions({ tarball: "/tmp/candidate.tgz", commit })).toEqual({
+      requireManifest: true,
+      expectedCommit: commit,
+      expectedSourceIdentityKind: "git-checkout",
+      requireCleanSource: true,
+    });
+    expect(consumerPackageContractOptions({ repository: "owner/repo", commit })).toEqual({
+      requireManifest: true,
+      expectedCommit: commit,
+      expectedSourceIdentityKind: "git-commit-archive",
+      requireCleanSource: false,
+    });
+  });
+
   it("keeps only the known auxiliary build outputs outside source-dirty provenance", () => {
     const root = mkdtempSync(join(tmpdir(), "leptonica-source-dirty-"));
     mkdirSync(join(root, "src"));
@@ -173,6 +195,36 @@ describe("package contract checker", () => {
     const root = fixture();
     expect(validatePackageContract(root, { expectedCommit: "b".repeat(40) })).toContainEqual(
       expect.stringContaining("differs from expected"),
+    );
+  });
+
+  it("accepts an archive identity without claiming the source tree was observable", () => {
+    const root = fixture();
+    const provenancePath = join(root, "dist/package-provenance.json");
+    const provenance = JSON.parse(readFileSync(provenancePath, "utf8"));
+    provenance.sourceIdentityKind = "git-commit-archive";
+    provenance.sourceTreeDirty = null;
+    provenance.sourceTreeState = "not-observable-commit-archive";
+    writeFileSync(provenancePath, JSON.stringify(provenance));
+    expect(validatePackageContract(root, { expectedSourceIdentityKind: "git-commit-archive" })).toEqual([]);
+    expect(validatePackageContract(root, { expectedSourceIdentityKind: "git-checkout" })).toContainEqual(
+      expect.stringContaining("source identity git-commit-archive differs from expected git-checkout"),
+    );
+    expect(validatePackageContract(root, { requireCleanSource: true })).toContain(
+      "package provenance does not prove a clean Git checkout",
+    );
+  });
+
+  it("rejects an archive provenance that falsely claims a clean source tree", () => {
+    const root = fixture();
+    const provenancePath = join(root, "dist/package-provenance.json");
+    const provenance = JSON.parse(readFileSync(provenancePath, "utf8"));
+    provenance.sourceIdentityKind = "git-commit-archive";
+    provenance.sourceTreeDirty = false;
+    provenance.sourceTreeState = "clean";
+    writeFileSync(provenancePath, JSON.stringify(provenance));
+    expect(validatePackageContract(root)).toContain(
+      "package provenance archive source-tree state must remain explicitly unobservable",
     );
   });
 

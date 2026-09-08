@@ -63,5 +63,15 @@ export function validateConsumerLockfile(
   options: { consumerRoot?: string; tarball?: string; repository?: string; commit?: string },
 ): void;
 export function validateInstalledPackageRoot(packageRoot: string, consumerRoot: string): void;
+export function consumerPackageContractOptions(options: {
+  tarball?: string;
+  repository?: string;
+  commit?: string;
+}): {
+  requireManifest: true;
+  expectedCommit?: string;
+  expectedSourceIdentityKind: "git-checkout" | "git-commit-archive";
+  requireCleanSource: boolean;
+};
 export function writeConsumer(root: string, sourceSpec: string, onlyBuiltDependency?: string): void;
 export function verifyBrowserBundleLayout(outputRoot: string): void;

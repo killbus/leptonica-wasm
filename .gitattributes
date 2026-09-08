@@ -12,3 +12,7 @@
 # inner strict git-apply gate validate patch payload whitespace without making
 # the outer repository diff checker reject valid patch syntax.
 vendor/patches/*.patch whitespace=-blank-at-eol
+
+# GitHub commit archives retain their exact source revision for package
+# preparation after the archive has intentionally omitted .git metadata.
+.git_archival.txt export-subst

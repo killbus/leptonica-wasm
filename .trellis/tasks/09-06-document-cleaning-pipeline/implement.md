@@ -697,6 +697,39 @@ skipped, focused package contracts 87/87, node/web type checking, release-set
 contract tests, workflow YAML parsing, and `git diff --check`. The corrected
 fixed-commit consumer still requires a fresh GitHub CI run before merge.
 
+PR #13 CI run `34209833936` confirmed that the sibling store removed the
+recursive workspace discovery: all package builds, export checks, runtime
+checks, tarball consumption, browser E2E, native oracle, resource failures,
+reproducibility, and artifact comparison passed. The sole failure was
+`fixed-commit-consumer` job `102010047092`, after prepack had completed,
+when package provenance called `git rev-parse HEAD` in pnpm's codeload source
+tree. That source is intentionally a GitHub commit archive and has no `.git`
+metadata. A serial supply-chain review rejected CI-only commit injection as a
+self-confirming trust root. Package preparation now derives identity from the
+checkout HEAD or a tracked `.git_archival.txt` expanded through Git's
+`export-subst`; the CI value only cross-checks the intrinsic commit and any
+mismatch fails closed. Git checkouts retain observable clean/dirty state,
+whereas commit archives record `sourceTreeDirty: null` and
+`sourceTreeState: not-observable-commit-archive`. Focused regressions cover
+valid Git and archive identities, missing/unexpanded/malformed/duplicate
+markers, source disagreement, and false archive-clean claims. Real GitHub
+codeload substitution and preparation remain CI-owned evidence for the next
+run.
+
+A serial adversarial review then challenged whether the archive marker could
+prove content against a compromised codeload service and whether package
+preparation could observe source-state transitions. The bounded release trust
+model treats GitHub Actions, checkout, codeload, TLS, pnpm, and the runner as
+trusted infrastructure; defending against their coordinated compromise would
+require a separate signed-content or transparency design and is not claimed by
+the fixed-commit consumer. The review did identify two in-scope corrections:
+package preparation now compares the complete source identity before and after
+the build, and the execution discipline states explicitly that the Git lock
+entry binds the requested commit through its specifier and codeload URL but
+does not contain an independent archive-content hash. A failing regression was
+added first for clean/dirty state transitions, then made green by the complete
+identity comparison.
+
 ## M5: External real-scan comparison (R8)
 
 - [ ] Obtain a rights-cleared corpus and record storage/upload permissions.
